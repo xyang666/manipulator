@@ -111,6 +111,10 @@ class SACAgent:
 
         self.critic_opt.zero_grad()
         critic_loss.backward()
+<<<<<<< HEAD
+=======
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
+>>>>>>> 1363fe7e1c704579a1bc953fb59aa96a9c819dea
         self.critic_opt.step()
 
         # -------- Actor update (with physics loss) --------
@@ -135,6 +139,10 @@ class SACAgent:
 
         self.actor_opt.zero_grad()
         actor_loss.backward()
+<<<<<<< HEAD
+=======
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
+>>>>>>> 1363fe7e1c704579a1bc953fb59aa96a9c819dea
         self.actor_opt.step()
 
         # -------- Alpha (entropy) update --------
@@ -158,6 +166,7 @@ class SACAgent:
             "alpha":        self.alpha,
         }
 
+<<<<<<< HEAD
     def save(self, path: str):
         torch.save({
             "actor":  self.actor.state_dict(),
@@ -168,3 +177,28 @@ class SACAgent:
         ckpt = torch.load(path, map_location=self.device)
         self.actor.load_state_dict(ckpt["actor"])
         self.critic.load_state_dict(ckpt["critic"])
+=======
+    def save(self, path: str, metadata: dict = None):
+        torch.save({
+            "actor":      self.actor.state_dict(),
+            "critic":     self.critic.state_dict(),
+            "actor_opt":  self.actor_opt.state_dict(),
+            "critic_opt": self.critic_opt.state_dict(),
+            "alpha_opt":  self.alpha_opt.state_dict(),
+            "log_alpha":  self.log_alpha.item(),
+            "metadata":   metadata or {},
+        }, path)
+
+    def load(self, path: str, load_optimizers: bool = True) -> dict:
+        ckpt = torch.load(path, map_location=self.device)
+        self.actor.load_state_dict(ckpt["actor"])
+        self.critic.load_state_dict(ckpt["critic"])
+        if load_optimizers:
+            if "actor_opt" in ckpt:
+                self.actor_opt.load_state_dict(ckpt["actor_opt"])
+                self.critic_opt.load_state_dict(ckpt["critic_opt"])
+                self.alpha_opt.load_state_dict(ckpt["alpha_opt"])
+                self.log_alpha.data.fill_(ckpt["log_alpha"])
+                self.alpha = self.log_alpha.exp().item()
+        return ckpt.get("metadata", {})
+>>>>>>> 1363fe7e1c704579a1bc953fb59aa96a9c819dea

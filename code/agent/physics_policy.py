@@ -86,6 +86,14 @@ class PhysicsInformedActor(nn.Module):
         """
         mean, log_std = self.forward(state)
         std = log_std.exp()
+<<<<<<< HEAD
+=======
+
+        if torch.isnan(mean).any() or torch.isnan(std).any():
+            print(f"[Actor] NaN detected — mean: {torch.isnan(mean).any()}, std: {torch.isnan(std).any()}")
+            mean = torch.nan_to_num(mean, nan=0.0)
+            std  = torch.nan_to_num(std,  nan=1.0).clamp(min=1e-6)
+>>>>>>> 1363fe7e1c704579a1bc953fb59aa96a9c819dea
         dist = Normal(mean, std)
         x = dist.rsample()                     # reparameterized sample
         y = torch.tanh(x)                      # squash to (-1, 1)
@@ -191,9 +199,15 @@ class PhysicsRegularizer:
         collision_losses = []
 
         for i in range(B):
+<<<<<<< HEAD
             q = q_batch[i].detach().numpy()
             dq = dq_batch[i].detach().numpy()
             dq_new = dq_new_batch[i].detach().numpy()
+=======
+            q = q_batch[i].cpu().detach().numpy()
+            dq = dq_batch[i].cpu().detach().numpy()
+            dq_new = dq_new_batch[i].cpu().detach().numpy()
+>>>>>>> 1363fe7e1c704579a1bc953fb59aa96a9c819dea
 
             # Dynamics loss
             dyn_losses.append(self.compute_loss(q, dq, dq_new))

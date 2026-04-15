@@ -15,6 +15,7 @@ import argparse
 import sys
 import os
 import numpy as np
+from datetime import datetime
 
 # Allow imports from code/ root
 sys.path.insert(0, os.path.dirname(__file__))
@@ -23,6 +24,7 @@ from env.manipulator_env import ManipulatorEnv
 from env.dynamics import ManipulatorDynamics
 from agent.sac_agent import SACAgent
 from utils.replay_buffer import ReplayBuffer
+from utils.logger import TrainingLogger
 
 
 def parse_args():
@@ -48,6 +50,10 @@ def parse_args():
                    help="Path to MuJoCo scene XML (None = kinematics-only mode)")
     p.add_argument("--save_path",   type=str,   default="checkpoints/sac_pirl.pt")
     p.add_argument("--log_every",   type=int,   default=10)
+    p.add_argument("--checkpoint_every", type=int, default=50,
+                   help="Save a periodic checkpoint every N episodes")
+    p.add_argument("--run_name",    type=str,   default=None,
+                   help="Run directory name; auto-generated if not set")
     p.add_argument("--render",      action="store_true",
                    help="Render the scene with MuJoCo viewer during training")
     return p.parse_args()
@@ -69,8 +75,27 @@ def main():
         dynamics=dyn,
         lambda_dyn=args.lambda_dyn,
         collision_detector=env.collision_detector,
+        device='cuda'
     )
     buffer = ReplayBuffer(args.buffer_size, state_dim, action_dim)
+
+    # -------- Logger / run directory --------
+    run_name = args.run_name or f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_dir  = os.path.join(os.path.dirname(args.save_path), run_name)
+    hyperparams = {
+        "steps":        args.steps,
+        "batch_size":   args.batch_size,
+        "start_steps":  args.start_steps,
+        "update_every": args.update_every,
+        "buffer_size":  args.buffer_size,
+        "lambda_dyn":   args.lambda_dyn,
+        "lr":           3e-4,
+        "gamma":        0.99,
+        "tau":          0.005,
+        "state_dim":    state_dim,
+        "action_dim":   action_dim,
+    }
+    logger = TrainingLogger(run_dir=run_dir, hyperparams=hyperparams)
 
     os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
 
@@ -79,6 +104,7 @@ def main():
     episode     = 0
     best_reward = -np.inf
 
+    print(f"Run directory: {run_dir}")
     print(f"{'Episode':>8} {'Steps':>8} {'Reward':>10} "
           f"{'L_actor':>10} {'L_dyn':>10} {'d_obs':>8}")
     print("-" * 60)
@@ -91,7 +117,6 @@ def main():
         ep_d_obs    = []
         ep_steps    = 0
         done        = False
-
         while not done:
             # Action selection
             if total_steps < args.start_steps:
@@ -107,6 +132,8 @@ def main():
 
             if args.render:
                 env.render()
+
+            logger.log_step(total_steps, episode, ep_steps, reward, info)
 
             dq_next = env.dq.copy()
 
@@ -128,10 +155,12 @@ def main():
 
                 batch = buffer.sample(args.batch_size)
                 losses = agent.update(batch)
+                logger.log_update(losses)
                 ep_l_actor += losses["actor_rl_loss"]
                 ep_l_dyn   += losses["physics_loss"]
 
         episode += 1
+        ep_summary = logger.end_episode(episode, total_steps)
         avg_l_actor = ep_l_actor / max(ep_steps, 1)
         avg_l_dyn   = ep_l_dyn   / max(ep_steps, 1)
         min_d_obs   = min(ep_d_obs) if ep_d_obs else 0.0
@@ -140,12 +169,29 @@ def main():
             print(f"{episode:>8d} {total_steps:>8d} {ep_reward:>10.3f} "
                   f"{avg_l_actor:>10.4f} {avg_l_dyn:>10.4f} {min_d_obs:>8.3f}")
 
-        if ep_reward > best_reward:
-            best_reward = ep_reward
-            agent.save(args.save_path)
+        ckpt_meta = {
+            "step":         total_steps,
+            "episode":      episode,
+            "best_reward":  logger.best_reward,
+            "hyperparams":  hyperparams,
+            "csv_path":     logger.csv_path,
+        }
 
+        # Periodic checkpoint
+        if episode % args.checkpoint_every == 0:
+            agent.save(logger.checkpoint_path(f"ep{episode:05d}"), metadata=ckpt_meta)
+
+        # Best checkpoint
+        if ep_summary["total_reward"] > logger.best_reward:
+            logger.best_reward = ep_summary["total_reward"]
+            best_reward = logger.best_reward
+            ckpt_meta["best_reward"] = logger.best_reward
+            agent.save(logger.checkpoint_path("best"), metadata=ckpt_meta)
+
+    logger.close()
     print(f"\nTraining done. Best reward: {best_reward:.3f}")
-    print(f"Model saved to: {args.save_path}")
+    print(f"Run directory: {run_dir}")
+    print(f"CSV log: {logger.csv_path}")
 
 
 if __name__ == "__main__":
