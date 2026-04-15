@@ -11,6 +11,7 @@ Prints per-episode:
     episode | reward | L_RL | L_dyn | d_obs_min
 """
 
+import torch
 import argparse
 import sys
 import os
@@ -75,7 +76,7 @@ def main():
         dynamics=dyn,
         lambda_dyn=args.lambda_dyn,
         collision_detector=env.collision_detector,
-        device='cuda'
+        device='cuda' if torch.cuda.is_available() else 'cpu'
     )
     buffer = ReplayBuffer(args.buffer_size, state_dim, action_dim)
 

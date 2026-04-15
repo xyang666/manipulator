@@ -88,7 +88,7 @@ class PhysicsInformedActor(nn.Module):
         std = log_std.exp()
 
         if torch.isnan(mean).any() or torch.isnan(std).any():
-            print(f"[Actor] NaN detected — mean: {torch.isnan(mean).any()}, std: {torch.isnan(std).any()}")
+            # print(f"[Actor] NaN detected — mean: {torch.isnan(mean).any()}, std: {torch.isnan(std).any()}")
             mean = torch.nan_to_num(mean, nan=0.0)
             std  = torch.nan_to_num(std,  nan=1.0).clamp(min=1e-6)
         dist = Normal(mean, std)

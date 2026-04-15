@@ -1,6 +1,6 @@
 <mujoco model="panda_scene">
   <compiler angle="radian"
-    meshdir="/home/merlin/manipulator/code/.venv/lib/python3.12/site-packages/cmeel.prefix/share/example-robot-data/robots/panda_description/meshes/collision"
+    meshdir="../code/.venv/lib/python3.12/site-packages/cmeel.prefix/share/example-robot-data/robots/panda_description/meshes/collision"
     balanceinertia="true" />
 
   <option timestep="0.02" integrator="RK4" />
