@@ -1,12 +1,9 @@
 {
   "permissions": {
     "allow": [
-<<<<<<< HEAD
       "Bash(uv venv:*)",
-      "Bash(uv pip:*)"
-=======
+      "Bash(uv pip:*)",
       "WebSearch"
->>>>>>> 1363fe7e1c704579a1bc953fb59aa96a9c819dea
     ]
   }
 }

@@ -20,7 +20,7 @@ class ReplayBuffer:
 
         self.states   = np.zeros((capacity, state_dim),  dtype=np.float32)
         self.actions  = np.zeros((capacity, action_dim), dtype=np.float32)
-        self.rewards  = np.zeros((capacity, 1),          dtype=np.float32)
+        self.rewards  = np.zeros((capacity, 1),          dtype=np.float64)  # Use float64 for rewards
         self.next_s   = np.zeros((capacity, state_dim),  dtype=np.float32)
         self.dones    = np.zeros((capacity, 1),          dtype=np.float32)
 

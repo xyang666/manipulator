@@ -162,6 +162,8 @@ class PhysicsRegularizer:
         L_dyn : torch scalar
         """
         ddq = (dq_new - dq) / self.dt
+        # Clip acceleration to prevent numerical explosion
+        ddq = np.clip(ddq, -100.0, 100.0)
         tau = self.dynamics.compute_torque(q, dq, ddq)
 
         tau_t = torch.tensor(tau, dtype=torch.float32)
@@ -169,7 +171,7 @@ class PhysicsRegularizer:
 
         violation = F.relu(tau_t.abs() - tau_max_t)
         loss = (violation ** 2).mean()
-        return loss
+        return loss * self.lambda_dyn
 
     def compute_loss_batch(self,
                            q_batch: torch.Tensor,
@@ -200,7 +202,7 @@ class PhysicsRegularizer:
             dq = dq_batch[i].cpu().detach().numpy()
             dq_new = dq_new_batch[i].cpu().detach().numpy()
 
-            # Dynamics loss
+            # Dynamics loss (already includes lambda_dyn scaling)
             dyn_losses.append(self.compute_loss(q, dq, dq_new))
 
             # Collision loss (if detector available)
@@ -217,6 +219,7 @@ class PhysicsRegularizer:
         dyn_loss = torch.stack(dyn_losses).mean()
         collision_loss = torch.stack(collision_losses).mean()
 
+        # lambda_dyn already applied in compute_loss, only scale collision
         total_loss = dyn_loss + self.lambda_collision * collision_loss
         return total_loss
 

@@ -36,7 +36,7 @@ def parse_args():
                    help="Random exploration steps before training begins")
     p.add_argument("--update_every",type=int,   default=1)
     p.add_argument("--buffer_size", type=int,   default=100_000)
-    p.add_argument("--lambda_dyn",  type=float, default=0.1,
+    p.add_argument("--lambda_dyn",  type=float, default=0.01,
                    help="Weight of physics regularization loss")
     _here = os.path.dirname(os.path.abspath(__file__))
     _root = os.path.dirname(_here)
@@ -121,7 +121,7 @@ def main():
         while not done:
             # Action selection
             if total_steps < args.start_steps:
-                action = np.random.uniform(-0.5, 0.5, action_dim)
+                action = np.random.uniform(-0.2, 0.2, action_dim)  # Reduced exploration range
             else:
                 action = agent.select_action(obs)
 

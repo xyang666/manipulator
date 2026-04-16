@@ -38,7 +38,7 @@ class SACAgent:
                  lambda_collision: float = 1.0,
                  tau_max:      float = 87.0,
                  dt:           float = 0.02,
-                 action_scale: float = 0.5,
+                 action_scale: float = 0.3,
                  hidden_dims:  tuple = (256, 256),
                  device:       str   = "cpu",
                  collision_detector = None):

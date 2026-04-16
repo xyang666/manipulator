@@ -156,7 +156,18 @@ class ManipulatorKinematics:
         J = self.jacobian(q)
         Jpinv = self.pseudo_inverse(J)
         N = np.eye(self.n) - Jpinv @ J
-        return Jpinv @ dx_desired + N @ dq0
+
+        # Compute combined velocity
+        dq_task = Jpinv @ dx_desired
+        dq_null = N @ dq0
+        dq_combined = dq_task + dq_null
+
+        # Safety: clip to prevent numerical instability
+        # Panda joint velocity limits: [2.175, 2.175, 2.175, 2.175, 2.610, 2.610, 2.610]
+        dq_max = np.array([2.175, 2.175, 2.175, 2.175, 2.610, 2.610, 2.610])
+        dq_combined = np.clip(dq_combined, -dq_max, dq_max)
+
+        return dq_combined
 
     # ------------------------------------------------------------------
     # Simplified fallback (no Pinocchio) - uses random DH-like matrix

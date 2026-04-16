@@ -113,13 +113,14 @@ class ManipulatorEnv:
         -------
         obs, reward, done, info
         """
-        dq0 = np.clip(action, -DQ_MAX, DQ_MAX)
+        # Clip action to safe range
+        dq0 = np.clip(action, -DQ_MAX * 0.5, DQ_MAX * 0.5)
 
         # Combine task-space tracking + null-space RL action
         dx_desired = self._compute_task_velocity()
         dq_cmd = self.kin.combine_velocities(self.q, dx_desired, dq0)
 
-        # Integrate
+        # Integrate (kinematics-only mode)
         q_new = np.clip(self.q + dq_cmd * self.dt, Q_MIN, Q_MAX)
         dq_new = dq_cmd
 
@@ -277,10 +278,15 @@ class ManipulatorEnv:
         return dx_cmd
 
     def _mujoco_step(self, dq_cmd):
-        self.mj_data.qvel[:self.n] = dq_cmd
+        # Use velocity actuators instead of directly setting qvel
+        # Clip to safe range to prevent instability
+        dq_cmd_safe = np.clip(dq_cmd, -DQ_MAX * 0.5, DQ_MAX * 0.5)
+        self.mj_data.ctrl[:self.n] = dq_cmd_safe
+
         # Keep fingers closed: zero out finger qpos and qvel (indices n and n+1)
         self.mj_data.qpos[self.n:self.n + 2] = 0.0
         self.mj_data.qvel[self.n:self.n + 2] = 0.0
+
         mujoco.mj_step(self.mj_model, self.mj_data)
         self.q = self.mj_data.qpos[:self.n].copy()
         self.dq = self.mj_data.qvel[:self.n].copy()
