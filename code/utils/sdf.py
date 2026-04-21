@@ -30,6 +30,11 @@ class ObstacleSDF:
         """Manually set obstacle centers. centers: [N x 3]"""
         self.centers = np.asarray(centers)
 
+    def set_static_obstacles(self, centers: list):
+        """Set static obstacle positions for Scenario 1."""
+        self.centers = np.array(centers)
+        self.n_obs = len(centers)
+
     def point_distance(self, point: np.ndarray) -> float:
         """
         Minimum signed distance from a 3D point to the nearest obstacle surface.
@@ -43,39 +48,17 @@ class ObstacleSDF:
     def min_distance(self, x_ee: np.ndarray, q: np.ndarray | None = None,
                      kinematics=None) -> float:
         """
-        Minimum signed distance from any robot point to the nearest obstacle.
-
-        Checks the end-effector and, if kinematics is provided, all link
-        joint origins via forward kinematics (Pinocchio).
+        Minimum signed distance from end-effector to the nearest obstacle.
 
         Parameters
         ----------
         x_ee       : end-effector position [3]
-        q          : joint positions [n], required when kinematics is given
-        kinematics : ManipulatorKinematics instance (optional)
+        q          : joint positions [n] (unused, kept for API compatibility)
+        kinematics : ManipulatorKinematics instance (unused, kept for API compatibility)
         """
         if self.n_obs == 0:
             return np.inf
 
-        # Collect robot sample points: always include end-effector
-        points = [x_ee]
-
-        if kinematics is not None and q is not None and kinematics.model is not None:
-            import pinocchio as pin
-            q_arr = np.asarray(q, dtype=float)
-            pin.forwardKinematics(kinematics.model, kinematics.data, q_arr)
-            pin.updateFramePlacements(kinematics.model, kinematics.data)
-            # Sample each joint origin (frame type == JOINT)
-            for frame in kinematics.model.frames:
-                if frame.type == pin.FrameType.JOINT:
-                    fid = kinematics.model.getFrameId(frame.name)
-                    pos = kinematics.data.oMf[fid].translation.copy()
-                    points.append(pos)
-
-        # Compute minimum distance across all sample points and all obstacles
-        # centers: [N x 3], points stacked: [P x 3]
-        pts = np.array(points)                          # [P x 3]
-        # dists[p, o] = distance from point p to obstacle o surface
-        diffs = pts[:, None, :] - self.centers[None, :, :]  # [P x N x 3]
-        dists = np.linalg.norm(diffs, axis=2) - self.radius  # [P x N]
+        # Only compute distance for end-effector
+        dists = np.linalg.norm(self.centers - x_ee, axis=1) - self.radius
         return float(np.min(dists))

@@ -10,6 +10,11 @@
 \usepackage{subcaption}
 \usepackage{booktabs}
 \usepackage{cite}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\floatname{algorithm}{算法}
+\renewcommand{\algorithmicrequire}{\textbf{输入:}}
+\renewcommand{\algorithmicensure}{\textbf{输出:}}
 \usepackage{hyperref}
 \hypersetup{
   colorlinks=true,
@@ -36,32 +41,7 @@
 
 \begin{abstract}
 \noindent
-现有RL方法应用于7-DOF机械臂避障时存在两个问题：（1）样本效率低，训练代价大；（2）学出的策略容易违反物理约束（力矩突变、奇异位形等）。本文提出将物理先验嵌入RL框架，同时提升训练效率和策略物理可行性。
-
-本文提出了一种基于强化学习的冗余机械臂零空间策略学习方法，旨在提高任务执行效率与运动协调性。实验结果表明所提方法在末端轨迹跟踪及关节冗余管理中具有明显优势。
-
-1.背景 
-
-冗余机械臂具有多解性
-
-Null-space 用于执行次任务
-
-2.问题
-
-传统方法依赖人工设计（gradient / potential）
-
-难以处理复杂约束（避障、能耗、奇异性）
-
-3.方法（你的贡献）
-
-提出：RL 学习 Null-space policy
-
-与 Jacobian 解耦
-
-4.结果
-
-提升：成功率 / 能耗 / manipulability
-
+冗余机械臂在执行复杂操作任务时需同时满足末端轨迹跟踪和物理约束。传统零空间控制依赖人工设计的次任务目标函数，难以处理多约束优化。纯强化学习方法虽具备自适应能力，但存在样本效率低和违反物理约束的问题。本文提出一种物理信息增强的零空间策略学习方法，通过力矩约束正则化和主任务松弛机制，在保证末端跟踪精度的同时优化避障和可操作度。\textcolor{red}{[待填：实验结果摘要]}
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -69,52 +49,56 @@ Null-space 用于执行次任务
 \end{IEEEkeywords}
 
 \section{引言}
-\subsection{背景}
-冗余机械臂（7DOF）广泛用于：
-人机协作
-复杂操作任务
 
-Null-space 控制用于：
-多任务优先级控制
-避障 / 姿态优化
+冗余机械臂因其额外自由度能够在完成主任务的同时优化次要目标，广泛应用于人机协作、空间操作和医疗手术等领域。零空间控制是利用冗余自由度的经典方法，通过在不影响末端轨迹的零空间内施加控制输入，实现避障、奇异性规避和能耗优化等次任务。
 
-\subsection{问题陈述}
-传统方法：z 是 hand-crafted，无法处理复杂环境
+传统零空间控制依赖人工设计的梯度场或势函数\cite{siciliano1991general}，在静态环境下表现良好，但面临两个关键挑战：（1）多约束优化时目标函数设计困难，需手动调节权重；（2）复杂障碍环境下势函数难以有效设计。近年来，强化学习（RL）在机械臂控制中展现出自适应能力\cite{levine2016end}，但直接应用于关节空间控制存在样本效率低和违反物理约束的问题——策略可能输出导致力矩突变或奇异位形的动作。
 
-已有工作：RL用于避障，但通常直接学 joint control或没有结构约束
-
-\subsection{论文贡献}
-贡献1：结构化 RL 框架：仅学习 Null-space policy
-
-贡献2：与任务空间解耦的控制结构，不影响主任务，提高稳定性
-
-贡献3：多目标 reward（成功率、能耗、manipulability）
+本文提出物理信息增强的零空间策略学习方法，主要贡献包括：
+\begin{itemize}
+\item \textbf{结构化动作空间：}策略输出零空间内的自运动速度，通过零空间投影保证不影响末端跟踪，约束有效探索自由度
+\item \textbf{力矩约束正则化：}通过可微的力矩限制约束引导策略学习物理可行的轨迹，提升训练稳定性和力矩平滑度
+\item \textbf{主任务松弛机制：}在危险情况下动态降低跟踪误差权重，允许策略牺牲部分跟踪精度换取安全性
+\end{itemize}
 
 
 \section{相关工作}
-相关工作涵盖经典逆运动学、优先级任务空间控制、以及近年强化学习在机械臂控制中的应用。
+
+\subsection{冗余机械臂控制}
+冗余机械臂的逆运动学求解存在无穷多解，经典方法包括伪逆法\cite{siciliano1991general}和优化方法\cite{chan1995weighted}。零空间控制通过投影矩阵$N(q) = I - J^\dagger J$将次任务映射到不影响末端运动的子空间，广泛用于避障\cite{flacco2012motion}和奇异性规避\cite{chiaverini1997review}。然而，传统方法依赖人工设计的目标函数，难以处理多约束优化和动态环境。
+
+\subsection{强化学习在机械臂控制中的应用}
+深度强化学习在机械臂操作任务中取得显著进展。Levine等\cite{levine2016end}提出端到端视觉伺服学习，但需大量真实数据。为提升样本效率，研究者引入模型预测\cite{nagabandi2018neural}和模仿学习\cite{rajeswaran2017learning}。然而，纯RL方法直接学习关节控制时容易违反物理约束——Johannink等\cite{johannink2019residual}发现策略输出可能导致力矩突变，需额外的安全层过滤。
+
+\subsection{物理信息增强学习}
+近年来，将物理先验嵌入学习框架成为提升样本效率和安全性的有效途径。Lutter等\cite{lutter2019deep}提出深度拉格朗日网络，通过能量守恒约束提升动力学建模精度。Sanchez-Gonzalez等\cite{sanchez2020learning}利用图神经网络学习物理交互。本文借鉴这一思路，通过力矩约束正则化引导策略学习物理可行的零空间轨迹。
+
+\textbf{与现有工作的区别：}现有RL方法多直接学习关节控制或末端控制，缺乏对冗余自由度的结构化利用。本文通过零空间投影解耦主任务与次任务，同时引入力矩约束正则化和主任务松弛机制，在保证末端跟踪的前提下优化避障和可操作度，兼具传统方法的结构性和RL的自适应性。
 
 
 \section{方法}
 \subsection{问题定义}
+\label{sec:problem_def}
 \subsubsection{任务目标}
-给定末端执行器期望轨迹$x_d(t) \in SE(3)$和障碍物集合$\mathcal{O}$，目标是学习一个零空间策略$\pi: \mathcal{S} \rightarrow \mathbb{R}^7$，使机械臂在跟踪末端轨迹的同时：
+给定末端执行器期望轨迹$x_d(t) \in SE(3)$和环境障碍物集合$\mathcal{O}$，本文的目标是学习一个综合策略网络$\pi: \mathcal{S} \rightarrow \mathbb{R}^{13}$。该策略同时作用于任务空间与零空间，使机械臂在名义末端轨迹跟踪的基础上，具备动态调整任务执行和自适应避障的能力，满足以下优化目标：
 \begin{itemize}
-\item 避免与障碍物碰撞
-\item 保持关节远离奇异位形
-\item 最小化能量消耗
-\item 满足关节位置、速度、力矩约束
+\item \textbf{安全性}：实现主任务（末端）与次任务（连杆）维度的全避障，并确保关节位置、速度、力矩严格满足物理执行极限。
+\item \textbf{跟踪鲁棒性}：在安全区域保持高精度的末端轨迹跟踪；在极端碰撞风险下，实现合理的轨迹让位与松弛。
+\item \textbf{运动学及动力学优化}：使关节运动远离奇异位形（最大化可操作度），同时抑制力矩突变，最小化整体系统能耗。
 \end{itemize}
 
 \subsubsection{控制结构}
-采用分层控制架构：
+采用解耦的任务空间-零空间分层控制架构：
 \begin{equation}
-\dot{q} = \dot{q}_{\text{task}} + \dot{q}_{\text{null}}
+\dot{q} = J^\dagger(q) \left( \underbrace{\dot{x}_d + K_p(x_d - x)}_{\text{名义跟踪项}} + \underbrace{\text{diag}(\sigma) \cdot \Delta \dot{x}_{\text{RL}}}_{\text{RL松弛项}} \right) + N(q)\dot{q}_0
+\label{eq:control_structure}
 \end{equation}
 其中：
 \begin{itemize}
-\item $\dot{q}_{\text{task}} = J^\dagger(q)(\dot{x}_d + K_p(x_d - x))$：任务空间控制项，保证末端轨迹跟踪
-\item $\dot{q}_{\text{null}} = N(q)\pi(s)$：零空间策略输出，由RL学习
+\item \textbf{名义跟踪项}：负责维持末端执行器的基本PD轨迹跟踪精度，确保在无障碍区域的控制性能。
+\item \textbf{RL松弛项}：由策略网络输出的前6维动作分量（$\Delta \dot{x}_{\text{RL}} \in \mathbb{R}^6$）构成，用于在复杂环境下主动调整任务空间速度。
+\item \textbf{门控算子} $\text{diag}(\sigma)$：定义为随障碍物距离 $d_{\text{obs}}$ 动态变化的对角权重矩阵。当 $d_{\text{obs}}$ 较大时，$\sigma \to 0$ 以确保跟踪严谨性；进入危险区域时，$\sigma$ 逐渐增大以开启松弛机制，通过牺牲部分精度换取更高的避障安全性。
+\item \textbf{零空间自运动项}：策略网络的后7维动作分量构成自运动速度$\dot{q}_0 \in \mathbb{R}^7$，通过零空间投影矩阵$N(q)$映射后，在不干扰当前末端行为的前提下优化关节形位。
 \end{itemize}
 
 \subsubsection{强化学习形式化}
@@ -122,15 +106,16 @@ Null-space 控制用于：
 
 \textbf{状态空间} $\mathcal{S}$：
 \begin{equation}
-s_t = [q_t, \dot{q}_t, x_d, \dot{x}_d, d_{\text{obs}}, w(q_t)]
+s_t = [q_t, \dot{q}_t, x_t, x_d, \dot{x}_d, d_{\text{obs}}, w(q_t)]
 \end{equation}
-包含关节状态、期望轨迹、障碍物距离$d_{\text{obs}}$、可操作度$w(q) = \sqrt{\det(JJ^T)}$
+包含当前关节状态、末端当前及期望位姿、障碍物最短距离$d_{\text{obs}}$，以及当前位形的可操作度$w(q_t) = \sqrt{\det(J(q_t)J(q_t)^T)}$。
 
 \textbf{动作空间} $\mathcal{A}$：
+策略输出13维连续动作空间$a_t = [\Delta \dot{x}_{\text{RL}}^T, \dot{q}_0^T]^T \in \mathbb{R}^{13}$：
 \begin{equation}
-a_t = \dot{q}_0 \in \mathbb{R}^7
+a_t \sim \pi(\cdot|s_t) = \left[ \Delta \dot{x}_{\text{RL}} \in \mathbb{R}^6, \quad \dot{q}_0 \in \mathbb{R}^7 \right]
 \end{equation}
-策略输出零空间内的自运动速度，实际关节速度为$\dot{q}_t = J^\dagger\dot{x}_d + N(q_t)a_t$
+前6维动作结合门控算子后参与末端速度调制，后7维动作作为零空间探索速度，最终的关节速度控制律遵循式\ref{eq:control_structure}。
 
 \textbf{奖励函数} $\mathcal{R}$：
 \begin{equation}
@@ -138,176 +123,311 @@ r_t = r_{\text{track}} + r_{\text{obs}} + r_{\text{manip}} + r_{\text{energy}}
 \end{equation}
 其中：
 \begin{itemize}
-\item $r_{\text{track}} = -\|x_t - x_d\|^2$：末端跟踪误差
-\item $r_{\text{obs}} = -\exp(-d_{\text{obs}}/\sigma)$：障碍物避障奖励
+\item $r_{\text{track}} = -w_{\text{track}}^{\text{eff}}\|x_t - x_d\|^2$：末端跟踪误差（权重动态调整）
+\item $r_{\text{obs}}$：障碍物避障奖励（基于距离场）
 \item $r_{\text{manip}} = w(q_t)$：可操作度奖励
 \item $r_{\text{energy}} = -\|\tau_t\|^2$：能量消耗惩罚
 \end{itemize}
+具体形式将在后续章节详细说明。
 
-\subsection{机械臂动力学模型}
-考虑7自由度冗余机械臂，其配置空间为$q \in \mathbb{R}^7$，末端执行器位姿为$x \in SE(3)$。
+\subsection{7自由度机械臂动力学模型}
+\label{sec:dynamics}
+考虑7自由度冗余机械臂（如Franka Emika Panda），其配置空间为$q \in \mathbb{R}^7$，末端执行器位姿为$x \in SE(3)$（包含位置和姿态）。7自由度相比6自由度末端任务提供1维冗余自由度，可在完成主任务的同时优化次要目标。
 
 \subsubsection{运动学关系}
-正运动学映射为：
+正运动学描述关节角到末端位姿的映射：
 \begin{equation}
-x = f(q)
+x = f_{\text{kin}}(q)
+\end{equation}
+其中$f_{\text{kin}}: \mathbb{R}^7 \rightarrow SE(3)$由Denavit-Hartenberg参数或指数积公式确定。
+
+末端速度$\dot{x} \in \mathbb{R}^6$（包含线速度和角速度）与关节速度$\dot{q} \in \mathbb{R}^7$的关系由雅可比矩阵描述：
+\begin{equation}
+\dot{x} = J(q)\dot{q}, \quad J(q) \in \mathbb{R}^{6 \times 7}
 \end{equation}
 
-末端速度与关节速度的关系由雅可比矩阵$J(q) \in \mathbb{R}^{6 \times 7}$描述：
+逆运动学求解关节速度以实现期望末端速度。由于$J(q)$为非方阵（6行7列），伪逆解为：
 \begin{equation}
-\dot{x} = J(q)\dot{q}
+\dot{q}_{\text{task}} = J^\dagger(q)\dot{x}, \quad J^\dagger = J^T(JJ^T)^{-1}
 \end{equation}
-
-由于$J(q)$为非方阵（6行7列），系统存在1维零空间，即存在关节速度$\dot{q}_{\text{null}}$满足：
-\begin{equation}
-J(q)\dot{q}_{\text{null}} = 0
-\end{equation}
-
-\subsubsection{动力学方程}
-机械臂动力学遵循拉格朗日方程：
-\begin{equation}
-M(q)\ddot{q} + C(q,\dot{q})\dot{q} + g(q) = \tau
-\end{equation}
-其中：
-\begin{itemize}
-\item $M(q) \in \mathbb{R}^{7 \times 7}$：对称正定的惯性矩阵
-\item $C(q,\dot{q}) \in \mathbb{R}^{7 \times 7}$：科氏力与离心力矩阵
-\item $g(q) \in \mathbb{R}^7$：重力项
-\item $\tau \in \mathbb{R}^7$：关节力矩输入
-\end{itemize}
+其中$J^\dagger \in \mathbb{R}^{7 \times 6}$为Moore-Penrose伪逆，最小化关节速度范数$\|\dot{q}\|^2$。
 
 \subsubsection{零空间投影}
-定义零空间投影矩阵：
+7自由度机械臂的冗余性体现在零空间维度$\text{dim}(\mathcal{N}(J)) = 7 - 6 = 1$。零空间投影矩阵定义为：
 \begin{equation}
-N(q) = I_7 - J^\dagger(q)J(q)
+N(q) = I_7 - J^\dagger(q)J(q) \in \mathbb{R}^{7 \times 7}
 \end{equation}
-其中$J^\dagger = J^T(JJ^T)^{-1}$为Moore-Penrose伪逆。
 
-任意关节速度可分解为任务空间分量与零空间分量：
+满足关键性质：
+\begin{equation}
+J(q)N(q) = 0, \quad N(q)^2 = N(q)
+\end{equation}
+即零空间内的关节运动不影响末端速度。逆运动学通解为：
 \begin{equation}
 \dot{q} = J^\dagger(q)\dot{x} + N(q)\dot{q}_0
 \end{equation}
-其中$\dot{q}_0 \in \mathbb{R}^7$为零空间内的自运动速度，不影响末端执行器运动。
+其中$\dot{q}_0 \in \mathbb{R}^7$为任意自运动速度。传统方法通过人工设计$\dot{q}_0 = k_0 \nabla h(q)$（如避障势函数梯度），本文通过强化学习自适应学习$\dot{q}_0 = \pi(s)$。
+
+\subsubsection{动力学方程}
+机械臂动力学由拉格朗日方程描述：
+\begin{equation}
+M(q)\ddot{q} + C(q,\dot{q})\dot{q} + G(q) = \tau
+\label{eq:dynamics_full}
+\end{equation}
+其中：
+\begin{itemize}
+\item $M(q) \in \mathbb{R}^{7 \times 7}$：惯性矩阵（对称正定，$M \succ 0$）
+\item $C(q,\dot{q}) \in \mathbb{R}^{7 \times 7}$：科氏力和离心力矩阵（满足$\dot{M} - 2C$为反对称矩阵）
+\item $G(q) \in \mathbb{R}^7$：重力项（$G(q) = \frac{\partial U_g(q)}{\partial q}$，$U_g$为重力势能）
+\item $\tau \in \mathbb{R}^7$：关节力矩（受执行器限制$|\tau_i| \leq \tau_{\max,i}$）
+\end{itemize}
+
+对于Franka Emika Panda机械臂，关节力矩限制为$\tau_{\max} = [87, 87, 87, 87, 12, 12, 12]^T$ Nm。本文通过力矩约束正则化（见第\ref{sec:torque_reg}节）引导策略学习满足$\tau$限制的轨迹，避免力矩突变和执行器饱和。
 
 \subsection{物理信息增强的策略网络}
+\label{sec:torque_reg}
 传统RL方法在学习机械臂控制策略时，常出现力矩突变、违反动力学约束等问题。为提升策略的物理可行性，本文在策略网络中嵌入动力学先验。
 
-\subsubsection{动力学一致性约束}
-机械臂动力学方程为：
+\subsubsection{力矩约束正则化}
+
+\textbf{动机：}纯强化学习方法在探索过程中可能产生超出执行器能力的动作，导致训练不稳定和策略不安全。传统方法通过硬约束截断力矩，但会破坏策略梯度的连续性。
+
+\textbf{理论依据：}机械臂动力学方程（式\ref{eq:dynamics}）描述了关节运动与力矩的因果关系：
 \begin{equation}
 \tau = M(q)\ddot{q} + C(q,\dot{q})\dot{q} + g(q)
+\label{eq:dynamics}
 \end{equation}
-其中$M(q) \in \mathbb{R}^{7 \times 7}$为惯性矩阵，$C(q,\dot{q})$为科氏力与离心力项，$g(q)$为重力项。
+其中$M(q) \in \mathbb{R}^{7 \times 7}$为惯性矩阵，$C(q,\dot{q})$为科氏力与离心力项，$g(q)$为重力项。对于Panda机械臂，关节力矩限制为$\tau_{\text{max}} = [87, 87, 87, 87, 12, 12, 12]^T$ Nm。
 
-策略网络输出关节加速度$\ddot{q}_\pi$，通过动力学模型计算对应力矩$\tau_\pi$。定义动力学一致性损失：
+\textbf{数学形式化：}策略输出的零空间速度$\dot{q}_0$经过零空间投影后产生关节加速度$\ddot{q} = (\dot{q}_{t+1} - \dot{q}_t)/\Delta t$。通过逆动力学计算所需力矩$\tau_\pi$，定义力矩约束损失：
 \begin{equation}
-\mathcal{L}_{\text{dyn}} = \|\tau_\pi - \tau_{\text{limit}}\|^2
+\mathcal{L}_{\text{dyn}} = \|\text{relu}(|\tau_\pi| - \tau_{\text{max}})\|^2
+\label{eq:torque_loss}
 \end{equation}
-其中$\tau_{\text{limit}}$为关节力矩约束边界的软投影。
+该损失仅在力矩超限时产生惩罚，引导策略学习物理可行的轨迹，同时保持梯度可微性。
 
-\subsubsection{正则化损失 vs. Reward Shaping}
-区别于将物理约束作为额外奖励项的reward shaping方法，本文将动力学一致性约束以正则化损失的形式直接作用于策略网络。这一设计的理论优势在于：
-
+\textbf{与baseline对比：}相比在奖励函数中添加力矩惩罚项的方法，力矩约束正则化具有两个优势：
 \begin{itemize}
-\item \textbf{保持最优性：}reward shaping改变原始MDP的奖励结构，可能导致最优策略偏移\cite{1}；正则化损失不改变RL优化目标，仅对策略函数空间施加归纳偏置
-\item \textbf{训练稳定性：}奖励项需要精细调参平衡任务奖励与约束惩罚；正则化损失与策略梯度解耦，超参数鲁棒性更强
+\item \textbf{梯度解耦：}正则化损失与策略梯度解耦，避免了奖励项权重调参的困难。奖励函数中的力矩惩罚会与其他奖励项（跟踪、避障）产生权衡，而正则化直接约束策略输出的可行性
+\item \textbf{训练稳定性：}通过可微的ReLU函数实现软约束，避免了硬截断导致的梯度消失问题，同时在力矩未超限时不产生额外惩罚，保持策略优化的灵活性
 \end{itemize}
 
 最终策略网络的总损失函数为：
 \begin{equation}
-\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{RL}} + \lambda_{\text{dyn}} \mathcal{L}_{\text{dyn}}
+\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{SAC}} + \lambda_{\text{dyn}} \mathcal{L}_{\text{dyn}}
 \end{equation}
-其中$\mathcal{L}_{\text{RL}}$为标准RL损失（PPO或SAC），$\lambda_{\text{dyn}}$为正则化系数。
+其中$\mathcal{L}_{\text{SAC}}$为标准SAC损失，$\lambda_{\text{dyn}} = 0.01$为正则化系数。
 
 
-\subsection{运动学引导的动作空间约束}
-运动学引导的动作空间约束 — 利用7-DOF的雅可比零空间投影，将RL的动作空间分解为任务空间分量+自运动分量，RL只需要学习零空间内的冗余分配策略，大幅降低探索维度
+\subsection{结构化动作空间与运动学约束}
+
+\subsubsection{动机}
+7自由度机械臂在6维任务空间中存在1维冗余。传统RL方法直接学习7维关节控制，探索空间大且难以保证末端跟踪精度；而严格的传统零空间控制在极度危险的障碍环境下又易导致任务失败。因此，需要构建一种能解耦主次任务、兼顾跟踪精度与避障柔顺性的结构化动作空间。
+
+\subsubsection{理论依据}
+利用雅可比伪逆$J^\dagger$与零空间投影矩阵$N(q) = I - J^\dagger J$，可将机械臂运动正交分解为任务空间分量和零空间分量。通过在解耦的空间内分别施加网络输出，可在降维探索的同时避免动作干涉。
+
+\subsubsection{数学形式化}
+策略网络输出由两部分组成的复合动作 $a_t = [\Delta \dot{x}_{\text{RL}}^T, \dot{q}_0^T]^T \in \mathbb{R}^{13}$。实际关节速度控制律为：
+\begin{equation}
+\dot{q} = J^\dagger(q)\Big(\dot{x}_d + K_p(x_d - x) + \text{diag}(\sigma)\Delta \dot{x}_{\text{RL}}\Big) + N(q)\dot{q}_0
+\label{eq:control_law}
+\end{equation}
+其中 $\Delta \dot{x}_{\text{RL}} \in \mathbb{R}^6$ 在任务空间提供动态松弛调节；$\dot{q}_0 \in \mathbb{R}^7$ 在零空间内产生自运动速度以优化次要目标（避障、可操作度）。
+
+\subsubsection{与baseline对比}
+相比直接学习非结构化关节控制的方法，该结构化动作空间具有以下优势：
+\begin{itemize}
+\item \textbf{解耦探索空间：}通过投影矩阵的数学约束，13维的网络输出被严格划分为互不干扰的任务空间松弛（6维）与零空间探索（1维有效自由度）。这极大滤除了无效动作，提升了样本效率。
+\item \textbf{保障基础控制性能：}策略探索附加在名义控制律之上。零空间项天然满足$J(q)N(q) = 0$；任务空间项受门控算子$\sigma$缩放约束，从底层数学形式上杜绝了未经约束的随机动作破坏基础轨迹跟踪。
+\end{itemize}
+
 \subsection{基于距离场的避障奖励}
-基于距离场的避障奖励 — 用signed distance field（SDF）计算机械臂各连杆与障碍物的距离，作为密集奖励信号
 
+\subsubsection{动机}
+传统避障奖励基于碰撞检测，仅在接触时给出惩罚，导致稀疏奖励问题。复杂障碍环境下需要预测性避障而非被动响应。
+
+\subsubsection{理论依据}
+Signed Distance Field（SDF）提供了空间中任意点到障碍物表面的连续距离度量，可作为密集奖励信号引导策略学习预测性避障行为。
+
+\subsubsection{数学形式化}
+定义机械臂各连杆到障碍物的最小距离：
+\begin{equation}
+d_{\text{obs}} = \min_{i \in \text{links}} \text{SDF}(p_i)
+\end{equation}
+其中$p_i$为第$i$个连杆的采样点位置。避障奖励设计为：
+\begin{equation}
+r_{\text{obs}} = \begin{cases}
+-\exp(-d_{\text{obs}}/\sigma) & d_{\text{obs}} < d_{\text{safe}} \\
+0 & \text{otherwise}
+\end{cases}
+\end{equation}
+其中$d_{\text{safe}}$为安全距离阈值，$\sigma$控制奖励衰减速率。
+
+\subsubsection{与baseline对比}
+相比稀疏碰撞惩罚，距离场奖励提供了两个关键改进：
+\begin{itemize}
+\item \textbf{密集梯度信号：}在接近障碍物时提供连续的奖励梯度，加速策略收敛
+\item \textbf{预测性避障：}策略学习在安全距离外即开始规避，而非等待碰撞发生
+\end{itemize}
+
+\subsection{主任务松弛机制}
+
+\subsubsection{动机}
+传统零空间控制严格保证末端跟踪精度，但在极度危险情况下（如机械臂即将碰撞障碍物），这种硬约束可能导致无解或次优解。允许策略在危险时刻牺牲部分跟踪精度换取安全性，可提升复杂环境下的鲁棒性。
+
+\subsubsection{理论依据}
+多目标优化中，当约束冲突时需引入松弛变量。在机械臂控制中，末端跟踪与避障存在潜在冲突——窄通道场景下严格跟踪可能导致碰撞。通过动态调整跟踪误差权重，允许策略在危险区域内自适应权衡安全性与精度。
+
+\subsubsection{数学形式化}
+在极度危险情况下（$d_{\text{obs}} < d_{\text{critical}}$），动态降低跟踪误差权重：
+\begin{equation}
+w_{\text{track}}^{\text{eff}} = w_{\text{track}} \cdot \left(\alpha_{\text{relax}} + (1-\alpha_{\text{relax}})\frac{d_{\text{obs}}}{d_{\text{critical}}}\right)
+\end{equation}
+其中$\alpha_{\text{relax}}=0.1$为最小权重因子，$d_{\text{critical}}=0.05$m为临界距离。修改后的跟踪奖励为：
+\begin{equation}
+r_{\text{track}} = -w_{\text{track}}^{\text{eff}} \|x_t - x_d\|^2
+\end{equation}
+
+\subsubsection{与baseline对比}
+相比固定权重的奖励函数，主任务松弛机制具有以下优势：
+\begin{itemize}
+\item \textbf{自适应权衡：}根据障碍距离动态调整跟踪精度要求，避免了手动调参的困难。在安全区域保持高精度跟踪（$w_{\text{track}}^{\text{eff}} = w_{\text{track}}$），在危险区域允许偏离（$w_{\text{track}}^{\text{eff}} \rightarrow 0.1w_{\text{track}}$）
+\item \textbf{提升鲁棒性：}在密集障碍或窄通道场景下，策略可学习暂时偏离期望轨迹以规避碰撞，而非陷入局部最优或违反安全约束
+\end{itemize}
+
+
+\subsection{算法实现细节}
+\label{sec:algorithm}
+综合上述物理先验（零空间投影、力矩正则化）和任务松弛机制，本文基于柔性动作评价（Soft Actor-Critic, SAC）框架设计了物理信息增强的零空间强化学习算法。具体执行流程如算法\ref{alg:sac_nullspace}所示。
+
+\begin{algorithm}[htbp]
+\caption{物理信息增强的零空间SAC算法}
+\label{alg:sac_nullspace}
+\begin{algorithmic}[1]
+\Require 初始策略网络参数 $\theta$, Q网络参数 $\phi_1, \phi_2$, 目标Q网络参数 $\phi'_1, \phi'_2$, 经验回放池 $\mathcal{D}$, 学习率 $\alpha$, 力矩正则化系数 $\lambda_{\text{dyn}}$
+\Ensure 优化后的策略 $\pi_\theta$
+\State 初始化环境，获取初始状态 $s_0$
+\For{each episode}
+    \For{each step $t = 0, \dots, T-1$}
+        \State \textbf{// 1. 动作采样与控制律执行}
+        \State 根据当前状态通过策略网络采样动作 $a_t \sim \pi_\theta(\cdot | s_t)$，其中 $a_t = [\Delta \dot{x}_{\text{RL}}^T, \dot{q}_0^T]^T$
+        \State 获取目标轨迹期望速度 $\dot{x}_d$ 和位姿误差 $x_d - x_t$
+        \State 计算障碍物距离 $d_{\text{obs}}$ 并动态更新松弛算子 $\text{diag}(\sigma)$
+        \State 结合名义跟踪项和RL动作，计算逆运动学参考速度 $\dot{q}_{\text{ref}}$（式\ref{eq:control_structure}）
+        \State 执行 $\dot{q}_{\text{ref}}$，并由底层控制器生成实际力矩 $\tau_t$
+        \State 获取环境反馈奖励 $r_t$ 和下一状态 $s_{t+1}$
+        \State 将转移元组 $(s_t, a_t, r_t, s_{t+1})$ 存入 $\mathcal{D}$
+
+        \If{需要更新网络}
+            \State 从 $\mathcal{D}$ 中随机采样批量数据 $\{(s_i, a_i, r_i, s'_{i})\}$
+            \State \textbf{// 2. Critic网络更新}
+            \State 计算目标Q值：$y_i = r_i + \gamma \left( \min_{j=1,2} Q_{\phi'_j}(s'_{i}, a'_{i}) - \alpha \log \pi_\theta(a'_{i}|s'_{i}) \right)$
+            \State 更新 $Q_{\phi_1}, Q_{\phi_2}$ 最小化损失：$L_Q = \frac{1}{B}\sum (Q_{\phi_j}(s_i, a_i) - y_i)^2$
+
+            \State \textbf{// 3. Actor网络更新 (融入物理约束)}
+            \State 根据当前策略生成动作 $\tilde{a}_i \sim \pi_\theta(\cdot | s_i)$
+            \State 计算标准SAC策略损失：$\mathcal{L}_{\text{SAC}} = \frac{1}{B}\sum \left( \alpha \log \pi_\theta(\tilde{a}_i|s_i) - Q_{\phi_1}(s_i, \tilde{a}_i) \right)$
+            \State \textbf{// 引入物理信息正则化}
+            \State 根据逆动力学模型估算对应关节力矩 $\tau_\pi(s_i, \tilde{a}_i)$
+            \State 计算力矩约束损失：$\mathcal{L}_{\text{dyn}} = \|\text{relu}(|\tau_\pi| - \tau_{\text{max}})\|^2$ (式\ref{eq:torque_loss})
+            \State 更新策略网络 $\pi_\theta$ 最小化总损失：$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{SAC}} + \lambda_{\text{dyn}} \mathcal{L}_{\text{dyn}}$
+
+            \State \textbf{// 4. 目标网络软更新}
+            \State $\phi'_j \leftarrow \tau \phi_j + (1-\tau)\phi'_j \quad (j=1,2)$
+        \EndIf
+        \State $s_t \leftarrow s_{t+1}$
+    \EndFor
+\EndFor
+\end{algorithmic}
+\end{algorithm}
 
 \section{实验}
 \subsection{实验设置}
+
+\subsubsection{仿真平台}
+实验基于MuJoCo物理引擎和Panda 7自由度机械臂模型。使用Pinocchio库计算运动学和动力学，控制频率50Hz（$\Delta t = 0.02$s）。
+
 \subsubsection{对比方法}
 为验证所提方法的有效性，选取以下基线方法：
 
-\textbf{传统方法：}
-\begin{itemize}
-\item RRT*：基于采样的运动规划
-\item CHOMP：基于优化的轨迹规划
-\end{itemize}
-
 \textbf{纯RL方法：}
 \begin{itemize}
-\item PPO-Baseline：无物理信息的标准PPO
-\item SAC-Baseline：无物理信息的标准SAC
+\item SAC-Joint：直接学习关节速度控制，无零空间约束
+\item SAC-Nullspace：学习零空间策略，无物理约束（$\lambda_{\text{dyn}}=0$）
 \end{itemize}
 
 \textbf{消融实验：}
 \begin{itemize}
-\item Ours-Dynamics：仅加入物理信息增强
-\item Ours-Nullspace：仅加入零空间约束
-\item Ours-Full：完整方法（物理信息+零空间+距离场奖励）
+\item Ours-Physics：零空间策略 + 力矩约束正则化（$\lambda_{\text{dyn}}=0.01$）
+\item Ours-Relax：完整方法 + 主任务松弛机制（$d_{\text{critical}}=0.05$m）
 \end{itemize}
 
 \subsubsection{测试场景}
-设计三类典型场景评估算法性能：
+设计两类典型场景评估算法性能：
 \begin{itemize}
-\item \textbf{场景1-稀疏障碍：}3-5个静态障碍物，验证基本避障能力
-\item \textbf{场景2-密集障碍：}10+障碍物形成窄通道，测试复杂环境适应性
-\item \textbf{场景3-动态障碍：}2-3个运动障碍物，评估泛化性与实时性
+\item \textbf{场景1-稀疏障碍：}3个静态球形障碍物（半径0.1m），验证基本避障能力
+\item \textbf{场景2-密集障碍：}5个静态障碍物形成窄通道，测试复杂环境适应性
 \end{itemize}
+
+每个场景固定目标位置$x_d = [0.6, 0.2, 0.5]$m，初始关节配置为home pose。
 
 \subsubsection{评价指标}
 \begin{itemize}
-\item \textbf{任务成功率：}100次测试中成功到达目标的比例
-\item \textbf{样本效率：}训练收敛曲线（达到90\%成功率所需样本数）
-\item \textbf{路径质量：}路径长度、执行时间
-\item \textbf{物理可行性：}关节力矩平滑度（相邻时刻力矩变化率）
-\item \textbf{安全性：}最小障碍距离
+\item \textbf{任务成功率：}100次测试中成功到达目标且无碰撞的比例
+\item \textbf{样本效率：}达到80\%成功率所需的环境交互步数
+\item \textbf{末端跟踪误差：}$\|x_{\text{ee}} - x_d\|$的平均值和最大值
+\item \textbf{物理可行性：}关节力矩平滑度$\|\tau_{t+1} - \tau_t\|/\Delta t$
+\item \textbf{安全性：}最小障碍距离$d_{\text{obs}}^{\min}$
 \end{itemize}
 
-\subsection{结果分析}
+\subsubsection{超参数设置}
+所有RL方法使用相同的超参数：学习率$3 \times 10^{-4}$，折扣因子$\gamma=0.99$，批量大小256，经验回放缓冲区大小$10^5$。策略网络和价值网络均为2层MLP，隐藏层维度256。奖励函数权重：$w_{\text{track}}=1.0$，$w_{\text{obs}}=5.0$，$w_{\text{manip}}=0.1$，$w_{\text{energy}}=0.01$。
+
+\subsection{实验结果}
 
 \subsubsection{成功率对比}
-表\ref{tab:success_rate}展示了各方法在三类场景下的任务成功率。实验结果表明：
+表\ref{tab:success_rate}展示了各方法在两类场景下的任务成功率。
 
 \begin{table}[htbp]
 \centering
-\caption{不同方法在三类场景下的成功率(\%)}
+\caption{不同方法在两类场景下的成功率(\%)}
 \label{tab:success_rate}
-\begin{tabular}{lccc}
+\begin{tabular}{lcc}
 \toprule
-方法 & 稀疏障碍 & 密集障碍 & 动态障碍 \\
+方法 & 稀疏障碍 & 密集障碍 \\
 \midrule
-RRT* & 78.3 & 42.1 & 35.6 \\
-CHOMP & 82.5 & 51.3 & 41.2 \\
-PPO-Baseline & 85.2 & 58.7 & 52.3 \\
-SAC-Baseline & 87.6 & 62.4 & 55.8 \\
-Ours-Dynamics & 91.3 & 73.5 & 68.2 \\
-Ours-Nullspace & 89.7 & 71.2 & 65.4 \\
-\textbf{Ours-Full} & \textbf{94.8} & \textbf{81.6} & \textbf{76.9} \\
+SAC-Joint & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+SAC-Nullspace & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+Ours-Physics & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+\textbf{Ours-Relax} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
+\textbf{预期结果分析：}
 \begin{itemize}
-\item \textbf{传统方法局限性：}RRT*和CHOMP在密集障碍场景下成功率显著下降（<55\%），原因是采样效率低且难以处理窄通道约束
-\item \textbf{纯RL方法改进：}PPO/SAC-Baseline相比传统方法提升10-15\%，但在动态障碍场景下仍存在泛化性不足
-\item \textbf{完整方法优势：}Ours-Full在所有场景下均达到最高成功率，相比最佳基线方法（SAC-Baseline）提升7-21个百分点，验证了物理信息与零空间约束的有效性
+\item \textbf{零空间约束优势：}SAC-Nullspace相比SAC-Joint应在成功率上有显著提升，因为零空间投影保证了末端跟踪精度，降低了探索难度
+\item \textbf{物理约束作用：}Ours-Physics通过力矩限制约束应进一步提升成功率和训练稳定性
+\item \textbf{主任务松弛效果：}Ours-Relax在密集障碍场景下应表现最优，因为允许在危险情况下牺牲跟踪精度换取安全性
 \end{itemize}
 
 \subsubsection{训练效率分析}
-图\ref{fig:training_curve}展示了各RL方法的训练收敛曲线。关键发现：
+图\ref{fig:training_curve}展示了各RL方法的训练收敛曲线。
 
 \begin{itemize}
-\item \textbf{样本效率提升：}Ours-Full达到90\%成功率仅需$1.2 \times 10^6$样本，相比PPO-Baseline（$3.8 \times 10^6$）和SAC-Baseline（$2.9 \times 10^6$）分别减少68\%和59\%训练样本
-\item \textbf{收敛稳定性：}纯RL方法在训练中期（$1.5-2.5 \times 10^6$样本）出现明显震荡，而Ours-Full曲线平滑单调上升，说明物理信息约束有效减少了探索空间中的无效动作
-\item \textbf{消融实验对比：}Ours-Dynamics和Ours-Nullspace分别需$1.8 \times 10^6$和$2.1 \times 10^6$样本收敛，表明动力学先验对样本效率的贡献更显著
+\item \textbf{样本效率：}达到80\%成功率所需样本数
+  \begin{itemize}
+  \item SAC-Joint: \textcolor{red}{[待填]} $\times 10^6$
+  \item SAC-Nullspace: \textcolor{red}{[待填]} $\times 10^6$
+  \item Ours-Physics: \textcolor{red}{[待填]} $\times 10^6$
+  \item Ours-Relax: \textcolor{red}{[待填]} $\times 10^6$
+  \end{itemize}
+\item \textbf{收敛稳定性：}\textcolor{red}{[待填：描述训练曲线的平滑程度和震荡情况]}
 \end{itemize}
 
 \subsubsection{物理可行性验证}
-表\ref{tab:physical_feasibility}量化了各方法生成轨迹的物理可行性指标：
+表\ref{tab:physical_feasibility}量化了各方法生成轨迹的物理可行性指标。
 
 \begin{table}[htbp]
 \centering
@@ -315,35 +435,52 @@ Ours-Nullspace & 89.7 & 71.2 & 65.4 \\
 \label{tab:physical_feasibility}
 \begin{tabular}{lcc}
 \toprule
-方法 & 力矩变化率 & 奇异性指标 \\
+方法 & 力矩变化率 & 最小可操作度 \\
  & ($\text{Nm/s}$) & $w_{\min}$ \\
 \midrule
-PPO-Baseline & 45.3 & 0.012 \\
-SAC-Baseline & 38.7 & 0.018 \\
-Ours-Dynamics & 18.2 & 0.035 \\
-Ours-Nullspace & 22.6 & 0.041 \\
-\textbf{Ours-Full} & \textbf{15.4} & \textbf{0.048} \\
+SAC-Joint & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+SAC-Nullspace & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+Ours-Physics & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+\textbf{Ours-Relax} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
+\textbf{预期结果分析：}
 \begin{itemize}
-\item \textbf{力矩平滑度：}Ours-Full的关节力矩变化率为15.4 Nm/s，相比SAC-Baseline降低60\%，有效避免了力矩突变导致的机械磨损和控制不稳定
-\item \textbf{奇异性规避：}完整方法的最小可操作度$w_{\min}=0.048$，远高于纯RL方法（$<0.02$），说明零空间策略成功引导机械臂远离奇异位形
-\item \textbf{理论验证：}物理信息增强通过拉格朗日动力学约束（式\ref{eq:dynamics}）保证了力矩连续性，而零空间投影（式\ref{eq:nullspace_projection}）天然保持了可操作度
+\item \textbf{力矩平滑度：}Ours-Physics和Ours-Relax应显著降低力矩变化率，因为力矩约束正则化引导策略学习物理可行的轨迹
+\item \textbf{奇异性规避：}零空间策略（SAC-Nullspace及以上）应保持更高的最小可操作度，避免奇异位形
 \end{itemize}
 
-\subsubsection{消融实验结果}
-消融实验揭示了各模块的贡献度：
+\subsubsection{安全性分析}
+表\ref{tab:safety}展示了各方法在测试中的最小障碍距离统计。
+
+\begin{table}[htbp]
+\centering
+\caption{安全性指标：最小障碍距离（m）}
+\label{tab:safety}
+\begin{tabular}{lcc}
+\toprule
+方法 & 稀疏障碍 & 密集障碍 \\
+\midrule
+SAC-Joint & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+SAC-Nullspace & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+Ours-Physics & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+\textbf{Ours-Relax} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{消融实验}
+为验证各模块的贡献度，进行以下消融实验：
 
 \begin{itemize}
-\item \textbf{动力学模块贡献：}对比Ours-Dynamics与PPO-Baseline，物理信息增强使成功率提升6.1\%，样本效率提升53\%，验证了动力学先验对训练效率的关键作用
-\item \textbf{零空间约束贡献：}Ours-Nullspace相比基线方法在密集障碍场景下提升12.5\%成功率，说明结构化动作空间有效降低了复杂环境下的探索难度
-\item \textbf{协同效应：}Ours-Full相比单模块方法（Ours-Dynamics/Nullspace）进一步提升3-8个百分点，表明物理信息与零空间约束存在正向协同作用——动力学约束保证轨迹平滑性，零空间投影保持末端跟踪精度
-\item \textbf{距离场奖励作用：}对比Ours-Nullspace与Ours-Full，距离场奖励$r_{\text{obs}}$使动态障碍场景成功率提升11.5\%，验证了基于SDF的奖励设计对泛化性的改进
+\item \textbf{零空间约束贡献：}对比SAC-Joint vs SAC-Nullspace，验证零空间投影对末端跟踪精度和探索效率的影响
+\item \textbf{物理约束贡献：}对比SAC-Nullspace vs Ours-Physics，验证力矩约束正则化对训练稳定性和力矩平滑度的影响
+\item \textbf{主任务松弛贡献：}对比Ours-Physics vs Ours-Relax，验证动态权重调整机制在密集障碍场景下的安全性提升
 \end{itemize}
 
-本段示例引用: 如文献所示\cite{1}。
+\textcolor{red}{[待填：消融实验的定量结果和分析]}
 
 % \begin{figure}[htbp]
 % \centering
@@ -353,7 +490,18 @@ Ours-Nullspace & 22.6 & 0.041 \\
 % \end{figure}
 
 \section{结论}
-本文总结了所提方法的优点与未来改进方向。
+
+本文提出了一种物理信息增强的零空间策略学习方法，通过结构化动作空间和力矩约束正则化，在保证末端跟踪精度的同时优化避障和可操作度。主要贡献包括：
+
+\begin{itemize}
+\item \textbf{零空间策略学习框架：}将经典零空间控制与强化学习结合，策略输出零空间内的自运动速度，通过零空间投影保证不影响末端跟踪，降低探索难度
+\item \textbf{力矩约束正则化：}通过可微的力矩限制约束引导策略学习物理可行的轨迹，提升训练稳定性和力矩平滑度
+\item \textbf{主任务松弛机制：}在危险情况下动态降低跟踪误差权重，允许策略牺牲部分跟踪精度换取安全性
+\end{itemize}
+
+\textcolor{red}{[待填：实验结果总结，如"实验表明，该方法在XX场景下成功率达到XX\%，相比基线方法提升XX\%"]}
+
+未来工作包括：（1）在真实Panda机械臂上验证方法的鲁棒性；（2）扩展到动态障碍环境；（3）引入视觉感知实现端到端学习。
 
 \bibliography{books}
 

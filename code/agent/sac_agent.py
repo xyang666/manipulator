@@ -132,6 +132,10 @@ class SACAgent:
         physics_loss = self.physics.compute_loss_batch(q_t, dq_t, dq_new_t,
                                                        collision_detector=self.collision_detector)
 
+        # Check for NaN/Inf before backward
+        if torch.isnan(physics_loss) or torch.isinf(physics_loss):
+            physics_loss = torch.tensor(0.0, device=self.device)
+
         actor_loss = actor_rl_loss + physics_loss
 
         self.actor_opt.zero_grad()

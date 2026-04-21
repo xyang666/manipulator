@@ -7,15 +7,18 @@ Kinematics utilities for a 7-DOF manipulator:
   - pseudo_inverse(J)             -> J† (damped least-squares)
   - null_space_projector(q)       -> N = I - J†J ∈ R^{n x n}
   - null_space_velocity(q, dq0)   -> q̇_null = N(q) @ dq0
+  - inverse_kinematics(x_target)  -> q (IK solution)
 
 Usage:
     kin = ManipulatorKinematics(urdf_path)
     x, R = kin.forward_kinematics(q)
     J    = kin.jacobian(q)
     N    = kin.null_space_projector(q)
+    q    = kin.inverse_kinematics(x_target)
 """
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 try:
     import pinocchio as pin
@@ -62,7 +65,7 @@ class ManipulatorKinematics:
         # Prefer tcp/ee frame; fallback to last frame
         self.ee_frame_id = self.model.nframes - 1
         for i, f in enumerate(self.model.frames):
-            if "tcp" in f.name.lower() or "_ee" in f.name.lower():
+            if "tcp" in f.name.lower() or "ee" in f.name.lower():
                 self.ee_frame_id = i
                 break
         print(f"[kinematics] Loaded model, n_joints={self.n}, "
@@ -162,12 +165,140 @@ class ManipulatorKinematics:
         dq_null = N @ dq0
         dq_combined = dq_task + dq_null
 
-        # Safety: clip to prevent numerical instability
-        # Panda joint velocity limits: [2.175, 2.175, 2.175, 2.175, 2.610, 2.610, 2.610]
-        dq_max = np.array([2.175, 2.175, 2.175, 2.175, 2.610, 2.610, 2.610])
-        dq_combined = np.clip(dq_combined, -dq_max, dq_max)
-
         return dq_combined
+
+    def combine_velocities_with_relaxation(self, q: np.ndarray,
+                                           dx_desired: np.ndarray,
+                                           delta_x: np.ndarray,
+                                           dq0: np.ndarray) -> np.ndarray:
+        """
+        Combine task-space relaxation with null-space self-motion (paper Eq. 8).
+
+        Control law: q̇ = J†(ẋ_d + Δẋ) + N(q) @ dq0
+
+        This allows the policy to trade off tracking accuracy for obstacle avoidance
+        by relaxing the task-space velocity command.
+
+        Parameters
+        ----------
+        q          : joint positions [n]
+        dx_desired : nominal task velocity [6] (linear + angular)
+        delta_x    : task relaxation [6] (from policy, allows deviation from nominal)
+        dq0        : null-space velocity [n] (from policy, self-motion)
+
+        Returns
+        -------
+        dq : combined joint velocity [n]
+        """
+        J = self.jacobian(q)
+        Jpinv = self.pseudo_inverse(J)
+        N = self.null_space_projector(q)
+
+        # Relaxed task velocity (allows policy to deviate from nominal trajectory)
+        dx_cmd = np.asarray(dx_desired, dtype=float) + np.asarray(delta_x, dtype=float)
+
+        # Combined control law: task tracking + null-space self-motion
+        dq = Jpinv @ dx_cmd + N @ np.asarray(dq0, dtype=float)
+        return dq
+
+    def inverse_kinematics(self, x_target: np.ndarray, q_init: np.ndarray | None = None,
+                          max_iter: int = 100, tol: float = 1e-4, damping: float = 1e-4) -> np.ndarray | None:
+        """
+        Numerical IK solver using damped least-squares (Levenberg-Marquardt style).
+
+        Parameters
+        ----------
+        x_target : target end-effector position [3] or pose [7] (pos + quat)
+        q_init   : initial joint configuration [n] (default: zeros)
+        max_iter : maximum iterations
+        tol      : position error tolerance (meters)
+        damping  : adaptive damping
+
+        Returns
+        -------
+        q : joint configuration [n] that reaches x_target, or None if failed
+        """
+        if q_init is None:
+            q = np.zeros(self.n)
+        else:
+            q = np.asarray(q_init, dtype=float).copy()
+
+        x_target = np.asarray(x_target, dtype=float)
+        position_only = (len(x_target) == 3)
+
+        for _ in range(max_iter):
+            x_current, R_current = self.forward_kinematics(q)
+
+            # Position error
+            e_pos = x_target[:3] - x_current
+            pos_error = np.linalg.norm(e_pos)
+
+            if position_only:
+                if pos_error < tol:
+                    return q
+                # Use only position part of Jacobian
+                J = self.jacobian(q)[:3, :]  # [3 x n]
+                dx = e_pos
+            else:
+                # Full 6D pose (position + orientation)
+                # x_target[3:7] is quaternion [w, x, y, z]
+                R_target = Rotation.from_quat(x_target[3:7]).as_matrix()
+
+                # Orientation error (axis-angle)
+                R_error = R_target @ R_current.T
+                rotvec = Rotation.from_matrix(R_error).as_rotvec()
+                e_ori = rotvec
+
+                if pos_error < tol and np.linalg.norm(e_ori) < tol:
+                    return q
+
+                J = self.jacobian(q)  # [6 x n]
+                dx = np.concatenate([e_pos, e_ori])
+
+            # Damped least-squares step
+            Jpinv = self.pseudo_inverse(J)
+            dq = Jpinv @ dx
+            # dq = J.T @ np.linalg.solve(J@J.T + 0.01* np.eye(6), dx)
+
+            # Line search with step size decay
+            alpha = 1.0
+            success = False
+            for _ in range(10):
+                if self.model is not None:
+                    q_new = pin.integrate(self.model, q, alpha * dq)
+                else:
+                    q_new = q + alpha * dq
+
+                x_new, R_new = self.forward_kinematics(q_new)
+
+                e_pos_new = x_target[:3] - x_new
+
+                if position_only:
+                    e_new = e_pos_new
+                else:
+                    R_error_new = R_target @ R_new.T
+                    e_ori_new = Rotation.from_matrix(R_error_new).as_rotvec()
+                    e_new = np.concatenate([e_pos_new, e_ori_new])
+
+                if np.linalg.norm(e_new) < tol:
+                    q = q_new
+                    success = True
+                    break
+
+                alpha *= 0.5
+
+            if not success:
+                q = q + 0.1 * dq
+
+        # ---------- 最终检查 ----------
+        x_final, R_final = self.forward_kinematics(q)
+        final_error = np.linalg.norm(x_target[:3] - x_final)
+
+        if final_error < tol * 5:
+            return q
+
+        return None
+
 
     # ------------------------------------------------------------------
     # Simplified fallback (no Pinocchio) - uses random DH-like matrix
@@ -223,5 +354,20 @@ if __name__ == "__main__":
     ee_vel = J @ dq_null
     print(f"||J @ N @ dq0|| = {np.linalg.norm(ee_vel):.2e}  (should be ~0)")
 
-    print("kinematics.py unit test PASSED" if residual < 1e-8 else
+    # Test inverse kinematics
+    print("\n=== Testing inverse_kinematics ===")
+    q_test = np.random.uniform(-1, 1, n)
+    x_target, r_target = kin.forward_kinematics(q_test)
+    print(f"Target position: {x_target}")
+
+    q_solved = kin.inverse_kinematics(np.concat((x_target, Rotation.from_matrix(r_target).as_quat())))
+    if q_solved is not None:
+        x_solved, r_solved = kin.forward_kinematics(q_solved)    
+        ik_error = np.linalg.norm(x_target - x_solved) + np.linalg.norm(Rotation.from_matrix(r_solved.T @ r_target).as_rotvec())
+        print(f"IK solved: error = {ik_error:.2e} m")
+        print(f"IK test {'PASSED' if ik_error < 1e-3 else 'FAILED'}")
+    else:
+        print("IK test FAILED: no solution found")
+
+    print("\nkinematics.py unit test PASSED" if residual < 1e-8 else
           "WARNING: residual larger than expected (check jacobian accuracy)")

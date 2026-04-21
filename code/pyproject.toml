@@ -10,6 +10,7 @@ dependencies = [
     "dm-control>=1.0.20",
     "scipy>=1.12",
     "example-robot-data>=4.4.0",
+    "cvxpy>=1.8.2",
 ]
 
 [project.optional-dependencies]

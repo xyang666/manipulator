@@ -13,7 +13,7 @@ import random
 class ReplayBuffer:
 
     def __init__(self, capacity: int = 100_000,
-                 state_dim: int = 22, action_dim: int = 7):
+                 state_dim: int = 22, action_dim: int = 13, joints : int = 7 ):
         self.capacity = capacity
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -25,9 +25,9 @@ class ReplayBuffer:
         self.dones    = np.zeros((capacity, 1),          dtype=np.float32)
 
         # Extra fields for physics loss computation
-        self.q_prev   = np.zeros((capacity, action_dim), dtype=np.float32)
-        self.dq_prev  = np.zeros((capacity, action_dim), dtype=np.float32)
-        self.dq_next  = np.zeros((capacity, action_dim), dtype=np.float32)
+        self.q_prev   = np.zeros((capacity, joints), dtype=np.float32)
+        self.dq_prev  = np.zeros((capacity, joints), dtype=np.float32)
+        self.dq_next  = np.zeros((capacity, joints), dtype=np.float32)
 
         self.ptr = 0
         self.size = 0

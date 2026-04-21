@@ -3,20 +3,25 @@ physics_policy.py
 -----------------
 Physics-Informed Policy Network (paper core contribution).
 
-Key idea: the actor network outputs null-space joint velocities dq0 ∈ R^n.
-During training, a dynamics-consistency regularization loss is computed:
+Key idea: the actor network outputs 13D actions:
+    a = [Δẋ_RL (6), dq0 (7)]
+    - Δẋ_RL: task-space relaxation (scaled small to preserve tracking priority)
+    - dq0   : null-space self-motion velocities
 
+During training, torque constraint regularization is applied (paper Eq. 10):
     τ_π  = M(q) @ ddq + C(q,dq) @ dq + g(q)
     L_dyn = ||relu(|τ_π| - τ_max)||²   (penalize torques beyond limits)
-    L_total = L_actor + λ_dyn * L_dyn
+    L_total = L_SAC + λ_dyn * L_dyn
 
-This is computed in the actor update step and backpropagated through the
-network, encouraging the policy to produce motions that respect torque limits.
+This guides the policy to learn physically feasible trajectories that respect
+joint torque limits, improving training stability and motion smoothness.
 
 Architecture:
-    Input:  state s_t = [q, dq, x_d, d_obs, w(q)]  (concatenated, dim=state_dim)
+    Input:  state s_t = [q, dq, x_ee, x_d, dx_d, d_obs, w(q)]  (dim=state_dim=25)
     Hidden: MLP with tanh activations
-    Output: null-space velocities dq0 ∈ R^n (tanh-scaled by dq0_max)
+    Output: 13D action [Δẋ_RL (6), dq0 (7)]
+            task relaxation scaled by task_scale (small),
+            null-space motion scaled by nullspace_scale (larger)
 """
 
 import numpy as np
@@ -32,25 +37,34 @@ LOG_STD_MAX = 2
 
 class PhysicsInformedActor(nn.Module):
     """
-    Gaussian actor for SAC with physics-informed regularization support.
+    Gaussian actor for SAC outputting 13D actions: [Δẋ_RL (6), dq0 (7)].
 
-    Forward pass returns (mean, log_std) of the action distribution.
-    The physics loss is computed externally in the SAC update.
+    Task relaxation and null-space components are scaled differently:
+    - task_scale (default 0.1): small to preserve tracking priority
+    - nullspace_scale (default 0.3): larger for effective self-motion exploration
     """
 
     def __init__(self, state_dim: int, action_dim: int,
                  hidden_dims: list[int] = (256, 256),
-                 action_scale: float = 0.5):
+                 action_scale: float = 0.5,
+                 task_scale: float = 0.1,
+                 nullspace_scale: float = 0.3):
         """
         Parameters
         ----------
-        state_dim    : dimension of input state
-        action_dim   : number of joints (null-space velocity dimension)
-        hidden_dims  : MLP hidden layer sizes
-        action_scale : maximum null-space velocity (rad/s)
+        state_dim      : dimension of input state (25)
+        action_dim     : total action dimension (13 = 6 + 7)
+        hidden_dims    : MLP hidden layer sizes
+        action_scale   : legacy scale (unused when task/nullspace scales provided)
+        task_scale     : scale for task relaxation Δẋ_RL (first 6 dims)
+        nullspace_scale: scale for null-space velocity dq0 (last 7 dims)
         """
         super().__init__()
-        self.action_scale = action_scale
+        self.action_scale    = action_scale
+        self.task_scale      = task_scale
+        self.nullspace_scale = nullspace_scale
+        self.task_dim        = 6
+        self.nullspace_dim   = action_dim - 6  # typically 7
 
         layers = []
         in_dim = state_dim
@@ -59,7 +73,7 @@ class PhysicsInformedActor(nn.Module):
             in_dim = h
 
         self.net = nn.Sequential(*layers)
-        self.mean_head = nn.Linear(in_dim, action_dim)
+        self.mean_head    = nn.Linear(in_dim, action_dim)
         self.log_std_head = nn.Linear(in_dim, action_dim)
 
     def forward(self, state: torch.Tensor):
@@ -80,44 +94,54 @@ class PhysicsInformedActor(nn.Module):
 
         Returns
         -------
-        action   : [batch x action_dim]  squashed and scaled
-        log_prob : [batch x 1]           log probability
-        mean     : [batch x action_dim]  deterministic action
+        action   : [batch x 13]  [Δẋ_RL (6), dq0 (7)], separately scaled
+        log_prob : [batch x 1]
+        mean     : [batch x 13]  deterministic action
         """
         mean, log_std = self.forward(state)
         std = log_std.exp()
 
         if torch.isnan(mean).any() or torch.isnan(std).any():
-            # print(f"[Actor] NaN detected — mean: {torch.isnan(mean).any()}, std: {torch.isnan(std).any()}")
             mean = torch.nan_to_num(mean, nan=0.0)
             std  = torch.nan_to_num(std,  nan=1.0).clamp(min=1e-6)
         dist = Normal(mean, std)
-        x = dist.rsample()                     # reparameterized sample
-        y = torch.tanh(x)                      # squash to (-1, 1)
-        action = y * self.action_scale
+        x = dist.rsample()
+        y = torch.tanh(x)
 
-        # log prob with change of variables for tanh
-        log_prob = dist.log_prob(x) - torch.log(
-            self.action_scale * (1 - y.pow(2)) + 1e-6
-        )
+        # Apply separate scales for task relaxation vs null-space
+        scale = torch.ones_like(y)
+        scale[:, :self.task_dim]  = self.task_scale
+        scale[:, self.task_dim:]  = self.nullspace_scale
+        action = y * scale
+
+        # log prob with change-of-variables for tanh
+        log_prob = dist.log_prob(x) - torch.log(scale * (1 - y.pow(2)) + 1e-6)
         log_prob = log_prob.sum(dim=-1, keepdim=True)
-        mean_action = torch.tanh(mean) * self.action_scale
+
+        mean_scale = torch.ones_like(mean)
+        mean_scale[:, :self.task_dim] = self.task_scale
+        mean_scale[:, self.task_dim:] = self.nullspace_scale
+        mean_action = torch.tanh(mean) * mean_scale
 
         return action, log_prob, mean_action
 
 
 class PhysicsRegularizer:
     """
-    Computes the dynamics-consistency regularization loss with collision penalties.
+    Torque constraint regularization loss (paper Eq. 10).
 
     L_dyn = || relu(|τ_π| - τ_max) ||²
-    L_collision = w_obs * penetration_obs² + w_self * penetration_self²
-    L_total = L_dyn + L_collision
+
+    Penalizes joint torques that exceed physical limits, guiding the policy to
+    learn feasible trajectories. Uses soft ReLU constraint (not hard clipping)
+    to preserve gradient flow while enforcing limits.
 
     τ_π is computed via inverse dynamics:
         τ_π = M(q) @ ddq + C(q,dq) @ dq + g(q)
     where ddq ≈ (dq_new - dq_prev) / dt.
 
+    This is applied as an auxiliary loss during actor updates:
+        L_total = L_SAC + λ_dyn * L_dyn
     This class operates on numpy arrays (called from the environment/agent),
     and returns a torch scalar for backpropagation.
     """

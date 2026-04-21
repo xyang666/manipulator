@@ -1,0 +1,60 @@
+% ICLR 2026 Conference Style File
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{iclr2026_conference}[2025/09/01 ICLR 2026 Conference Style]
+
+% Page layout
+\RequirePackage[letterpaper]{geometry}
+\geometry{
+  top=1in,
+  bottom=1in,
+  left=1in,
+  right=1in
+}
+
+% Two-column layout
+\RequirePackage{multicol}
+\setlength{\columnsep}{0.25in}
+
+% Font settings
+\RequirePackage{times}
+\RequirePackage{helvet}
+\RequirePackage{courier}
+
+% Title formatting
+\renewcommand{\maketitle}{%
+  \twocolumn[
+    \begin{center}
+      {\LARGE\bfseries\@title\par}
+      \vskip 1em
+      {\large\@author\par}
+      \vskip 1em
+    \end{center}
+  ]
+}
+
+% Section formatting
+\RequirePackage{titlesec}
+\titleformat{\section}{\large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{1em}{}
+
+% Abstract
+\renewenvironment{abstract}{%
+  \small
+  \begin{center}
+    \bfseries Abstract
+  \end{center}
+  \quotation
+}{%
+  \endquotation
+}
+
+% Hyperref
+\RequirePackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  citecolor=blue,
+  urlcolor=blue
+}
+
+\endinput

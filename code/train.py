@@ -38,6 +38,10 @@ def parse_args():
     p.add_argument("--buffer_size", type=int,   default=100_000)
     p.add_argument("--lambda_dyn",  type=float, default=0.01,
                    help="Weight of physics regularization loss")
+    p.add_argument("--d_critical",  type=float, default=0.05,
+                   help="Critical distance for primary task relaxation (m)")
+    p.add_argument("--alpha_relax", type=float, default=0.1,
+                   help="Minimum tracking weight factor when d_obs < d_critical")
     _here = os.path.dirname(os.path.abspath(__file__))
     _root = os.path.dirname(_here)
     _venv_data = os.path.join(_here, ".venv/lib/python3.12/site-packages/cmeel.prefix"
@@ -65,7 +69,8 @@ def main():
 
     # -------- Setup --------
     dyn = ManipulatorDynamics(args.urdf)
-    env = ManipulatorEnv(urdf_path=args.urdf, xml_path=args.xml, obs_radius=0.1)
+    env = ManipulatorEnv(urdf_path=args.urdf, xml_path=args.xml, obs_radius=0.03,
+                         d_critical=args.d_critical, alpha_relax=args.alpha_relax)
 
     state_dim  = env.obs_dim
     action_dim = env.act_dim
@@ -90,6 +95,8 @@ def main():
         "update_every": args.update_every,
         "buffer_size":  args.buffer_size,
         "lambda_dyn":   args.lambda_dyn,
+        "d_critical":   args.d_critical,
+        "alpha_relax":  args.alpha_relax,
         "lr":           3e-4,
         "gamma":        0.99,
         "tau":          0.005,
@@ -121,11 +128,14 @@ def main():
         while not done:
             # Action selection
             if total_steps < args.start_steps:
-                action = np.random.uniform(-0.2, 0.2, action_dim)  # Reduced exploration range
+                # Random exploration: separate ranges for task relaxation (6D) and null-space (7D)
+                a_task = np.random.uniform(-0.1, 0.1, 6)    # small task relaxation
+                a_null = np.random.uniform(-0.3, 0.3, env.n) # larger null-space motion
+                action = np.concatenate([a_task, a_null])
             else:
                 action = agent.select_action(obs)
 
-            # Store kinematics for physics loss
+            # Store kinematics for physics loss (7D joint state, not action-dim)
             q_prev  = env.q.copy()
             dq_prev = env.dq.copy()
 
