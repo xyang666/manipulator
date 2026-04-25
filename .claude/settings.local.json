@@ -3,7 +3,9 @@
     "allow": [
       "Bash(uv venv:*)",
       "Bash(uv pip:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(python tune_baseline.py --steps 300 --trials 20)",
+      "Bash(python3 tune_baseline.py --steps 300 --trials 20)"
     ]
   }
 }

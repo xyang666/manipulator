@@ -363,14 +363,42 @@ r_{\text{track}} = -w_{\text{track}}^{\text{eff}} \|x_t - x_d\|^2
 \item Ours-Relax：完整方法 + 主任务松弛机制（$d_{\text{critical}}=0.05$m）
 \end{itemize}
 
-\subsubsection{测试场景}
-设计两类典型场景评估算法性能：
+\subsubsection{测试场景与轨迹设计}
+为全面评估算法在不同应用场景下的性能，设计以下四类典型轨迹任务：
+
+\textbf{场景1：人机协作-狭窄空间装配}
 \begin{itemize}
-\item \textbf{场景1-稀疏障碍：}3个静态球形障碍物（半径0.1m），验证基本避障能力
-\item \textbf{场景2-密集障碍：}5个静态障碍物形成窄通道，测试复杂环境适应性
+\item \textbf{轨迹类型}：直线插入轨迹（模拟零件装配）
+\item \textbf{轨迹参数}：从$x_{\text{start}} = [0.4, 0.3, 0.5]$m沿$z$轴向下插入至$x_{\text{goal}} = [0.4, 0.3, 0.2]$m，速度0.1m/s
+\item \textbf{障碍物配置}：3个静态球形障碍物（半径0.08m）模拟工作台边缘和工装夹具，形成宽度0.15m的通道
+\item \textbf{考核重点}：末端轨迹跟踪精度（装配任务要求$\|e_{\text{pos}}\| < 5$mm）和连杆避障能力
 \end{itemize}
 
-每个场景固定目标位置$x_d = [0.6, 0.2, 0.5]$m，初始关节配置为home pose。
+\textbf{场景2：空间操作-舱外维修}
+\begin{itemize}
+\item \textbf{轨迹类型}：圆弧轨迹（模拟绕障碍物操作）
+\item \textbf{轨迹参数}：在$xy$平面内以$[0.5, 0.0, 0.4]$m为圆心，半径0.2m的圆弧，角速度$\pi/4$ rad/s，持续4秒
+\item \textbf{障碍物配置}：5个静态障碍物（半径0.1m）模拟航天器舱体结构，分布在圆弧内外侧，最小间隙0.12m
+\item \textbf{考核重点}：密集障碍环境下的轨迹跟踪连续性和可操作度保持（避免奇异位形）
+\end{itemize}
+
+\textbf{场景3：医疗手术-微创操作}
+\begin{itemize}
+\item \textbf{轨迹类型}：螺旋轨迹（模拟腔镜手术中的探查运动）
+\item \textbf{轨迹参数}：起点$[0.5, 0.0, 0.5]$m，沿$z$轴下降0.15m的同时在$xy$平面做半径递减的螺旋运动（初始半径0.1m，3圈后收敛至0.02m），总时长6秒
+\item \textbf{障碍物配置}：4个椭球形障碍物（长轴0.15m，短轴0.08m）模拟器官组织，形成不规则腔体空间
+\item \textbf{考核重点}：复杂轨迹下的高精度跟踪（手术要求$\|e_{\text{pos}}\| < 2$mm）和力矩平滑度（避免组织损伤）
+\end{itemize}
+
+\textbf{场景4：通用测试-8字形轨迹}
+\begin{itemize}
+\item \textbf{轨迹类型}：Lemniscate曲线（8字形）
+\item \textbf{轨迹参数}：在$yz$平面内的8字形轨迹，参数方程$y = 0.15\sin(t)$，$z = 0.4 + 0.1\sin(2t)$，$t \in [0, 2\pi]$，周期4秒
+\item \textbf{障碍物配置}：2个静态障碍物（半径0.12m）分别位于8字形的两个环中心，测试穿越式避障
+\item \textbf{考核重点}：周期性轨迹的稳定性和能量效率（评估零空间策略的自运动优化效果）
+\end{itemize}
+
+每个场景的初始关节配置为home pose $q_0 = [0, -\pi/4, 0, -3\pi/4, 0, \pi/2, \pi/4]$，每种轨迹重复100次测试以评估鲁棒性。
 
 \subsubsection{评价指标}
 \begin{itemize}

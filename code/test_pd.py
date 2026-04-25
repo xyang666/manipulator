@@ -70,10 +70,10 @@ for step in range(10000):
     tau = J_pos.T @ F
     
     # 循环内
-    Kp_joint = 0.0  # 刚度
-    Kd_joint = 10.0   # 阻尼
+    Kp_joint = 10.0  # 刚度
+    Kd_joint = 5.0   # 阻尼
 
-    q_target = k.inverse_kinematics(x)
+    q_target = k.inverse_kinematics(x_d)
     # 关节空间 PD 控制
     error = q_target - data.qpos[:7]
     d_error = -data.qvel[:7]

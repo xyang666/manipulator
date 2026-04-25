@@ -13,10 +13,11 @@ import random
 class ReplayBuffer:
 
     def __init__(self, capacity: int = 100_000,
-                 state_dim: int = 22, action_dim: int = 13, joints : int = 7 ):
+                 state_dim: int = 22, action_dim: int = 13, joints: int = 7):
         self.capacity = capacity
         self.state_dim = state_dim
         self.action_dim = action_dim
+        self.joints = joints
 
         self.states   = np.zeros((capacity, state_dim),  dtype=np.float32)
         self.actions  = np.zeros((capacity, action_dim), dtype=np.float32)

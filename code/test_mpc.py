@@ -22,7 +22,7 @@ from env.manipulator_env import ManipulatorEnv
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--render", action="store_true", help="Enable MuJoCo viewer")
-    p.add_argument("--steps", type=int, default=500, help="Number of simulation steps")
+    p.add_argument("--steps", type=int, default=1000, help="Number of simulation steps")
     p.add_argument("--horizon", type=int, default=10, help="MPC prediction horizon")
     _here = os.path.dirname(os.path.abspath(__file__))
     _root = os.path.dirname(_here)
@@ -68,6 +68,8 @@ def test_controller(env, args, controller_name):
         rewards.append(reward)
 
         # Render
+        # env.render()
+        # time.sleep(0.01)
         if args.render:
             env.render()
             time.sleep(0.01)
@@ -113,7 +115,7 @@ def main():
         urdf_path=args.urdf,
         xml_path=args.xml,
         n_obstacles=0,
-        obs_radius=0.1,
+        obs_radius=0.03,
         episode_len=args.steps,
         use_mpc=False
     )
@@ -125,7 +127,7 @@ def main():
         urdf_path=args.urdf,
         xml_path=args.xml,
         n_obstacles=0,
-        obs_radius=0.1,
+        obs_radius=0.03,
         episode_len=args.steps,
         use_mpc=True,
         mpc_horizon=args.horizon

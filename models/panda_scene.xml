@@ -99,7 +99,7 @@
   </worldbody>
 
     <!-- Torque actuators for 7 arm joints -->
-  <actuator>
+  <!-- <actuator>
     <motor name="act_j1" joint="panda_joint1" gear="1" ctrllimited="true" ctrlrange="-87 87" />
     <motor name="act_j2" joint="panda_joint2" gear="1" ctrllimited="true" ctrlrange="-87 87" />
     <motor name="act_j3" joint="panda_joint3" gear="1" ctrllimited="true" ctrlrange="-87 87" />
@@ -107,5 +107,15 @@
     <motor name="act_j5" joint="panda_joint5" gear="1" ctrllimited="true" ctrlrange="-12 12" />
     <motor name="act_j6" joint="panda_joint6" gear="1" ctrllimited="true" ctrlrange="-12 12" />
     <motor name="act_j7" joint="panda_joint7" gear="1" ctrllimited="true" ctrlrange="-12 12" />
+  </actuator> -->
+  
+  <actuator>
+    <velocity name="act_j1" joint="panda_joint1" kv="100" ctrllimited="true" ctrlrange="-2.175 2.175" />
+    <velocity name="act_j2" joint="panda_joint2" kv="100" ctrllimited="true" ctrlrange="-2.175 2.175" />
+    <velocity name="act_j3" joint="panda_joint3" kv="100" ctrllimited="true" ctrlrange="-2.175 2.175" />
+    <velocity name="act_j4" joint="panda_joint4" kv="100" ctrllimited="true" ctrlrange="-2.175 2.175" />
+    <velocity name="act_j5" joint="panda_joint5" kv="100" ctrllimited="true" ctrlrange="-2.61 2.61" />
+    <velocity name="act_j6" joint="panda_joint6" kv="100" ctrllimited="true" ctrlrange="-2.61 2.61" />
+    <velocity name="act_j7" joint="panda_joint7" kv="100" ctrllimited="true" ctrlrange="-2.61 2.61" />
   </actuator>
 </mujoco>

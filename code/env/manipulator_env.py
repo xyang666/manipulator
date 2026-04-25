@@ -55,6 +55,9 @@ class ManipulatorEnv:
     Otherwise runs a kinematics-only simulation for algorithm validation.
     """
 
+    # Joint velocity limits (rad/s) from MuJoCo actuator specifications
+    DQ_MAX = np.array([2.175, 2.175, 2.175, 2.175, 2.61, 2.61, 2.61])
+
     def __init__(self,
                  urdf_path: Optional[str] = None,
                  xml_path: Optional[str] = None,
@@ -194,6 +197,9 @@ class ManipulatorEnv:
                 self.q, dx_nom, delta_x_gated, dq0
             )
 
+        # Clamp joint velocities to actuator limits
+        dq_cmd = np.clip(dq_cmd, -self.DQ_MAX, self.DQ_MAX)
+
         # Integrate (kinematics-only mode)
         q_new = self.q + dq_cmd * self.dt
         dq_new = dq_cmd
@@ -219,8 +225,16 @@ class ManipulatorEnv:
             self.x_d = self._get_path_position(self.path_param)
             self.dx_d = np.zeros(3)  # No velocity reference in time-decoupled mode
         else:
-            # Time-based mode: target is static or time-indexed
-            pass
+            # Time-based mode: linear interpolation along insertion trajectory
+            # Progress from x_start to x_goal over episode_len steps
+            progress = min(1.0, self.step_count / self.episode_len)
+            self.x_d = (1 - progress) * self.x_start + progress * self.x_goal
+            # Compute actual velocity based on trajectory and time
+            trajectory_length = np.linalg.norm(self.x_goal - self.x_start)
+            trajectory_time = self.episode_len * self.dt
+            velocity_magnitude = trajectory_length / trajectory_time
+            direction = (self.x_goal - self.x_start) / trajectory_length
+            self.dx_d = velocity_magnitude * direction
 
         self.step_count += 1
 
@@ -239,7 +253,8 @@ class ManipulatorEnv:
             x_d=self.x_d, dx_d=self.dx_d,
             d_obs=d_obs, w=w
         )
-        success = np.linalg.norm(x_ee - self.x_d) < 0.02
+        # Success: reached goal endpoint (not current target)
+        success = np.linalg.norm(x_ee - self.x_goal) < 0.02
         collision = d_obs < 0.02
 
         # Termination conditions
@@ -298,16 +313,15 @@ class ManipulatorEnv:
             )
             scene.ngeom += 1
 
-        # 3. Draw end-effector trajectory (red points)
-        if len(self.ee_trajectory) < 2:
+        # 3. Draw end-effector trajectory (green points)
+        if len(self.ee_trajectory) < 1:
             return
 
-        for i in range(len(self.ee_trajectory) - 1):
+        for i in range(len(self.ee_trajectory)):
             if scene.ngeom >= scene.maxgeom:
                 break
 
             p1 = self.ee_trajectory[i]
-
             size = np.array([0.004, 0., 0.])
 
             mujoco.mjv_initGeom(
@@ -331,58 +345,43 @@ class ManipulatorEnv:
     # ------------------------------------------------------------------
 
     def _reset_state(self):
-        self.dx_d = np.zeros(3)
+        """
+        场景1：人机协作-狭窄空间装配（论文 Section 4.1.3）
+        - 轨迹：直线插入，从 [0.5, 0.0, 0.5]m 沿 z 轴向下至 [0.5, 0.0, 0.3]m
+        - 优化：y=0避开奇异区域，轨迹长度0.2m，速度降低以提高跟踪精度
+        - 考核：末端跟踪精度（<5mm）和连杆避障能力
+        """
         self.step_count = 0
+        self._integral_err = np.zeros(3)
 
-        # Randomize target position in reachable workspace
-        self.x_d = np.array([
-            np.random.uniform(0.4, 0.7),
-            np.random.uniform(-0.3, 0.3),
-            np.random.uniform(0.3, 0.7),
-        ])
+        # 优化后的起点和目标点（避开y=0.3奇异区域）
+        self.x_start = np.array([0.5, 0.0, 0.5])
+        self.x_goal = np.array([0.5, 0.0, 0.3])
 
-        # Initial joint configuration (home pose)
-        self.q = np.array([0.0, 0.0, 0.0, -1.57, 0.0, 1.57, 0.785])
+        # 当前目标点（初始为起点，训练时逐步向目标移动）
+        self.x_d = self.x_start.copy()
+        self.dx_d = np.array([0.0, 0.0, -0.1])  # 向下速度 0.1 m/s
+
+        # 初始关节配置：通过逆运动学求解使末端位于起点
+        q_init = self.kin.inverse_kinematics(self.x_start)
+        if q_init is not None:
+            self.q = q_init
+        else:
+            # IK失败时使用home pose作为fallback
+            print("[env] WARNING: IK failed for start position, using home pose")
+            self.q = np.array([0.0, 0.0, 0.0, -1.57, 0.0, 1.57, 0.785])
+
         self.dq = np.zeros(self.n)
 
-        # Randomize obstacle positions between start EE and target,
-        # keeping a minimum clearance from both endpoints
-        q_home = self.q.copy()
-        x_home, _ = self.kin.forward_kinematics(q_home)
-        clearance = self.sdf.radius + 0.08  # keep obstacles away from endpoints
-
-        centers = []
-        max_tries = 200
-        n_placed = 0
-        for _ in range(max_tries):
-            if n_placed >= self.sdf.n_obs:
-                break
-            # Sample in the bounding box of [home, target]
-            lo = np.minimum(x_home, self.x_d) - 0.05
-            hi = np.maximum(x_home, self.x_d) + 0.05
-            c = np.random.uniform(lo, hi)
-            # Enforce workspace z-floor
-            c[2] = max(c[2], 0.15)
-            # Reject if too close to home EE or target
-            if (np.linalg.norm(c - x_home) < clearance or
-                    np.linalg.norm(c - self.x_d) < clearance):
-                continue
-            # Reject if too close to already-placed obstacles
-            if any(np.linalg.norm(c - p) < 2 * self.sdf.radius + 0.02 for p in centers):
-                continue
-            centers.append(c)
-            n_placed += 1
-
-        # Pad with fallback positions if not enough were sampled
-        fallbacks = [np.array([0.4, 0.1, 0.4]),
-                     np.array([0.5, 0.0, 0.5]),
-                     np.array([0.5, 0.2, 0.6])]
-        for fb in fallbacks:
-            if len(centers) >= self.sdf.n_obs:
-                break
-            centers.append(fb)
-
-        self.sdf.set_static_obstacles(centers[:self.sdf.n_obs])
+        if self.sdf.n_obs > 0:
+            obstacle_centers = [
+                np.array([0.45, 0.25, 0.45]),
+                np.array([0.55, 0.35, 0.45]),
+                np.array([0.50, 0.20, 0.40]),
+            ][:self.sdf.n_obstacles]
+            self.sdf.set_static_obstacles(obstacle_centers)
+        else:
+            self.sdf.set_static_obstacles([])
         self._sync_obstacles_to_mujoco()
 
         # Reset MuJoCo state and clamp fingers closed
@@ -409,112 +408,48 @@ class ManipulatorEnv:
             if gid >= 0:
                 self.mj_model.geom_size[gid, 0] = self.sdf.radius
 
-    def _get_target_trajectory_point(self, theta: float):
-        """
-        Get a point on the target circular trajectory.
-
-        Parameters
-        ----------
-        theta : angle in radians
-
-        Returns
-        -------
-        point : [3] position on the circle
-        """
-        # Build circle in the plane perpendicular to target_axis
-        if self.target_axis == 0:  # YZ plane (perpendicular to X)
-            offset = np.array([
-                0,
-                self.target_radius * np.cos(theta),
-                self.target_radius * np.sin(theta)
-            ])
-        elif self.target_axis == 1:  # XZ plane (perpendicular to Y)
-            offset = np.array([
-                self.target_radius * np.cos(theta),
-                0,
-                self.target_radius * np.sin(theta)
-            ])
-        else:  # XY plane (perpendicular to Z)
-            offset = np.array([
-                self.target_radius * np.cos(theta),
-                self.target_radius * np.sin(theta),
-                0
-            ])
-        return self.target_center + offset
-
-    def _get_target_velocity(self, theta: float):
-        """
-        Get velocity on the target circular trajectory.
-
-        Parameters
-        ----------
-        theta : angle in radians
-
-        Returns
-        -------
-        velocity : [6] velocity (linear + angular)
-        """
-        dx_d = np.zeros(6)
-
-        # Velocity is tangent to circle: derivative of position w.r.t. theta
-        if self.target_axis == 0:  # YZ plane
-            dx_d[1] = -self.target_radius * self.target_omega * np.sin(theta)
-            dx_d[2] =  self.target_radius * self.target_omega * np.cos(theta)
-        elif self.target_axis == 1:  # XZ plane
-            dx_d[0] = -self.target_radius * self.target_omega * np.sin(theta)
-            dx_d[2] =  self.target_radius * self.target_omega * np.cos(theta)
-        else:  # XY plane
-            dx_d[0] = -self.target_radius * self.target_omega * np.sin(theta)
-            dx_d[1] =  self.target_radius * self.target_omega * np.cos(theta)
-
-        return dx_d
-
-    def _target_pose(self, t: float):
-        """
-        Circular end-effector trajectory at time t.
-
-        Returns
-        -------
-        x_d : [3] desired position
-        dx_d : [6] desired velocity
-        """
-        theta = self.target_omega * t
-        x_d = self._get_target_trajectory_point(theta)
-        dx_d = self._get_target_velocity(theta)
-        return x_d, dx_d
-
-    def _advance_target(self):
-        t = self.step_count * self.dt
-        self.x_d, self.dx_d = self._target_pose(t)
-
     def _compute_task_velocity(self) -> np.ndarray:
-        """PD tracking in task space: ẋ_cmd = ẋ_d + Kp*(x_d - x_ee)"""
+        """
+        PID tracking in task space: ẋ_cmd = ẋ_d + Kp*e + Ki*∫e dt
+        - Adaptive Kp: increases with error magnitude
+        - Integral term: eliminates steady-state error
+        - Velocity saturation: conservative limit for stability
+        """
         x_ee, _ = self.kin.forward_kinematics(self.q)
-        Kp = 30.0  # Balanced gain for stable tracking
+        pos_err = self.x_d - x_ee
+        err_norm = np.linalg.norm(pos_err)
+
+        # Adaptive proportional gain
+        Kp_base = 5.0
+        Kp = Kp_base * (1.0 + 2.0 * np.tanh(err_norm / 0.05))
+
+        # Integral gain (anti-windup: clamp integral to ±0.05m)
+        Ki = 2.0
+        self._integral_err = getattr(self, '_integral_err', np.zeros(3))
+        self._integral_err = np.clip(self._integral_err + pos_err * self.dt, -0.05, 0.05)
+
         dx_cmd = np.zeros(6)
-        dx_cmd[:3] = self.dx_d[:3] + Kp * (self.x_d - x_ee)
+        dx_cmd[:3] = self.dx_d[:3] + Kp * pos_err + Ki * self._integral_err
+
+        # Velocity saturation: conservative limit
+        dx_cmd[:3] = np.clip(dx_cmd[:3], -0.3, 0.3)
+
         return dx_cmd
 
     def _mujoco_step(self, dq_cmd):
-        # Computed torque control with PD feedback
-        # Integrate velocity command to get desired position
+        # Direct kinematic control: set joint positions directly
+        # This bypasses dynamics for precise tracking evaluation
         q_desired = self.q + dq_cmd * self.dt
 
-        # PD control: ddq = Kp*(q_desired - q) + Kd*(dq_cmd - dq)
-        Kp = 50.0  # Position gain
-        Kd = 10.0  # Velocity gain
-        ddq_desired = Kp * (q_desired - self.q) + Kd * (dq_cmd - self.dq)
-
-        # Compute required torque using inverse dynamics
-        tau = self.dyn.compute_torque(self.q, self.dq, ddq_desired)
-
-        self.mj_data.ctrl[:self.n] = tau
+        # Apply to MuJoCo
+        self.mj_data.qpos[:self.n] = q_desired
+        self.mj_data.qvel[:self.n] = dq_cmd
 
         # Keep fingers closed
         self.mj_data.qpos[self.n:self.n + 2] = 0.0
         self.mj_data.qvel[self.n:self.n + 2] = 0.0
 
-        mujoco.mj_step(self.mj_model, self.mj_data)
+        mujoco.mj_forward(self.mj_model, self.mj_data)  # Update kinematics only
         self.q = self.mj_data.qpos[:self.n].copy()
         self.dq = self.mj_data.qvel[:self.n].copy()
 

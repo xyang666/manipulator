@@ -109,12 +109,20 @@ class ManipulatorKinematics:
 
     def pseudo_inverse(self, J: np.ndarray) -> np.ndarray:
         """
-        Damped least-squares pseudo-inverse:
+        Damped least-squares pseudo-inverse with adaptive damping.
+        Increases damping automatically near singularities (Nakamura & Hanafusa 1986).
           J† = J^T (J J^T + λ²I)^{-1}
         """
-        lam2 = self.damping ** 2
-        m = J.shape[0]
-        return J.T @ np.linalg.inv(J @ J.T + lam2 * np.eye(m))
+        U, s, Vt = np.linalg.svd(J, full_matrices=False)
+        # Adaptive damping: only activate below sv=0.02 (new trajectory avoids deep singularities)
+        min_sv = s[-1]
+        sv_thresh = 0.02
+        if min_sv < sv_thresh:
+            lam2 = (sv_thresh * (1 - (min_sv / sv_thresh) ** 2)) ** 2
+        else:
+            lam2 = self.damping ** 2
+        s_inv = s / (s ** 2 + lam2)
+        return Vt.T @ np.diag(s_inv) @ U.T
 
     def null_space_projector(self, q: np.ndarray) -> np.ndarray:
         """
@@ -360,7 +368,7 @@ if __name__ == "__main__":
     x_target, r_target = kin.forward_kinematics(q_test)
     print(f"Target position: {x_target}")
 
-    q_solved = kin.inverse_kinematics(np.concat((x_target, Rotation.from_matrix(r_target).as_quat())))
+    q_solved = kin.inverse_kinematics(np.concatenate((x_target, Rotation.from_matrix(r_target).as_quat())))
     if q_solved is not None:
         x_solved, r_solved = kin.forward_kinematics(q_solved)    
         ik_error = np.linalg.norm(x_target - x_solved) + np.linalg.norm(Rotation.from_matrix(r_solved.T @ r_target).as_rotvec())
