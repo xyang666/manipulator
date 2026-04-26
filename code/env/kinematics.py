@@ -124,6 +124,61 @@ class ManipulatorKinematics:
         s_inv = s / (s ** 2 + lam2)
         return Vt.T @ np.diag(s_inv) @ U.T
 
+    def get_link_capsules(self, q: np.ndarray) -> list[tuple[np.ndarray, np.ndarray, float]]:
+        """
+        Returns capsule representation of each link.
+        Each capsule is (start_point, end_point, radius).
+
+        Returns
+        -------
+        capsules : list of (p1, p2, r) where p1, p2 ∈ R^3, r is radius
+        """
+        q = np.asarray(q, dtype=float)
+        capsules = []
+
+        if self.model is not None:
+            pin.forwardKinematics(self.model, self.data, q)
+            pin.updateFramePlacements(self.model, self.data)
+
+            # Franka Panda link radii (approximate, in meters)
+            link_radii = [0.06, 0.06, 0.06, 0.05, 0.05, 0.04, 0.04]
+
+            # Get joint frame positions
+            joint_positions = []
+            for i in range(0, self.model.njoints):  # Skip universe joint
+                joint_id = i
+                if joint_id < len(self.data.oMi):
+                    pos = self.data.oMi[joint_id].translation.copy()
+                    joint_positions.append(pos)
+
+            # Create capsules between consecutive joints
+            for i in range(len(joint_positions) - 1):
+                p1 = joint_positions[i]
+                p2 = joint_positions[i + 1]
+                radius = link_radii[min(i, len(link_radii) - 1)]
+                capsules.append((p1, p2, radius))
+
+            # Add final link to end-effector
+            if len(joint_positions) > 0:
+                p1 = joint_positions[-1]
+                ee_pos = self.data.oMf[self.ee_frame_id].translation.copy()
+                radius = link_radii[-1]
+                capsules.append((p1, ee_pos, radius))
+        else:
+            # Simplified fallback: approximate with spheres at joint positions
+            link_lengths = np.array([0.333, 0.316, 0.384, 0.0, 0.107, 0.0, 0.088])[:self.n]
+            link_radii = [0.06] * self.n
+            pos = np.zeros(3)
+            prev_pos = pos.copy()
+
+            for i, (l, qi) in enumerate(zip(link_lengths, q)):
+                pos = pos.copy()
+                pos[2] += l  # Simplified: stack vertically
+                capsules.append((prev_pos, pos, link_radii[i]))
+                prev_pos = pos.copy()
+
+        return capsules
+
     def null_space_projector(self, q: np.ndarray) -> np.ndarray:
         """
         N(q) = I - J†(q) J(q)   ∈ R^{n x n}

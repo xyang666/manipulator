@@ -270,23 +270,87 @@ class ManipulatorEnv:
 
         return self._get_obs(), reward, done, info
 
-    def render(self):
-        """Launch or sync the passive MuJoCo viewer and draw end-effector trajectory."""
+    def render(self, show_robot: bool = True):
+        """Launch or sync the passive MuJoCo viewer and draw end-effector trajectory.
+
+        Parameters
+        ----------
+        show_robot : if False, hide the robot's visual geometry (only capsules shown)
+        """
         if self.mj_model is None:
             return
         if not hasattr(self, '_viewer'):
             self._viewer = mujoco.viewer.launch_passive(self.mj_model, self.mj_data)
         if self._viewer.is_running():
+            # Hide only robot body geoms by setting alpha to 0
+            # Identify robot geoms by body name (Panda links start with "panda_")
+            for i in range(self.mj_model.ngeom):
+                body_id = self.mj_model.geom_bodyid[i]
+                body_name = mujoco.mj_id2name(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, body_id)
+                # Hide geoms belonging to robot bodies (typically contain "panda" or "link")
+                if body_name and ("panda" in body_name.lower() or "link" in body_name.lower()):
+                    self.mj_model.geom_rgba[i, 3] = 1.0 if show_robot else 0.0
             # Draw visualizations
             self._draw_visualizations()
             self._viewer.sync()
 
     def _draw_visualizations(self):
-        """Draw visualizations: obstacles, fixed target point, and EE trajectory."""
+        """Draw visualizations: obstacles, fixed target point, EE trajectory, and link capsules."""
         scene = self._viewer.user_scn
         scene.ngeom = 0  # Clear previous geometries
 
-        # 1. Draw obstacles (semi-transparent red spheres)
+        # 1. Draw link capsules (semi-transparent blue)
+        capsules = self.kin.get_link_capsules(self.q)
+        for p1, p2, cap_radius in capsules:
+        # for p1, p2, cap_radius in [capsules[-1]]:
+            if scene.ngeom >= scene.maxgeom:
+                break
+
+            # Capsule center and orientation
+            center = (p1 + p2) / 2
+            length = np.linalg.norm(p2 - p1)
+
+            if length > 1e-6:
+                # Compute rotation matrix to align z-axis with capsule direction
+                direction = (p2 - p1) / length
+                z_axis = np.array([0, 0, 1])
+
+                # Rotation axis: cross product
+                rot_axis = np.cross(z_axis, direction)
+                rot_axis_norm = np.linalg.norm(rot_axis)
+
+                if rot_axis_norm > 1e-6:
+                    rot_axis = rot_axis / rot_axis_norm
+                    # Rotation angle
+                    cos_angle = np.dot(z_axis, direction)
+                    angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
+
+                    # Rodrigues' rotation formula
+                    K = np.array([
+                        [0, -rot_axis[2], rot_axis[1]],
+                        [rot_axis[2], 0, -rot_axis[0]],
+                        [-rot_axis[1], rot_axis[0], 0]
+                    ])
+                    rot_mat = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+                else:
+                    # Already aligned or opposite
+                    rot_mat = np.eye(3) if np.dot(z_axis, direction) > 0 else np.diag([1, 1, -1])
+            else:
+                rot_mat = np.eye(3)
+                length = 0.001  # Avoid zero length
+
+            # MuJoCo capsule size: [radius, half_length, 0]
+            size = np.array([cap_radius, length / 2, 0])
+
+            mujoco.mjv_initGeom(
+                scene.geoms[scene.ngeom],
+                mujoco.mjtGeom.mjGEOM_CAPSULE,
+                size, center, rot_mat.flatten(),
+                np.array([0.0, 0.5, 1.0, 0.3])  # Blue, semi-transparent
+            )
+            scene.ngeom += 1
+
+        # 2. Draw obstacles (semi-transparent red spheres)
         for obs_center in self.sdf.centers:
             if scene.ngeom >= scene.maxgeom:
                 break
@@ -301,7 +365,7 @@ class ManipulatorEnv:
             )
             scene.ngeom += 1
 
-        # 2. Draw fixed target point (yellow sphere, larger)
+        # 3. Draw fixed target point (yellow sphere, larger)
         if scene.ngeom < scene.maxgeom:
             size = np.array([0.02, 0, 0])  # Larger sphere for fixed target
 
@@ -313,7 +377,7 @@ class ManipulatorEnv:
             )
             scene.ngeom += 1
 
-        # 3. Draw end-effector trajectory (green points)
+        # 4. Draw end-effector trajectory (green points)
         if len(self.ee_trajectory) < 1:
             return
 
@@ -355,8 +419,8 @@ class ManipulatorEnv:
         self._integral_err = np.zeros(3)
 
         # 优化后的起点和目标点（避开y=0.3奇异区域）
-        self.x_start = np.array([0.5, 0.0, 0.5])
-        self.x_goal = np.array([0.5, 0.0, 0.3])
+        self.x_start = np.array([0.8, 0.0, 0.5])
+        self.x_goal = np.array([0.8, 0.0, 0.3])
 
         # 当前目标点（初始为起点，训练时逐步向目标移动）
         self.x_d = self.x_start.copy()
@@ -378,7 +442,7 @@ class ManipulatorEnv:
                 np.array([0.45, 0.25, 0.45]),
                 np.array([0.55, 0.35, 0.45]),
                 np.array([0.50, 0.20, 0.40]),
-            ][:self.sdf.n_obstacles]
+            ][:self.sdf.n_obs]
             self.sdf.set_static_obstacles(obstacle_centers)
         else:
             self.sdf.set_static_obstacles([])

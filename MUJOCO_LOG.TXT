@@ -34,3 +34,6 @@ WARNING: Nan, Inf or huge value in QVEL at DOF 0. The simulation is unstable. Ti
 Thu Apr 16 16:11:37 2026
 WARNING: Nan, Inf or huge value in QACC at DOF 0. The simulation is unstable. Time = 8.8000.
 
+Sat Apr 25 23:39:10 2026
+ERROR: mjv_cameraInModel: mjvScene frustum_near too small
+
