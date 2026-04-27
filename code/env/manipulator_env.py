@@ -438,11 +438,7 @@ class ManipulatorEnv:
         self.dq = np.zeros(self.n)
 
         if self.sdf.n_obs > 0:
-            obstacle_centers = [
-                np.array([0.45, 0.25, 0.45]),
-                np.array([0.55, 0.35, 0.45]),
-                np.array([0.50, 0.20, 0.40]),
-            ][:self.sdf.n_obs]
+            obstacle_centers = self._generate_obstacles_near_trajectory()
             self.sdf.set_static_obstacles(obstacle_centers)
         else:
             self.sdf.set_static_obstacles([])
@@ -455,6 +451,85 @@ class ManipulatorEnv:
             self.mj_data.qpos[self.n:self.n + 2] = 0.0
             self.mj_data.qvel[self.n:self.n + 2] = 0.0
             mujoco.mj_forward(self.mj_model, self.mj_data)  # Update kinematics
+
+    def _generate_obstacles_near_trajectory(self) -> list:
+        """
+        Generate obstacles randomly near the trajectory but not interfering with it.
+
+        Returns
+        -------
+        list of np.ndarray
+            List of obstacle center positions
+        """
+        obstacles = []
+        min_dist_to_trajectory = self.sdf.radius + 0.05  # Safety margin: radius + 5cm
+        max_attempts = 100
+
+        # Trajectory bounding box with margin
+        traj_min = np.minimum(self.x_start, self.x_goal) - 0.15
+        traj_max = np.maximum(self.x_start, self.x_goal) + 0.15
+
+        for _ in range(self.sdf.n_obs):
+            for attempt in range(max_attempts):
+                # Random position in bounding box
+                candidate = np.random.uniform(traj_min, traj_max)
+
+                # Check distance to trajectory (line segment from start to goal)
+                dist_to_traj = self._point_to_segment_distance(
+                    candidate, self.x_start, self.x_goal
+                )
+
+                # Check distance to existing obstacles
+                too_close = False
+                for existing_obs in obstacles:
+                    if np.linalg.norm(candidate - existing_obs) < 2 * self.sdf.radius:
+                        too_close = True
+                        break
+
+                # Accept if far enough from trajectory and other obstacles
+                if dist_to_traj >= min_dist_to_trajectory and not too_close:
+                    obstacles.append(candidate)
+                    break
+            else:
+                # Fallback: place obstacle far from trajectory
+                offset = np.random.randn(3)
+                offset = offset / np.linalg.norm(offset) * (min_dist_to_trajectory + 0.1)
+                mid_point = (self.x_start + self.x_goal) / 2
+                obstacles.append(mid_point + offset)
+
+        return obstacles
+
+    def _point_to_segment_distance(self, point: np.ndarray,
+                                   seg_start: np.ndarray,
+                                   seg_end: np.ndarray) -> float:
+        """
+        Calculate minimum distance from point to line segment.
+
+        Parameters
+        ----------
+        point : np.ndarray
+            Query point
+        seg_start : np.ndarray
+            Segment start point
+        seg_end : np.ndarray
+            Segment end point
+
+        Returns
+        -------
+        float
+            Minimum distance
+        """
+        seg_vec = seg_end - seg_start
+        seg_len_sq = np.dot(seg_vec, seg_vec)
+
+        if seg_len_sq < 1e-8:
+            return np.linalg.norm(point - seg_start)
+
+        # Project point onto line, clamp to [0, 1]
+        t = np.clip(np.dot(point - seg_start, seg_vec) / seg_len_sq, 0.0, 1.0)
+        projection = seg_start + t * seg_vec
+
+        return np.linalg.norm(point - projection)
 
     def _sync_obstacles_to_mujoco(self):
         """Sync SDF obstacle centers and radius to MuJoCo mocap bodies and geoms."""

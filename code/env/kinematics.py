@@ -126,8 +126,12 @@ class ManipulatorKinematics:
 
     def get_link_capsules(self, q: np.ndarray) -> list[tuple[np.ndarray, np.ndarray, float]]:
         """
-        Returns capsule representation of each link.
+        Returns capsule representation of each link for Franka Panda.
         Each capsule is (start_point, end_point, radius).
+
+        Extracts collision geometry directly from URDF collision primitives:
+        each link uses cylinder+2 spheres → capsule endpoints are sphere centers.
+        Transforms local coordinates to world frame using Pinocchio.
 
         Returns
         -------
@@ -140,42 +144,81 @@ class ManipulatorKinematics:
             pin.forwardKinematics(self.model, self.data, q)
             pin.updateFramePlacements(self.model, self.data)
 
-            # Franka Panda link radii (approximate, in meters)
-            link_radii = [0.06, 0.06, 0.06, 0.05, 0.05, 0.04, 0.04]
+            # Build frame name → (position, rotation) map
+            frame_tf = {}
+            for i, f in enumerate(self.model.frames):
+                frame_tf[f.name] = (
+                    self.data.oMf[i].translation.copy(),
+                    self.data.oMf[i].rotation.copy()
+                )
 
-            # Get joint frame positions
-            joint_positions = []
-            for i in range(0, self.model.njoints):  # Skip universe joint
-                joint_id = i
-                if joint_id < len(self.data.oMi):
-                    pos = self.data.oMi[joint_id].translation.copy()
-                    joint_positions.append(pos)
+            # URDF collision geometry: (link_frame, [(local_p1, local_p2, radius), ...])
+            # Extracted from panda_collision.urdf sphere positions
+            collision_specs = {
+                "panda_link0": [
+                    (np.array([-0.09, 0, 0.06]), np.array([-0.06, 0, 0.06]), 0.09),
+                ],
+                "panda_link1": [
+                    (np.array([0, 0, -0.333]), np.array([0, 0, -0.05]), 0.09),
+                ],
+                "panda_link2": [
+                    (np.array([0, 0, -0.06]), np.array([0, 0, 0.06]), 0.09),
+                ],
+                "panda_link3": [
+                    (np.array([0, 0, -0.22]), np.array([0, 0, -0.07]), 0.09),
+                ],
+                "panda_link4": [
+                    (np.array([0, 0, -0.06]), np.array([0, 0, 0.06]), 0.09),
+                ],
+                "panda_link5": [
+                    (np.array([0, 0, -0.31]), np.array([0, 0, -0.21]), 0.09),
+                    (np.array([0, 0.08, -0.20]), np.array([0, 0.08, -0.06]), 0.055),
+                ],
+                "panda_link6": [
+                    (np.array([0, 0, -0.07]), np.array([0, 0, 0.01]), 0.08),
+                ],
+                "panda_link7": [
+                    (np.array([0, 0, -0.06]), np.array([0, 0, 0.08]), 0.07),
+                ],
+                "panda_hand": [
+                    (np.array([0, -0.075, 0.03]), np.array([0, 0.075, 0.03]), 0.05),
+                ],
+                "panda_leftfinger": [
+                    (np.array([0, 0.015, 0.015]), np.array([0, 0.015, 0.045]), 0.015),
+                ],
+                "panda_rightfinger": [
+                    (np.array([0, -0.015, 0.015]), np.array([0, -0.015, 0.045]), 0.015),
+                ],
+            }
 
-            # Create capsules between consecutive joints
-            for i in range(len(joint_positions) - 1):
-                p1 = joint_positions[i]
-                p2 = joint_positions[i + 1]
-                radius = link_radii[min(i, len(link_radii) - 1)]
-                capsules.append((p1, p2, radius))
+            # Transform each capsule to world frame
+            for link_name, caps_local in collision_specs.items():
+                if link_name not in frame_tf:
+                    continue
+                pos, rot = frame_tf[link_name]
+                for p1_local, p2_local, radius in caps_local:
+                    p1_world = pos + rot @ p1_local
+                    p2_world = pos + rot @ p2_local
+                    if np.linalg.norm(p2_world - p1_world) > 1e-3:
+                        capsules.append((p1_world, p2_world, radius))
 
-            # Add final link to end-effector
-            if len(joint_positions) > 0:
-                p1 = joint_positions[-1]
-                ee_pos = self.data.oMf[self.ee_frame_id].translation.copy()
-                radius = link_radii[-1]
-                capsules.append((p1, ee_pos, radius))
         else:
-            # Simplified fallback: approximate with spheres at joint positions
-            link_lengths = np.array([0.333, 0.316, 0.384, 0.0, 0.107, 0.0, 0.088])[:self.n]
-            link_radii = [0.06] * self.n
-            pos = np.zeros(3)
-            prev_pos = pos.copy()
-
-            for i, (l, qi) in enumerate(zip(link_lengths, q)):
-                pos = pos.copy()
-                pos[2] += l  # Simplified: stack vertically
-                capsules.append((prev_pos, pos, link_radii[i]))
-                prev_pos = pos.copy()
+            # Simplified fallback: approximate with major segments
+            segs = [
+                (np.array([0., 0., 0.]),       np.array([0., 0., 0.333]),     0.09),
+                (np.array([0., 0., 0.333]),    np.array([0., 0., 0.649]),     0.09),
+                (np.array([0., 0., 0.649]),    np.array([0.082, 0., 0.649]),  0.09),
+                (np.array([0.082, 0., 0.649]), np.array([0.466, 0., 0.732]),  0.09),
+                (np.array([0.466, 0., 0.732]), np.array([0.554, 0., 0.732]),  0.08),
+                (np.array([0.554, 0., 0.732]), np.array([0.554, 0., 0.625]),  0.07),
+                (np.array([0.554, 0., 0.625]), np.array([0.554, 0., 0.566]),  0.05),
+            ]
+            capsules = [(p1, p2, r) for p1, p2, r in segs]
+            # Fingers
+            for side in (-1.0, 1.0):
+                f_base = np.array([0.554, side * 0.015, 0.551])
+                f_tip  = np.array([0.554, side * 0.015, 0.581])
+                capsules.append((f_base, f_tip, 0.015))
 
         return capsules
 

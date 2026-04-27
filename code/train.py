@@ -141,6 +141,7 @@ def main():
 
             next_obs, reward, done, info = env.step(action)
 
+            env.render(False)
             if args.render:
                 env.render()
 
