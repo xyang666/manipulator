@@ -30,25 +30,19 @@ class SACAgent:
                  state_dim:    int,
                  action_dim:   int,
                  dynamics,
-                 lr:           float = 3e-4,
+                 lr:           float = 1e-4,
                  gamma:        float = 0.99,
                  tau:          float = 0.005,
                  alpha:        float = 0.2,
                  lambda_dyn:   float = 0.1,
-                 lambda_collision: float = 1.0,
-                 tau_max:      float = 87.0,
-                 dt:           float = 0.02,
                  action_scale: float = 0.3,
                  hidden_dims:  tuple = (256, 256),
-                 device:       str   = "cpu",
-                 collision_detector = None):
+                 device:       str   = "cpu"):
         self.gamma       = gamma
         self.tau         = tau
         self.alpha       = alpha
         self.lambda_dyn  = lambda_dyn
-        self.lambda_collision = lambda_collision
         self.device      = torch.device(device)
-        self.collision_detector = collision_detector
 
         # Networks
         self.actor   = PhysicsInformedActor(state_dim, action_dim,
@@ -59,17 +53,19 @@ class SACAgent:
         self.actor_opt  = optim.Adam(self.actor.parameters(),  lr=lr)
         self.critic_opt = optim.Adam(self.critic.parameters(), lr=lr)
 
-        # Physics regularizer with collision detection
-        self.physics = PhysicsRegularizer(dynamics, tau_max=tau_max,
-                                          lambda_dyn=lambda_dyn,
-                                          lambda_collision=lambda_collision,
-                                          dt=dt,
-                                          collision_detector=collision_detector)
+        # Differentiable physics regularizer (Plan B: pure torch, preserves grad)
+        self.physics = PhysicsRegularizer(dynamics, lambda_dyn=lambda_dyn,
+                                          dt=self._get_dt_default(),
+                                          device=self.device)
 
         # Automatic entropy tuning
         self.target_entropy = -action_dim
         self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
         self.alpha_opt = optim.Adam([self.log_alpha], lr=lr)
+
+    def _get_dt_default(self):
+        """Get simulation timestep (matches env default)."""
+        return 0.02
 
     # ------------------------------------------------------------------
     # Action selection
@@ -114,25 +110,27 @@ class SACAgent:
         torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
         self.critic_opt.step()
 
-        # -------- Actor update (with physics loss) --------
+        # -------- Actor update (with differentiable physics loss) --------
         a_new, log_pi, _ = self.actor.sample(s)
         q_min = self.critic.q_min(s, a_new)
 
         actor_rl_loss = (self.alpha * log_pi - q_min).mean()
 
-        # Physics regularization
-        q_np   = batch["q"]
-        dq_np  = batch["dq"]
-        dq_new_np = batch["dq_next"]
+        # Differentiable physics regularization (Plan B)
+        # Reconstruct dq_cmd from current-policy action analytically
+        q_t  = torch.FloatTensor(batch["q"]).to(self.device)
+        dq_t = torch.FloatTensor(batch["dq"]).to(self.device)
+        J_t  = torch.FloatTensor(batch["J"]).to(self.device)
+        sigma_t = torch.FloatTensor(batch["sigma"]).to(self.device)
+        dx_nom_t = torch.FloatTensor(batch["dx_nom"]).to(self.device)
 
-        q_t  = torch.FloatTensor(q_np).to(self.device)
-        dq_t = torch.FloatTensor(dq_np).to(self.device)
-        dq_new_t = torch.FloatTensor(dq_new_np).to(self.device)
+        physics_loss = self.physics.compute_loss_batch(
+            q_batch=q_t, dq_batch=dq_t,
+            J_batch=J_t, sigma_batch=sigma_t, dx_nom_batch=dx_nom_t,
+            action_batch=a_new,  # current-policy action — has gradients!
+        )
 
-        physics_loss = self.physics.compute_loss_batch(q_t, dq_t, dq_new_t,
-                                                       collision_detector=self.collision_detector)
-
-        # Check for NaN/Inf before backward
+        # Safety check for NaN/Inf
         if torch.isnan(physics_loss) or torch.isinf(physics_loss):
             physics_loss = torch.tensor(0.0, device=self.device)
 

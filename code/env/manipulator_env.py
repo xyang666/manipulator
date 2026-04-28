@@ -192,6 +192,10 @@ class ManipulatorEnv:
             dq_cmd = self.mpc.compute_control_task_space(
                 self.q, self.dq, self.x_d, self.dx_d, self.kin
             )
+            # Store dummy values for MPC mode (physics loss disabled via buffer guard)
+            self._last_J = np.zeros((6, self.n), dtype=np.float32)
+            self._last_sigma = np.float32(0.0)
+            self._last_dx_nom = np.zeros(6, dtype=np.float32)
         else:
             # Decompose 13D action into task relaxation + null-space components
             delta_x_rl = action[:6]   # Δẋ_RL ∈ R^6 (task-space relaxation)
@@ -206,13 +210,20 @@ class ManipulatorEnv:
             d_obs_cur = self.sdf.min_distance(x_ee_cur, self.q, kinematics=self.kin)
             d_safe = 0.10
             d_critical = 0.05
-            sigma = float(np.clip((d_safe - d_obs_cur) / (d_safe - d_critical + 1e-6), 0.0, 1.0))
+            raw_sigma = float(np.clip((d_safe - d_obs_cur) / (d_safe - d_critical + 1e-6), 0.0, 1.0))
+            # Smoothstep: C1 continuity at 0 and 1 for smoother gate transitions
+            sigma = raw_sigma * raw_sigma * (3.0 - 2.0 * raw_sigma)
             delta_x_gated = sigma * delta_x_rl  # diag(σ) · Δẋ_RL
 
             # Combine: q̇ = J†(dx_nom + delta_x_gated) + N(q)dq0
             dq_cmd = self.kin.combine_velocities_with_relaxation(
                 self.q, dx_nom, delta_x_gated, dq0
             )
+
+            # Save intermediate values for differentiable physics loss (Plan B)
+            self._last_J = self.kin.jacobian(self.q).copy()
+            self._last_sigma = sigma
+            self._last_dx_nom = dx_nom.copy()
 
         # Clamp joint velocities to actuator limits
         dq_cmd = np.clip(dq_cmd, -self.DQ_MAX, self.DQ_MAX)
@@ -281,15 +292,15 @@ class ManipulatorEnv:
         else:
             collision = d_obs < 0.02
 
-        # Termination conditions
+        # Termination conditions (collision does NOT terminate — agent needs to learn recovery)
         if self.time_decoupled:
             # Success if reached end of path
             path_complete = self.path_param >= 0.99
-            done = self.step_count >= self.episode_len or collision or path_complete
+            done = self.step_count >= self.episode_len or path_complete
             info = {"d_obs": d_obs, "w": w, "success": path_complete, "collision": collision,
                     "path_param": self.path_param, **reward_info}
         else:
-            done = self.step_count >= self.episode_len or collision or success
+            done = self.step_count >= self.episode_len or success
             info = {"d_obs": d_obs, "w": w, "success": success, "collision": collision, **reward_info}
 
         return self._get_obs(), reward, done, info
@@ -442,6 +453,11 @@ class ManipulatorEnv:
         """
         self.step_count = 0
         self._integral_err = np.zeros(3)
+
+        # Initialize physics loss storage fields (set during step())
+        self._last_J = np.zeros((6, self.n), dtype=np.float32)
+        self._last_sigma = np.float32(0.0)
+        self._last_dx_nom = np.zeros(6, dtype=np.float32)
 
         if self.use_trajectory_generator and self.traj_gen is not None:
             # Generate new scene using TrajectoryGenerator

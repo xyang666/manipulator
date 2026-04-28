@@ -31,9 +31,10 @@ from utils.validation import ValidationSet, evaluate_on_validation_set
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--steps",       type=int,   default=50_000)
+    p.add_argument("--steps",       type=int,   default=500_000,
+                   help="Total environment steps (SAC typically needs 500k-1M)")
     p.add_argument("--batch_size",  type=int,   default=256)
-    p.add_argument("--start_steps", type=int,   default=1_000,
+    p.add_argument("--start_steps", type=int,   default=10_000,
                    help="Random exploration steps before training begins")
     p.add_argument("--update_every",type=int,   default=1)
     p.add_argument("--buffer_size", type=int,   default=100_000)
@@ -100,7 +101,6 @@ def main():
         action_dim=action_dim,
         dynamics=dyn,
         lambda_dyn=args.lambda_dyn,
-        collision_detector=env.collision_detector,
         device='cuda' if torch.cuda.is_available() else 'cpu'
     )
     buffer = ReplayBuffer(args.buffer_size, state_dim, action_dim)
@@ -170,7 +170,8 @@ def main():
 
             buffer.push(
                 obs, action, reward, next_obs, done,
-                q=q_prev, dq=dq_prev, dq_next=dq_next
+                q=q_prev, dq=dq_prev, dq_next=dq_next,
+                J=env._last_J, sigma=env._last_sigma, dx_nom=env._last_dx_nom
             )
 
             obs = next_obs

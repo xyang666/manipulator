@@ -29,12 +29,17 @@ class ReplayBuffer:
         self.q_prev   = np.zeros((capacity, joints), dtype=np.float32)
         self.dq_prev  = np.zeros((capacity, joints), dtype=np.float32)
         self.dq_next  = np.zeros((capacity, joints), dtype=np.float32)
+        # Fields for differentiable physics loss (Plan B)
+        self.J        = np.zeros((capacity, 6, joints), dtype=np.float32)
+        self.sigma    = np.zeros((capacity, 1),        dtype=np.float32)
+        self.dx_nom   = np.zeros((capacity, 6),        dtype=np.float32)
 
         self.ptr = 0
         self.size = 0
 
     def push(self, state, action, reward, next_state, done,
-             q=None, dq=None, dq_next=None):
+             q=None, dq=None, dq_next=None,
+             J=None, sigma=None, dx_nom=None):
         i = self.ptr
         self.states[i]  = state
         self.actions[i] = action
@@ -46,6 +51,11 @@ class ReplayBuffer:
             self.q_prev[i]  = q
             self.dq_prev[i] = dq
             self.dq_next[i] = dq_next
+
+        if J is not None:
+            self.J[i]      = J
+            self.sigma[i]  = sigma
+            self.dx_nom[i] = dx_nom
 
         self.ptr  = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
@@ -61,6 +71,9 @@ class ReplayBuffer:
             q          = self.q_prev[idx],
             dq         = self.dq_prev[idx],
             dq_next    = self.dq_next[idx],
+            J          = self.J[idx],
+            sigma      = self.sigma[idx],
+            dx_nom     = self.dx_nom[idx],
         )
 
     def __len__(self):

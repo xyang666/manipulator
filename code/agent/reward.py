@@ -21,10 +21,10 @@ class RewardFunction:
 
     def __init__(self,
                  w_track:       float = 1.0,
-                 w_obs:         float = 5.0,
-                 w_manip:       float = 0.1,
-                 w_energy:      float = 0.01,
-                 w_collision:   float = 10.0,
+                 w_obs:         float = 2.0,
+                 w_manip:       float = 0.05,
+                 w_energy:      float = 0.001,
+                 w_collision:   float = 1.0,
                  d_safe:        float = 0.10,
                  d_critical:    float = 0.05,
                  alpha_relax:   float = 0.1,
@@ -82,10 +82,12 @@ class RewardFunction:
         if d_obs >= self.d_safe:
             r_obs = 0.0
         else:
-            r_obs = -self.w_obs * (self.d_safe - d_obs) / self.d_safe
+            obs_depth = min(self.d_safe - d_obs, self.d_safe * 2.0)  # cap at 2x d_safe
+            r_obs = -self.w_obs * obs_depth / self.d_safe
 
         # Manipulability reward: encourage non-singular configurations
-        r_manip = self.w_manip * np.log(w + 1e-6)
+        r_manip = self.w_manip * np.log(max(w, 1e-4))
+        r_manip = max(r_manip, -0.5)  # cap negative spikes near singularity
 
         # Energy penalty: penalize large joint velocities
         r_energy = -self.w_energy * np.sum(dq ** 2)

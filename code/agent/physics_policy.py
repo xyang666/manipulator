@@ -5,16 +5,12 @@ Physics-Informed Policy Network (paper core contribution).
 
 Key idea: the actor network outputs 13D actions:
     a = [Δẋ_RL (6), dq0 (7)]
-    - Δẋ_RL: task-space relaxation (scaled small to preserve tracking priority)
+    - Δẋ_RL: task-space relaxation (scaled to allow obstacle avoidance)
     - dq0   : null-space self-motion velocities
 
-During training, torque constraint regularization is applied (paper Eq. 10):
-    τ_π  = M(q) @ ddq + C(q,dq) @ dq + g(q)
-    L_dyn = ||relu(|τ_π| - τ_max)||²   (penalize torques beyond limits)
-    L_total = L_SAC + λ_dyn * L_dyn
-
-This guides the policy to learn physically feasible trajectories that respect
-joint torque limits, improving training stability and motion smoothness.
+Differentiable physics regularization (Plan B):
+    Reconstructs dq_cmd from action analytically using stored Jacobian,
+    then penalizes torque limit violations via simplified dynamics in pure torch.
 
 Architecture:
     Input:  state s_t = [q, dq, x_ee, x_d, dx_d, d_obs, w(q)]  (dim=state_dim=25)
@@ -47,7 +43,7 @@ class PhysicsInformedActor(nn.Module):
     def __init__(self, state_dim: int, action_dim: int,
                  hidden_dims: list[int] = (256, 256),
                  action_scale: float = 0.5,
-                 task_scale: float = 0.1,
+                 task_scale: float = 0.3,
                  nullspace_scale: float = 0.3):
         """
         Parameters
@@ -128,124 +124,131 @@ class PhysicsInformedActor(nn.Module):
 
 class PhysicsRegularizer:
     """
-    Torque constraint regularization loss (paper Eq. 10).
+    Differentiable torque constraint regularization (Plan B).
 
-    L_dyn = || relu(|τ_π| - τ_max) ||²
+    Reconstructs dq_cmd from action analytically using stored Jacobian,
+    sigma gate, and nominal task velocity — all in pure torch with full
+    gradient flow back to the actor.
 
-    Penalizes joint torques that exceed physical limits, guiding the policy to
-    learn feasible trajectories. Uses soft ReLU constraint (not hard clipping)
-    to preserve gradient flow while enforcing limits.
-
-    τ_π is computed via inverse dynamics:
-        τ_π = M(q) @ ddq + C(q,dq) @ dq + g(q)
-    where ddq ≈ (dq_new - dq_prev) / dt.
-
-    This is applied as an auxiliary loss during actor updates:
-        L_total = L_SAC + λ_dyn * L_dyn
-    This class operates on numpy arrays (called from the environment/agent),
-    and returns a torch scalar for backpropagation.
+    τ = M·ddq + C·dq + g  (simplified dynamics, matches dynamics.py)
+    L_dyn = || relu(|τ| - τ_max) ||²
     """
 
-    def __init__(self, dynamics: ManipulatorDynamics, tau_max: np.ndarray | float = 87.0,
-                 lambda_dyn: float = 0.1, lambda_collision: float = 1.0, dt: float = 0.02,
-                 collision_detector=None):
-        """
-        Parameters
-        ----------
-        dynamics          : ManipulatorDynamics instance
-        tau_max           : joint torque limits [n] or scalar (Nm). Panda default: 87 Nm
-        lambda_dyn        : weight of physics loss term
-        lambda_collision  : weight of collision loss term
-        dt                : simulation timestep for finite-difference acceleration
-        collision_detector: CollisionDetector instance (optional)
-        """
-        self.dynamics = dynamics
+    def __init__(self, dynamics, tau_max: float = 87.0,
+                 lambda_dyn: float = 0.1, dt: float = 0.02,
+                 device: str = "cpu"):
         self.dt = dt
         self.lambda_dyn = lambda_dyn
-        self.lambda_collision = lambda_collision
-        self.collision_detector = collision_detector
-        n = dynamics.n
-        if np.isscalar(tau_max):
-            self.tau_max = np.full(n, tau_max)
-        else:
-            self.tau_max = np.asarray(tau_max)
+        self.n = dynamics.n
+        self.device = torch.device(device)
 
-    def compute_loss(self, q: np.ndarray, dq: np.ndarray,
-                     dq_new: np.ndarray) -> torch.Tensor:
+        # Simplified dynamics params (matches dynamics.py _compute_simplified)
+        inertias = torch.tensor(
+            [1.0, 2.0, 1.5, 1.0, 0.8, 0.6, 0.4],
+            dtype=torch.float32
+        )[:self.n]
+        self._M_diag = inertias.to(self.device)
+        self._tau_max_t = torch.full(
+            (self.n,), tau_max, dtype=torch.float32, device=self.device
+        )
+
+    def _compute_simplified_torch(self, q: torch.Tensor,
+                                   dq: torch.Tensor,
+                                   ddq: torch.Tensor) -> torch.Tensor:
         """
-        Compute physics regularization loss (numpy inputs → torch scalar).
+        Simplified inverse dynamics entirely in torch.
+        τ = M·ddq + C·dq  (g = 0 in simplified model)
+          M = diag([1, 2, 1.5, 1, 0.8, 0.6, 0.4]) — constant inertia
+          C = diag(0.1 * dq) — viscous friction approximation
+
+        All tensors preserve gradient tracking.
+        """
+        B = q.shape[0]
+        n = q.shape[1]
+        device = q.device
+        dtype = q.dtype
+
+        # Mass matrix (constant diagonal)
+        inertias = self._M_diag.to(device=device, dtype=dtype)
+        M = torch.diag(inertias).unsqueeze(0).expand(B, -1, -1)  # (B, n, n)
+
+        # Coriolis (viscous friction)
+        C = torch.diag_embed(0.1 * dq)  # (B, n, n)
+
+        # τ = M·ddq + C·dq  (g = 0)
+        tau = M @ ddq.unsqueeze(-1) + C @ dq.unsqueeze(-1)  # (B, n, 1)
+        return tau.squeeze(-1)  # (B, n)
+
+    def compute_loss_batch(self, q_batch: torch.Tensor,
+                            dq_batch: torch.Tensor,
+                            J_batch: torch.Tensor,
+                            sigma_batch: torch.Tensor,
+                            dx_nom_batch: torch.Tensor,
+                            action_batch: torch.Tensor) -> torch.Tensor:
+        """
+        Batched physics loss with full gradient flow.
+
+        Reconstructs dq_cmd from current-policy action analytically, then
+        computes torque via simplified dynamics and penalises limit violations.
 
         Parameters
         ----------
-        q      : current joint positions   [n]
-        dq     : current joint velocities  [n]
-        dq_new : next joint velocities after action  [n]
+        q_batch       : [B x n] joint positions (from buffer, detached)
+        dq_batch      : [B x n] previous joint velocities (from buffer)
+        J_batch       : [B x 6 x n] geometric Jacobian
+        sigma_batch   : [B x 1] gate value
+        dx_nom_batch  : [B x 6] nominal task-space velocity
+        action_batch  : [B x 13] current-policy action  (*has grad*)
 
         Returns
         -------
-        L_dyn : torch scalar
-        """
-        ddq = (dq_new - dq) / self.dt
-        # Clip acceleration to prevent numerical explosion
-        ddq = np.clip(ddq, -100.0, 100.0)
-        tau = self.dynamics.compute_torque(q, dq, ddq)
-
-        tau_t = torch.tensor(tau, dtype=torch.float32)
-        tau_max_t = torch.tensor(self.tau_max, dtype=torch.float32)
-
-        violation = F.relu(tau_t.abs() - tau_max_t)
-        loss = (violation ** 2).mean()
-        return loss * self.lambda_dyn
-
-    def compute_loss_batch(self,
-                           q_batch: torch.Tensor,
-                           dq_batch: torch.Tensor,
-                           dq_new_batch: torch.Tensor,
-                           collision_detector=None) -> torch.Tensor:
-        """
-        Batch version for efficient training with collision loss.
-        Operates entirely in torch (requires dynamics in torch or loops over numpy).
-
-        Parameters
-        ----------
-        q_batch            : [batch x n]
-        dq_batch           : [batch x n]
-        dq_new_batch       : [batch x n]
-        collision_detector : CollisionDetector instance (optional)
-
-        Returns
-        -------
-        L_total : torch scalar (mean over batch) = L_dyn + L_collision
+        loss : torch scalar
         """
         B = q_batch.shape[0]
-        dyn_losses = []
-        collision_losses = []
+        n = self.n
+        device = q_batch.device
+        dtype = q_batch.dtype
+        lam = 1e-4  # damping for pseudo-inverse
 
-        for i in range(B):
-            q = q_batch[i].cpu().detach().numpy()
-            dq = dq_batch[i].cpu().detach().numpy()
-            dq_new = dq_new_batch[i].cpu().detach().numpy()
+        # Split action
+        delta_x = action_batch[:, :6]    # (B, 6)  *has grad*
+        dq0     = action_batch[:, 6:]   # (B, n)  *has grad*
 
-            # Dynamics loss (already includes lambda_dyn scaling)
-            dyn_losses.append(self.compute_loss(q, dq, dq_new))
+        # ---- Reconstruct dq_cmd from action (differentiable) ----
 
-            # Collision loss (if detector available)
-            if self.collision_detector is not None or collision_detector is not None:
-                detector = collision_detector if collision_detector is not None else self.collision_detector
-                collision_penalty, _ = detector.compute_collision_penalty(
-                    w_obstacle=100.0,
-                    w_self=50.0
-                )
-                collision_losses.append(torch.tensor(collision_penalty, dtype=torch.float32))
-            else:
-                collision_losses.append(torch.tensor(0.0, dtype=torch.float32))
+        # Pseudo-inverse: J_pinv = J^T (J J^T + λI)^{-1}
+        JJT = J_batch @ J_batch.transpose(-2, -1)  # (B, 6, 6)
+        reg = lam * torch.eye(6, device=device, dtype=dtype).unsqueeze(0)
+        JJT_inv = torch.linalg.inv(JJT + reg)
+        J_pinv = J_batch.transpose(-2, -1) @ JJT_inv  # (B, n, 6)
 
-        dyn_loss = torch.stack(dyn_losses).mean()
-        collision_loss = torch.stack(collision_losses).mean()
+        # Null-space projector: N = I - J_pinv @ J
+        I = torch.eye(n, device=device, dtype=dtype).unsqueeze(0)
+        N = I - J_pinv @ J_batch  # (B, n, n)
 
-        # lambda_dyn already applied in compute_loss, only scale collision
-        total_loss = dyn_loss + self.lambda_collision * collision_loss
-        return total_loss
+        # dq_cmd = J_pinv @ (dx_nom + σ·Δx) + N @ dq0
+        sigma_flat = sigma_batch.view(B, 1, 1)          # (B, 1, 1)
+        dx_nom_r = dx_nom_batch.view(B, 6, 1)           # (B, 6, 1)
+        delta_x_r = delta_x.view(B, 6, 1)               # (B, 6, 1)
+        dq0_r     = dq0.view(B, n, 1)                   # (B, n, 1)
+
+        dq_cmd = J_pinv @ (dx_nom_r + sigma_flat * delta_x_r) + N @ dq0_r
+        dq_cmd = dq_cmd.squeeze(-1)  # (B, n)
+
+        # ---- Torque computation (differentiable) ----
+
+        # Acceleration via finite difference
+        ddq = (dq_cmd - dq_batch) / self.dt
+        ddq = torch.clamp(ddq, -100.0, 100.0)
+
+        # Simplified dynamics in pure torch
+        torques = self._compute_simplified_torch(q_batch, dq_batch, ddq)
+
+        # ---- Torque limit violation loss ----
+        violation = F.relu(torques.abs() - self._tau_max_t)
+        loss = (violation ** 2).mean()
+
+        return loss * self.lambda_dyn
 
 
 class SoftmaxCritic(nn.Module):
@@ -294,11 +297,22 @@ if __name__ == "__main__":
 
     dyn = ManipulatorDynamics()
     reg = PhysicsRegularizer(dyn, tau_max=87.0)
-    q = np.zeros(n_joints)
-    dq = np.zeros(n_joints)
-    dq_new = np.ones(n_joints) * 0.5
-    loss = reg.compute_loss(q, dq, dq_new)
-    print(f"L_dyn (single): {loss.item():.4f}")
+
+    # Test compute_loss_batch with dummy data (Plan B signature)
+    # Use aggressive actions to exceed torque limits → verify gradient flow
+    B = 4
+    q_t = torch.zeros(B, n_joints)
+    dq_t = torch.zeros(B, n_joints)
+    J_t = torch.eye(6, n_joints).unsqueeze(0).expand(B, -1, -1)
+    sigma_t = torch.ones(B, 1) * 0.5  # partial gate opening
+    dx_nom_t = torch.full((B, 6), 0.5)  # nominal velocity
+    action_t = torch.full((B, 13), 2.0)  # large task relaxation + nullspace
+    action_t.requires_grad_(True)
+
+    loss = reg.compute_loss_batch(q_t, dq_t, J_t, sigma_t, dx_nom_t, action_t)
+    loss.backward()  # verify gradient flow
+    grad_norm = action_t.grad.abs().sum().item()
+    print(f"L_dyn (batch): {loss.item():.6f}  (|grad|={grad_norm:.4f}, flow={grad_norm > 0})")
 
     critic = SoftmaxCritic(state_dim, action_dim)
     q1, q2 = critic(s, a.detach())
