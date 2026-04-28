@@ -79,6 +79,8 @@ class CollisionDetector:
         """
         Detect self-collisions (robot links colliding with each other).
 
+        Excludes adjacent links and parent-child connections to avoid false positives.
+
         Returns
         -------
         total_penetration : sum of self-collision penetration depths (m)
@@ -111,6 +113,11 @@ class CollisionDetector:
 
             # Check if both bodies belong to robot (self-collision)
             if body1 in robot_body_ids and body2 in robot_body_ids:
+                # Exclude adjacent links (parent-child relationship)
+                # Adjacent bodies have body IDs differing by 1 in kinematic chain
+                if abs(body1 - body2) <= 1:
+                    continue  # Skip adjacent links
+
                 penetration = -contact.dist
                 if penetration > 0:
                     total_pen += penetration

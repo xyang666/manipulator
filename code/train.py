@@ -26,6 +26,7 @@ from env.dynamics import ManipulatorDynamics
 from agent.sac_agent import SACAgent
 from utils.replay_buffer import ReplayBuffer
 from utils.logger import TrainingLogger
+from utils.validation import ValidationSet, evaluate_on_validation_set
 
 
 def parse_args():
@@ -42,6 +43,12 @@ def parse_args():
                    help="Critical distance for primary task relaxation (m)")
     p.add_argument("--alpha_relax", type=float, default=0.1,
                    help="Minimum tracking weight factor when d_obs < d_critical")
+    p.add_argument("--val_json",    type=str,   default=None,
+                   help="Path to validation trajectories JSON file")
+    p.add_argument("--val_every",   type=int,   default=50,
+                   help="Evaluate on validation set every N episodes")
+    p.add_argument("--val_scenes",  type=int,   default=10,
+                   help="Number of validation scenes to evaluate")
     _here = os.path.dirname(os.path.abspath(__file__))
     _root = os.path.dirname(_here)
     _venv_data = os.path.join(_here, ".venv/lib/python3.12/site-packages/cmeel.prefix"
@@ -69,8 +76,21 @@ def main():
 
     # -------- Setup --------
     dyn = ManipulatorDynamics(args.urdf)
-    env = ManipulatorEnv(urdf_path=args.urdf, xml_path=args.xml, obs_radius=0.03,
+    env = ManipulatorEnv(urdf_path=args.urdf, xml_path=args.xml, obs_radius=0.03, n_obstacles=5,
+                         use_trajectory_generator=True,
                          d_critical=args.d_critical, alpha_relax=args.alpha_relax)
+
+    # Load validation set if provided
+    val_set = None
+    if args.val_json is not None:
+        val_json_path = args.val_json
+        if not os.path.isabs(val_json_path):
+            # Relative to project root
+            val_json_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), val_json_path)
+        if os.path.exists(val_json_path):
+            val_set = ValidationSet(val_json_path)
+        else:
+            print(f"Warning: Validation file not found at {val_json_path}")
 
     state_dim  = env.obs_dim
     action_dim = env.act_dim
@@ -141,7 +161,6 @@ def main():
 
             next_obs, reward, done, info = env.step(action)
 
-            env.render(False)
             if args.render:
                 env.render()
 
@@ -199,6 +218,28 @@ def main():
             best_reward = logger.best_reward
             ckpt_meta["best_reward"] = logger.best_reward
             agent.save(logger.checkpoint_path("best"), metadata=ckpt_meta)
+
+        # Validation evaluation
+        if val_set is not None and episode % args.val_every == 0:
+            print(f"\n{'='*60}")
+            print(f"Validation at episode {episode}")
+            print(f"{'='*60}")
+
+            val_results = evaluate_on_validation_set(
+                agent, env, val_set,
+                num_scenes=args.val_scenes,
+                max_steps=env.episode_len
+            )
+
+            print(f"Success Rate:      {val_results['success_rate']*100:.1f}%")
+            print(f"Avg Reward:        {val_results['avg_reward']:.3f}")
+            print(f"Avg Track Error:   {val_results['avg_tracking_error']:.4f}m")
+            print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
+            print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
+            print(f"{'='*60}\n")
+
+            # Log validation results
+            logger.log_validation(episode, val_results)
 
     logger.close()
     print(f"\nTraining done. Best reward: {best_reward:.3f}")

@@ -54,6 +54,16 @@ class TrainingLogger:
         self._csv_writer = csv.DictWriter(self._csv_file, fieldnames=CSV_COLUMNS)
         self._csv_writer.writeheader()
 
+        # Validation log
+        self.val_csv_path = os.path.join(run_dir, "validation_log.csv")
+        self._val_csv_file = open(self.val_csv_path, "w", newline="")
+        self._val_csv_writer = csv.DictWriter(
+            self._val_csv_file,
+            fieldnames=["episode", "success_rate", "avg_reward", "avg_tracking_error",
+                       "avg_min_distance", "collision_rate"]
+        )
+        self._val_csv_writer.writeheader()
+
         self._last_losses: dict | None = None
         self._ep_losses: list[dict] = []
         self._ep_rewards: list[float] = []
@@ -144,7 +154,23 @@ class TrainingLogger:
         """Return full path for a checkpoint file, e.g. tag='best' or 'ep00050'."""
         return os.path.join(self.run_dir, f"ckpt_{tag}.pt")
 
+    def log_validation(self, episode: int, val_results: dict) -> None:
+        """Log validation results to separate CSV."""
+        row = {
+            "episode": episode,
+            "success_rate": val_results["success_rate"],
+            "avg_reward": val_results["avg_reward"],
+            "avg_tracking_error": val_results["avg_tracking_error"],
+            "avg_min_distance": val_results["avg_min_distance"],
+            "collision_rate": val_results["collision_rate"],
+        }
+        self._val_csv_writer.writerow(row)
+        self._val_csv_file.flush()
+
     def close(self) -> None:
-        """Flush and close the CSV file."""
+        """Flush and close the CSV files."""
         self._csv_file.flush()
+        self._csv_file.close()
+        self._val_csv_file.flush()
+        self._val_csv_file.close()
         self._csv_file.close()

@@ -33,6 +33,7 @@ from env.dynamics import ManipulatorDynamics
 from agent.reward import RewardFunction
 from utils.sdf import ObstacleSDF
 from utils.collision import CollisionDetector
+from trajectory.generator import TrajectoryGenerator
 
 try:
     from control.mpc_controller import MPCController
@@ -71,7 +72,9 @@ class ManipulatorEnv:
                  time_decoupled: bool = False,
                  path_progress_threshold: float = 0.02,
                  d_critical: float = 0.05,
-                 alpha_relax: float = 0.1):
+                 alpha_relax: float = 0.1,
+                 use_trajectory_generator: bool = False,
+                 manipulability_threshold: float = 0.01):
         """
         Parameters
         ----------
@@ -85,12 +88,15 @@ class ManipulatorEnv:
         mpc_horizon : MPC prediction horizon
         time_decoupled : if True, use parameterized path (s ∈ [0,1]) instead of time-based trajectory
         path_progress_threshold : distance threshold to advance path parameter s
+        use_trajectory_generator : if True, use TrajectoryGenerator for reset
+        manipulability_threshold : minimum manipulability for generated trajectories
         """
         self.n = n_joints
         self.dt = dt
         self.episode_len = episode_len
         self.time_decoupled = time_decoupled
         self.path_progress_threshold = path_progress_threshold
+        self.use_trajectory_generator = use_trajectory_generator
 
         # Observation: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), d_obs(1), w(1)] = 25
         self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1  # 25
@@ -100,6 +106,17 @@ class ManipulatorEnv:
 
         self.kin = ManipulatorKinematics(urdf_path, n_joints)
         self.dyn = ManipulatorDynamics(urdf_path, n_joints)
+
+        # Trajectory generator (optional)
+        self.traj_gen = None
+        if use_trajectory_generator and urdf_path is not None:
+            self.traj_gen = TrajectoryGenerator(
+                urdf_path=urdf_path,
+                n_joints=n_joints,
+                manipulability_threshold=manipulability_threshold,
+                obstacle_radius_range=(obs_radius * 0.5, obs_radius * 1.5)
+            )
+            print(f"[env] TrajectoryGenerator enabled with manip_threshold={manipulability_threshold}")
 
         # MuJoCo setup
         self.mj_model = None
@@ -255,7 +272,14 @@ class ManipulatorEnv:
         )
         # Success: reached goal endpoint (not current target)
         success = np.linalg.norm(x_ee - self.x_goal) < 0.02
-        collision = d_obs < 0.02
+
+        # Collision detection: use MuJoCo collision detector from reward_info;
+        # fall back to SDF distance when MuJoCo is unavailable
+        if self.mj_model is not None:
+            collision = (reward_info.get("n_obstacle_contacts", 0) > 0 or
+                         reward_info.get("n_self_contacts", 0) > 0)
+        else:
+            collision = d_obs < 0.02
 
         # Termination conditions
         if self.time_decoupled:
@@ -351,11 +375,12 @@ class ManipulatorEnv:
             scene.ngeom += 1
 
         # 2. Draw obstacles (semi-transparent red spheres)
-        for obs_center in self.sdf.centers:
+        for i, obs_center in enumerate(self.sdf.centers):
             if scene.ngeom >= scene.maxgeom:
                 break
 
-            size = np.array([self.sdf.radius, 0, 0])
+            # Use individual radius for each obstacle
+            size = np.array([self.sdf.radii[i], 0, 0])
 
             mujoco.mjv_initGeom(
                 scene.geoms[scene.ngeom],
@@ -410,47 +435,118 @@ class ManipulatorEnv:
 
     def _reset_state(self):
         """
-        场景1：人机协作-狭窄空间装配（论文 Section 4.1.3）
-        - 轨迹：直线插入，从 [0.5, 0.0, 0.5]m 沿 z 轴向下至 [0.5, 0.0, 0.3]m
-        - 优化：y=0避开奇异区域，轨迹长度0.2m，速度降低以提高跟踪精度
-        - 考核：末端跟踪精度（<5mm）和连杆避障能力
+        Reset environment state with trajectory and obstacles.
+
+        If use_trajectory_generator=True, generates collision-free scenes using TrajectoryGenerator.
+        Otherwise uses default fixed trajectory (legacy behavior).
         """
         self.step_count = 0
         self._integral_err = np.zeros(3)
 
-        # 优化后的起点和目标点（避开y=0.3奇异区域）
-        self.x_start = np.array([0.8, 0.0, 0.5])
-        self.x_goal = np.array([0.8, 0.0, 0.3])
+        if self.use_trajectory_generator and self.traj_gen is not None:
+            # Generate new scene using TrajectoryGenerator
+            scene = self.traj_gen.generate_scene(
+                scene_id=0,
+                n_obstacles=self.sdf.n_obs,
+                max_attempts=100
+            )
 
-        # 当前目标点（初始为起点，训练时逐步向目标移动）
+            if scene is not None:
+                # Extract trajectory
+                self.x_start = np.array(scene["start"])
+                self.x_goal = np.array(scene["goal"])
+
+                # Extract obstacles
+                obstacles = scene["obstacles"]
+                obstacle_centers = [np.array(obs[:3]) for obs in obstacles]
+                obstacle_radii = [obs[3] for obs in obstacles]
+
+                # Update SDF with variable radii
+                self.sdf.set_static_obstacles(obstacle_centers, obstacle_radii)
+
+                # print(f"[env] Generated scene: manip={scene['manipulability_mean']:.4f}, "
+                #       f"dist={np.linalg.norm(self.x_goal - self.x_start):.3f}m")
+            else:
+                print("[env] WARNING: Scene generation failed, using default trajectory")
+                self._reset_state_default()
+                return
+        else:
+            # Use default fixed trajectory
+            self._reset_state_default()
+            return
+
+        # Current target (starts at start position)
         self.x_d = self.x_start.copy()
-        self.dx_d = np.array([0.0, 0.0, -0.1])  # 向下速度 0.1 m/s
 
-        # 初始关节配置：通过逆运动学求解使末端位于起点
-        q_init = self.kin.inverse_kinematics(self.x_start)
+        # Desired velocity (towards goal)
+        direction = self.x_goal - self.x_start
+        distance = np.linalg.norm(direction)
+        if distance > 1e-6:
+            self.dx_d = (direction / distance) * 0.1  # 0.1 m/s
+        else:
+            self.dx_d = np.zeros(3)
+
+        # Initial joint configuration via IK
+        q_init = self.kin.inverse_kinematics(
+            # np.concatenate([self.x_start, np.array([0, 0, 0, 1])])
+            self.x_start
+        )
         if q_init is not None:
             self.q = q_init
         else:
-            # IK失败时使用home pose作为fallback
             print("[env] WARNING: IK failed for start position, using home pose")
             self.q = np.array([0.0, 0.0, 0.0, -1.57, 0.0, 1.57, 0.785])
 
         self.dq = np.zeros(self.n)
-
-        if self.sdf.n_obs > 0:
-            obstacle_centers = self._generate_obstacles_near_trajectory()
-            self.sdf.set_static_obstacles(obstacle_centers)
-        else:
-            self.sdf.set_static_obstacles([])
         self._sync_obstacles_to_mujoco()
 
-        # Reset MuJoCo state and clamp fingers closed
+        # Reset MuJoCo state
         if self.mj_data is not None:
             self.mj_data.qpos[:self.n] = self.q
             self.mj_data.qvel[:self.n] = self.dq
             self.mj_data.qpos[self.n:self.n + 2] = 0.0
             self.mj_data.qvel[self.n:self.n + 2] = 0.0
-            mujoco.mj_forward(self.mj_model, self.mj_data)  # Update kinematics
+            mujoco.mj_forward(self.mj_model, self.mj_data)
+
+    def _reset_state_default(self):
+        """
+        Default fixed trajectory (legacy behavior).
+        场景1：人机协作-狭窄空间装配（论文 Section 4.1.3）
+        """
+        # Fixed trajectory
+        self.x_start = np.array([0.8, 0.0, 0.5])
+        self.x_goal = np.array([0.8, 0.0, 0.3])
+        self.x_d = self.x_start.copy()
+        self.dx_d = np.array([0.0, 0.0, -0.1])
+
+        # IK for initial configuration
+        q_init = self.kin.inverse_kinematics(
+            np.concatenate([self.x_start, np.array([0, 0, 0, 1])])
+        )
+        if q_init is not None:
+            self.q = q_init
+        else:
+            print("[env] WARNING: IK failed, using home pose")
+            self.q = np.array([0.0, 0.0, 0.0, -1.57, 0.0, 1.57, 0.785])
+
+        self.dq = np.zeros(self.n)
+
+        # Generate obstacles near trajectory
+        if self.sdf.n_obs > 0:
+            obstacle_centers = self._generate_obstacles_near_trajectory()
+            self.sdf.set_static_obstacles(obstacle_centers)
+        else:
+            self.sdf.set_static_obstacles([])
+
+        self._sync_obstacles_to_mujoco()
+
+        # Reset MuJoCo
+        if self.mj_data is not None:
+            self.mj_data.qpos[:self.n] = self.q
+            self.mj_data.qvel[:self.n] = self.dq
+            self.mj_data.qpos[self.n:self.n + 2] = 0.0
+            self.mj_data.qvel[self.n:self.n + 2] = 0.0
+            mujoco.mj_forward(self.mj_model, self.mj_data)
 
     def _generate_obstacles_near_trajectory(self) -> list:
         """
@@ -462,7 +558,9 @@ class ManipulatorEnv:
             List of obstacle center positions
         """
         obstacles = []
-        min_dist_to_trajectory = self.sdf.radius + 0.05  # Safety margin: radius + 5cm
+        # Use default radius for legacy obstacle generation
+        default_radius = self.sdf.default_radius
+        min_dist_to_trajectory = default_radius + 0.05  # Safety margin: radius + 5cm
         max_attempts = 100
 
         # Trajectory bounding box with margin
@@ -482,7 +580,7 @@ class ManipulatorEnv:
                 # Check distance to existing obstacles
                 too_close = False
                 for existing_obs in obstacles:
-                    if np.linalg.norm(candidate - existing_obs) < 2 * self.sdf.radius:
+                    if np.linalg.norm(candidate - existing_obs) < 2 * default_radius:
                         too_close = True
                         break
 
