@@ -30,19 +30,22 @@ class SACAgent:
                  state_dim:    int,
                  action_dim:   int,
                  dynamics,
-                 lr:           float = 1e-4,
+                 lr:           float = 3e-4,
                  gamma:        float = 0.99,
                  tau:          float = 0.005,
                  alpha:        float = 0.2,
                  lambda_dyn:   float = 0.1,
                  action_scale: float = 0.3,
                  hidden_dims:  tuple = (256, 256),
-                 device:       str   = "cpu"):
+                 device:       str   = "cpu",
+                 critic_warmup: int = 5000):
         self.gamma       = gamma
         self.tau         = tau
         self.alpha       = alpha
         self.lambda_dyn  = lambda_dyn
         self.device      = torch.device(device)
+        self.critic_warmup = critic_warmup
+        self._update_count = 0
 
         # Networks
         self.actor   = PhysicsInformedActor(state_dim, action_dim,
@@ -110,45 +113,49 @@ class SACAgent:
         torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
         self.critic_opt.step()
 
-        # -------- Actor update (with differentiable physics loss) --------
-        a_new, log_pi, _ = self.actor.sample(s)
-        q_min = self.critic.q_min(s, a_new)
+        self._update_count += 1
+        doing_warmup = self._update_count < self.critic_warmup
 
-        actor_rl_loss = (self.alpha * log_pi - q_min).mean()
+        if not doing_warmup:
+            # -------- Actor update (with differentiable physics loss) --------
+            a_new, log_pi, _ = self.actor.sample(s)
+            q_min = self.critic.q_min(s, a_new)
 
-        # Differentiable physics regularization (Plan B)
-        # Reconstruct dq_cmd from current-policy action analytically
-        q_t  = torch.FloatTensor(batch["q"]).to(self.device)
-        dq_t = torch.FloatTensor(batch["dq"]).to(self.device)
-        J_t  = torch.FloatTensor(batch["J"]).to(self.device)
-        sigma_t = torch.FloatTensor(batch["sigma"]).to(self.device)
-        dx_nom_t = torch.FloatTensor(batch["dx_nom"]).to(self.device)
+            actor_rl_loss = (self.alpha * log_pi - q_min).mean()
 
-        physics_loss = self.physics.compute_loss_batch(
-            q_batch=q_t, dq_batch=dq_t,
-            J_batch=J_t, sigma_batch=sigma_t, dx_nom_batch=dx_nom_t,
-            action_batch=a_new,  # current-policy action — has gradients!
-        )
+            # Differentiable physics regularization (Plan B)
+            # Reconstruct dq_cmd from current-policy action analytically
+            q_t  = torch.FloatTensor(batch["q"]).to(self.device)
+            dq_t = torch.FloatTensor(batch["dq"]).to(self.device)
+            J_t  = torch.FloatTensor(batch["J"]).to(self.device)
+            sigma_t = torch.FloatTensor(batch["sigma"]).to(self.device)
+            dx_nom_t = torch.FloatTensor(batch["dx_nom"]).to(self.device)
 
-        # Safety check for NaN/Inf
-        if torch.isnan(physics_loss) or torch.isinf(physics_loss):
-            physics_loss = torch.tensor(0.0, device=self.device)
+            physics_loss = self.physics.compute_loss_batch(
+                q_batch=q_t, dq_batch=dq_t,
+                J_batch=J_t, sigma_batch=sigma_t, dx_nom_batch=dx_nom_t,
+                action_batch=a_new,  # current-policy action — has gradients!
+            )
 
-        actor_loss = actor_rl_loss + physics_loss
+            # Safety check for NaN/Inf
+            if torch.isnan(physics_loss) or torch.isinf(physics_loss):
+                physics_loss = torch.tensor(0.0, device=self.device)
 
-        self.actor_opt.zero_grad()
-        actor_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
-        self.actor_opt.step()
+            actor_loss = actor_rl_loss + physics_loss
 
-        # -------- Alpha (entropy) update --------
-        with torch.no_grad():
-            _, log_pi_new, _ = self.actor.sample(s)
-        alpha_loss = -(self.log_alpha * (log_pi_new + self.target_entropy)).mean()
-        self.alpha_opt.zero_grad()
-        alpha_loss.backward()
-        self.alpha_opt.step()
-        self.alpha = self.log_alpha.exp().item()
+            self.actor_opt.zero_grad()
+            actor_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
+            self.actor_opt.step()
+
+            # -------- Alpha (entropy) update --------
+            with torch.no_grad():
+                _, log_pi_new, _ = self.actor.sample(s)
+            alpha_loss = -(self.log_alpha * (log_pi_new + self.target_entropy)).mean()
+            self.alpha_opt.zero_grad()
+            alpha_loss.backward()
+            self.alpha_opt.step()
+            self.alpha = self.log_alpha.exp().item()
 
         # -------- Soft update target critic --------
         for p, p_t in zip(self.critic.parameters(), self.critic_target.parameters()):
@@ -156,9 +163,9 @@ class SACAgent:
 
         return {
             "critic_loss":  critic_loss.item(),
-            "actor_rl_loss": actor_rl_loss.item(),
-            "physics_loss": physics_loss.item(),
-            "actor_loss":   actor_loss.item(),
+            "actor_rl_loss": actor_rl_loss.item() if not doing_warmup else 0.0,
+            "physics_loss": physics_loss.item() if not doing_warmup else 0.0,
+            "actor_loss":   actor_loss.item() if not doing_warmup else 0.0,
             "alpha":        self.alpha,
         }
 

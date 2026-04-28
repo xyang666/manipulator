@@ -22,6 +22,7 @@ class RewardFunction:
     def __init__(self,
                  w_track:       float = 1.0,
                  w_obs:         float = 2.0,
+                 w_obs_safe:    float = 0.5,
                  w_manip:       float = 0.05,
                  w_energy:      float = 0.001,
                  w_collision:   float = 1.0,
@@ -32,6 +33,7 @@ class RewardFunction:
                  collision_detector = None):
         self.w_track       = w_track
         self.w_obs         = w_obs
+        self.w_obs_safe    = w_obs_safe
         self.w_manip       = w_manip
         self.w_energy      = w_energy
         self.w_collision   = w_collision
@@ -78,9 +80,9 @@ class RewardFunction:
         w_eff = self._effective_track_weight(d_obs)
         r_track = -w_eff * pos_err ** 2
 
-        # Obstacle reward (paper Section 3.2, SDF-based dense reward)
+        # Obstacle reward: positive bonus when safe, dense penalty when close
         if d_obs >= self.d_safe:
-            r_obs = 0.0
+            r_obs = self.w_obs_safe * min(d_obs / self.d_safe, 2.0)  # positive for staying safe
         else:
             obs_depth = min(self.d_safe - d_obs, self.d_safe * 2.0)  # cap at 2x d_safe
             r_obs = -self.w_obs * obs_depth / self.d_safe

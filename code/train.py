@@ -33,10 +33,12 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--steps",       type=int,   default=500_000,
                    help="Total environment steps (SAC typically needs 500k-1M)")
-    p.add_argument("--batch_size",  type=int,   default=256)
+    p.add_argument("--batch_size",  type=int,   default=512)
     p.add_argument("--start_steps", type=int,   default=10_000,
                    help="Random exploration steps before training begins")
     p.add_argument("--update_every",type=int,   default=1)
+    p.add_argument("--grad_steps",  type=int,   default=4,
+                   help="Number of gradient updates per env step")
     p.add_argument("--buffer_size", type=int,   default=100_000)
     p.add_argument("--lambda_dyn",  type=float, default=0.01,
                    help="Weight of physics regularization loss")
@@ -101,7 +103,8 @@ def main():
         action_dim=action_dim,
         dynamics=dyn,
         lambda_dyn=args.lambda_dyn,
-        device='cuda' if torch.cuda.is_available() else 'cpu'
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        critic_warmup=5000,
     )
     buffer = ReplayBuffer(args.buffer_size, state_dim, action_dim)
 
@@ -180,16 +183,17 @@ def main():
             total_steps += 1
             ep_steps    += 1
 
-            # Training update
+            # Training update (multiple gradient steps per env step)
             if (total_steps >= args.start_steps and
                     len(buffer) >= args.batch_size and
                     total_steps % args.update_every == 0):
 
-                batch = buffer.sample(args.batch_size)
-                losses = agent.update(batch)
-                logger.log_update(losses)
-                ep_l_actor += losses["actor_rl_loss"]
-                ep_l_dyn   += losses["physics_loss"]
+                for _ in range(args.grad_steps):
+                    batch = buffer.sample(args.batch_size)
+                    losses = agent.update(batch)
+                    logger.log_update(losses)
+                    ep_l_actor += losses["actor_rl_loss"]
+                    ep_l_dyn   += losses["physics_loss"]
 
         episode += 1
         ep_summary = logger.end_episode(episode, total_steps)
