@@ -113,8 +113,7 @@ def main():
         print("-" * 50)
 
         action = np.zeros(13)
-        for i in range(n_steps + 1):
-            env.x_d = (1 - i / n_steps) * start_pos + (i / n_steps) * goal_pos
+        for i in range(env.episode_len + 1):
             _, _, done, info = env.step(action)
 
             d_obs = info.get("d_obs", 0.0)
@@ -126,7 +125,7 @@ def main():
                 n_total, n_obs_ct, total_pen = 0, 0, 0.0
 
             flag = " COLLIDE" if (d_obs < 0.02 or n_obs_ct > 0) else ""
-            print(f"{i / n_steps:6.2f} {d_obs:8.4f} {n_total:12d} {n_obs_ct:8d} {total_pen:12.4f}{flag}")
+            s = info.get("path_param", 0.0); print(f"{s:6.3f} {d_obs:8.4f} {n_total:12d} {n_obs_ct:8d} {total_pen:12.4f}{flag}")
 
         return
 
@@ -147,13 +146,9 @@ def main():
     print("Close viewer to exit.")
 
     action = np.zeros(13)
-    for i in range(n_steps):
+    for i in range(env.episode_len):
         if not env._viewer.is_running():
             break
-
-        # Update target
-        progress = min(1.0, i / n_steps)
-        env.x_d = (1 - progress) * start_pos + progress * goal_pos
 
         # Step with KP PD controller (zero action = pure tracking, no relaxation)
         _, _, _, info = env.step(action)

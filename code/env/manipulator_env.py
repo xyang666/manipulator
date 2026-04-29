@@ -5,11 +5,10 @@ MuJoCo-based 7-DOF manipulator environment with:
   - 13D action space: [Δẋ_RL (6), dq0 (7)] — task relaxation + null-space self-motion
   - Dense reward combining tracking, obstacle avoidance, manipulability, energy
   - Signed distance field (simplified sphere model) for obstacle detection
-  - Time-decoupled path tracking mode (parameterized by s ∈ [0,1])
+  - Tracking-error-driven path progression (parameterized by s ∈ [0,1])
 
 Observation space (paper Eq. state):
-    Standard mode: s = [q (7), dq (7), x_ee (3), x_d (3), dx_d (3), d_obs (1), w(q) (1)]  dim=25
-    Time-decoupled: same + s (1)  dim=26
+    s = [q (7), dq (7), x_ee (3), x_d (3), dx_d (3), d_obs (1), w(q) (1)]  dim=25
 
 Action space (paper):
     a = [Δẋ_RL ∈ R^6, dq0 ∈ R^7]  dim=13
@@ -69,8 +68,6 @@ class ManipulatorEnv:
                  obs_radius: float = 0.1,
                  use_mpc: bool = False,
                  mpc_horizon: int = 10,
-                 time_decoupled: bool = False,
-                 path_progress_threshold: float = 0.02,
                  d_critical: float = 0.05,
                  alpha_relax: float = 0.1,
                  use_trajectory_generator: bool = False,
@@ -86,22 +83,16 @@ class ManipulatorEnv:
         obs_radius  : obstacle radius (m)
         use_mpc     : whether to use MPC controller
         mpc_horizon : MPC prediction horizon
-        time_decoupled : if True, use parameterized path (s ∈ [0,1]) instead of time-based trajectory
-        path_progress_threshold : distance threshold to advance path parameter s
         use_trajectory_generator : if True, use TrajectoryGenerator for reset
         manipulability_threshold : minimum manipulability for generated trajectories
         """
         self.n = n_joints
         self.dt = dt
         self.episode_len = episode_len
-        self.time_decoupled = time_decoupled
-        self.path_progress_threshold = path_progress_threshold
         self.use_trajectory_generator = use_trajectory_generator
 
         # Observation: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), d_obs(1), w(1)] = 25
         self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1  # 25
-        if time_decoupled:
-            self.obs_dim += 1  # add s to observation
         self.act_dim = 6 + n_joints  # 13D: 6 for task relaxation + 7 for null-space
 
         self.kin = ManipulatorKinematics(urdf_path, n_joints)
@@ -152,9 +143,8 @@ class ManipulatorEnv:
         self.ee_trajectory = []
         self.max_trajectory_len = 500
 
-        # Path parameterization (time-decoupled mode)
+        # Path parameterization (tracking-error-driven)
         self.path_param = 0.0  # s ∈ [0, 1]
-        self.path_waypoints = []  # List of 3D positions defining the path
 
         self._reset_state()
 
@@ -167,12 +157,7 @@ class ManipulatorEnv:
             np.random.seed(seed)
         self._reset_state()
         self.ee_trajectory.clear()
-
-        # Initialize path parameter
-        if self.time_decoupled:
-            self.path_param = 0.0
-            self._generate_path()
-
+        self.path_param = 0.0
         return self._get_obs()
 
     def step(self, action: np.ndarray):
@@ -238,31 +223,38 @@ class ManipulatorEnv:
             self.q = q_new
             self.dq = dq_new
 
-        # Update target based on mode
-        if self.time_decoupled:
-            # Update path parameter based on tracking error
-            x_ee, _ = self.kin.forward_kinematics(self.q)
-            target_pos = self._get_path_position(self.path_param)
-            tracking_error = np.linalg.norm(x_ee - target_pos)
+        # Tracking-error-driven path progression with trapezoidal speed profile
+        x_ee, _ = self.kin.forward_kinematics(self.q)
+        tracking_error = np.linalg.norm(x_ee - self.x_d)
 
-            # Advance path parameter if close enough to current target
-            if tracking_error < self.path_progress_threshold:
-                self.path_param = min(1.0, self.path_param + 0.01)
+        # Nominal path parameter (trapezoidal: ease-in → constant → ease-out)
+        total = self.episode_len
+        a_end = int(total * 0.2)
+        d_start = int(total * 0.8)
 
-            # Update target to current path position
-            self.x_d = self._get_path_position(self.path_param)
-            self.dx_d = np.zeros(3)  # No velocity reference in time-decoupled mode
+        if self.step_count < a_end:
+            t = self.step_count / max(1, a_end)
+            nominal_s = t * t * a_end / total  # quadratic ease-in
+        elif self.step_count > d_start:
+            rem = max(1, total - d_start)
+            t = (self.step_count - d_start) / rem
+            nominal_s = d_start / total + (2.0 * t - t * t) * rem / total  # quadratic ease-out
         else:
-            # Time-based mode: linear interpolation along insertion trajectory
-            # Progress from x_start to x_goal over episode_len steps
-            progress = min(1.0, self.step_count / self.episode_len)
-            self.x_d = (1 - progress) * self.x_start + progress * self.x_goal
-            # Compute actual velocity based on trajectory and time
-            trajectory_length = np.linalg.norm(self.x_goal - self.x_start)
-            trajectory_time = self.episode_len * self.dt
-            velocity_magnitude = trajectory_length / trajectory_time
-            direction = (self.x_goal - self.x_start) / trajectory_length
-            self.dx_d = velocity_magnitude * direction
+            nominal_s = self.step_count / total  # linear
+
+        # Modulate by tracking error: error > 0.1m → freeze, error ≈ 0 → catch up
+        advance_rate = float(np.clip(1.0 - tracking_error / 0.1, 0.0, 1.0))
+        self.path_param = min(1.0, self.path_param + (nominal_s - self.path_param) * advance_rate)
+
+        # Update target position
+        self.x_d = (1.0 - self.path_param) * self.x_start + self.path_param * self.x_goal
+
+        # Desired feed-forward velocity along path
+        direction = self.x_goal - self.x_start
+        dist = np.linalg.norm(direction)
+        if dist > 1e-6:
+            path_speed = advance_rate * dist / (total * self.dt)
+            self.dx_d[:3] = (direction / dist) * path_speed
 
         self.step_count += 1
 
@@ -281,9 +273,6 @@ class ManipulatorEnv:
             x_d=self.x_d, dx_d=self.dx_d,
             d_obs=d_obs, w=w
         )
-        # Success: reached goal endpoint (not current target)
-        success = np.linalg.norm(x_ee - self.x_goal) < 0.02
-
         # Collision detection: use MuJoCo collision detector from reward_info;
         # fall back to SDF distance when MuJoCo is unavailable
         if self.mj_model is not None:
@@ -293,15 +282,10 @@ class ManipulatorEnv:
             collision = d_obs < 0.02
 
         # Termination conditions (collision does NOT terminate — agent needs to learn recovery)
-        if self.time_decoupled:
-            # Success if reached end of path
-            path_complete = self.path_param >= 0.99
-            done = self.step_count >= self.episode_len or path_complete
-            info = {"d_obs": d_obs, "w": w, "success": path_complete, "collision": collision,
-                    "path_param": self.path_param, **reward_info}
-        else:
-            done = self.step_count >= self.episode_len or success
-            info = {"d_obs": d_obs, "w": w, "success": success, "collision": collision, **reward_info}
+        path_complete = self.path_param >= 0.99
+        done = self.step_count >= self.episode_len or path_complete
+        info = {"d_obs": d_obs, "w": w, "success": path_complete, "collision": collision,
+                "path_param": self.path_param, **reward_info}
 
         return self._get_obs(), reward, done, info
 
@@ -684,9 +668,6 @@ class ManipulatorEnv:
         dx_cmd = np.zeros(6)
         dx_cmd[:3] = self.dx_d[:3] + Kp * pos_err + Ki * self._integral_err
 
-        # Velocity saturation: conservative limit
-        dx_cmd[:3] = np.clip(dx_cmd[:3], -0.3, 0.3)
-
         return dx_cmd
 
     def _mujoco_step(self, dq_cmd):
@@ -723,10 +704,6 @@ class ManipulatorEnv:
             self.q, self.dq, x_ee, self.x_d, self.dx_d[:3],
             [d_obs], [w]
         ])
-
-        # Add path parameter if time-decoupled
-        if self.time_decoupled:
-            obs = np.concatenate([obs, [self.path_param]])
 
         return obs.astype(np.float32)
 
@@ -779,54 +756,11 @@ class ManipulatorEnv:
 
         return self.mj_data.qpos[:self.n].copy()
 
-    def _generate_path(self):
-        """Generate a parameterized path from start to goal."""
-        x_start, _ = self.kin.forward_kinematics(self.q)
-
-        # Generate waypoints (e.g., straight line or curved path)
-        n_waypoints = 20
-        self.path_waypoints = []
-
-        for i in range(n_waypoints + 1):
-            alpha = i / n_waypoints
-            # Linear interpolation (can be replaced with spline/bezier)
-            waypoint = (1 - alpha) * x_start + alpha * self.x_d
-            self.path_waypoints.append(waypoint)
-
-    def _get_path_position(self, s: float) -> np.ndarray:
-        """
-        Get position on path at parameter s ∈ [0, 1].
-
-        Parameters
-        ----------
-        s : path parameter (0 = start, 1 = end)
-
-        Returns
-        -------
-        position : [3] position on path
-        """
-        if len(self.path_waypoints) == 0:
-            return self.x_d
-
-        # Map s to waypoint index
-        idx_float = s * (len(self.path_waypoints) - 1)
-        idx = int(np.floor(idx_float))
-        alpha = idx_float - idx
-
-        # Clamp to valid range
-        idx = max(0, min(idx, len(self.path_waypoints) - 2))
-
-        # Linear interpolation between waypoints
-        p0 = self.path_waypoints[idx]
-        p1 = self.path_waypoints[idx + 1]
-
-        return (1 - alpha) * p0 + alpha * p1
-
 if __name__ == "__main__":
     env = ManipulatorEnv()
     obs = env.reset()
     print(f"obs shape: {obs.shape}  (expected ({env.obs_dim},))")
-    action = np.zeros(env.n)
+    action = np.zeros(env.act_dim)
     obs, r, done, info = env.step(action)
     print(f"step ok  reward={r:.4f}  d_obs={info['d_obs']:.3f}")
     print("manipulator_env.py unit test PASSED")
