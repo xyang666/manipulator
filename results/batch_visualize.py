@@ -30,14 +30,17 @@ print(f"Generating visualizations in 3x3 grids...")
 num_scenes = len(viz.scenes)
 batch_size = 9
 
+# Use dataset indices instead of scene IDs (handles gaps from rejected scenes)
+scene_ids = [s["scene_id"] for s in viz.scenes]
+
 for batch_idx in range(0, num_scenes, batch_size):
     end_idx = min(batch_idx + batch_size, num_scenes)
-    scene_ids = list(range(batch_idx, end_idx))
+    batch = scene_ids[batch_idx:end_idx]
 
-    output_path = output_dir / f"scenes_{batch_idx:03d}_{end_idx-1:03d}.png"
+    output_path = output_dir / f"scenes_{batch[0]:03d}_{batch[-1]:03d}.png"
 
-    print(f"  Batch {batch_idx//batch_size + 1}: scenes {batch_idx}-{end_idx-1}")
-    viz.visualize_multiple(scene_ids, save_path=str(output_path))
+    print(f"  Batch {batch_idx//batch_size + 1}: scenes {batch[0]}-{batch[-1]}")
+    viz.visualize_multiple(batch, save_path=str(output_path))
 
 print(f"\nAll visualizations saved to: {output_dir}")
 print(f"Total batches: {(num_scenes + batch_size - 1) // batch_size}")

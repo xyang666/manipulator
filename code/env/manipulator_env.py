@@ -659,7 +659,7 @@ class ManipulatorEnv:
             # Sync radius via geom size
             gid = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_GEOM, f"obs{i}")
             if gid >= 0:
-                self.mj_model.geom_size[gid, 0] = self.sdf.radius
+                self.mj_model.geom_size[gid, 0] = self.sdf.radii[i]
 
     def _compute_task_velocity(self) -> np.ndarray:
         """

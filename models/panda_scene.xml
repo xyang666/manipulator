@@ -17,7 +17,7 @@
 
   <worldbody>
     <light pos="0 0 2" dir="0 0 -1" diffuse="0.8 0.8 0.8" />
-    <geom name="floor" type="plane" size="2 2 0.1" pos="0 0 0" rgba="0.8 0.8 0.8 1" />
+    <geom name="floor" type="plane" size="2 2 0.1" pos="0 0 0" rgba="0.8 0.8 0.8 1" contype="0" conaffinity="0"/>
 
     <geom type="mesh" mesh="link0" />
     <body name="panda_link1" pos="0 0 0.333">
@@ -96,6 +96,37 @@
         </body>
       </body>
     </body>
+  <!-- Obstacle mocap bodies (up to 10, positioned dynamically) -->
+  <body name="obstacle0" mocap="true" pos="0 0 0">
+    <geom name="obs0" type="sphere" size="0.03" rgba="1 0 0 0.6" contype="1" conaffinity="1" />
+  </body>
+  <body name="obstacle1" mocap="true" pos="0 0 0">
+    <geom name="obs1" type="sphere" size="0.03" rgba="1 0 0 0.6" contype="1" conaffinity="1" />
+  </body>
+  <body name="obstacle2" mocap="true" pos="0 0 0">
+    <geom name="obs2" type="sphere" size="0.03" rgba="1 0 0 0.6" contype="1" conaffinity="1" />
+  </body>
+  <body name="obstacle3" mocap="true" pos="0 0 0">
+    <geom name="obs3" type="sphere" size="0.03" rgba="1 0 0 0.6" contype="1" conaffinity="1" />
+  </body>
+  <body name="obstacle4" mocap="true" pos="0 0 0">
+    <geom name="obs4" type="sphere" size="0.03" rgba="1 0 0 0.6" contype="1" conaffinity="1" />
+  </body>
+  <body name="obstacle5" mocap="true" pos="0 0 0">
+    <geom name="obs5" type="sphere" size="0.03" rgba="1 0 0 0.6" contype="1" conaffinity="1" />
+  </body>
+  <body name="obstacle6" mocap="true" pos="0 0 0">
+    <geom name="obs6" type="sphere" size="0.03" rgba="1 0 0 0.6" contype="1" conaffinity="1" />
+  </body>
+  <body name="obstacle7" mocap="true" pos="0 0 0">
+    <geom name="obs7" type="sphere" size="0.03" rgba="1 0 0 0.6" contype="1" conaffinity="1" />
+  </body>
+  <body name="obstacle8" mocap="true" pos="0 0 0">
+    <geom name="obs8" type="sphere" size="0.03" rgba="1 0 0 0.6" contype="1" conaffinity="1" />
+  </body>
+  <body name="obstacle9" mocap="true" pos="0 0 0">
+    <geom name="obs9" type="sphere" size="0.03" rgba="1 0 0 0.6" contype="1" conaffinity="1" />
+  </body>
   </worldbody>
 
     <!-- Torque actuators for 7 arm joints -->

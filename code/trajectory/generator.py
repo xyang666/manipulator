@@ -253,8 +253,58 @@ class TrajectoryGenerator:
 
         return obstacles
 
+    # ------------------------------------------------------------------
+    # Full-arm collision check (capsule-based)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _capsule_sphere_distance(p1: np.ndarray, p2: np.ndarray,
+                                 cap_radius: float,
+                                 center: np.ndarray,
+                                 sphere_radius: float) -> float:
+        """Signed distance between a capsule and a sphere (positive = separated)."""
+        segment = p2 - p1
+        seg_len = np.linalg.norm(segment)
+        if seg_len < 1e-8:
+            return np.linalg.norm(center - p1) - cap_radius - sphere_radius
+        direction = segment / seg_len
+        t = np.dot(center - p1, direction)
+        t = np.clip(t, 0, seg_len)
+        closest = p1 + t * direction
+        return np.linalg.norm(center - closest) - cap_radius - sphere_radius
+
+    def check_arm_collision(self, q: np.ndarray, obstacles: list,
+                            clearance: float = 0.02) -> bool:
+        """
+        Check if the full arm (capsule model) collides with any obstacle.
+
+        Parameters
+        ----------
+        q          : joint configuration (n,)
+        obstacles  : list of [x, y, z, r] obstacle specifications
+        clearance  : minimum allowed distance (m) from arm surface to obstacle surface
+
+        Returns
+        -------
+        collision : True if any link penetrates an obstacle beyond clearance
+        """
+        capsules = self.kin.get_link_capsules(q)
+        for p1, p2, cap_radius in capsules:
+            for obs in obstacles:
+                center = np.array(obs[:3], dtype=float)
+                sphere_radius = float(obs[3])
+                dist = self._capsule_sphere_distance(p1, p2, cap_radius,
+                                                     center, sphere_radius)
+                if dist < clearance:
+                    return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Scene generation
+    # ------------------------------------------------------------------
+
     def generate_scene(self, scene_id: int, n_obstacles: int,
-                      max_attempts: int = 100) -> Optional[dict]:
+                       max_attempts: int = 100) -> Optional[dict]:
         """
         Generate a single collision-free scene with manipulability constraint.
 
@@ -289,6 +339,17 @@ class TrajectoryGenerator:
 
             # Check manipulability threshold
             if manip_mean < self.manip_threshold:
+                continue
+
+            # Full-arm collision check (capsule model, 2cm clearance)
+            n_samples = 10
+            arm_collision = False
+            for alpha in np.linspace(0, 1, n_samples):
+                q_interp = (1 - alpha) * start_q + alpha * goal_q
+                if self.check_arm_collision(q_interp, obstacles):
+                    arm_collision = True
+                    break
+            if arm_collision:
                 continue
 
             # Success!
