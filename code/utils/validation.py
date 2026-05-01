@@ -71,15 +71,18 @@ class ValidationSet:
         else:
             env.dx_d = np.zeros(3)
 
-        # Solve IK for initial configuration
-        q_init = env.kin.inverse_kinematics(
-            np.concatenate([env.x_start, np.array([0, 0, 0, 1])])
-        )
-        if q_init is not None:
-            env.q = q_init
+        # Set initial configuration: use start_q if available, otherwise IK
+        if "start_q" in scene:
+            env.q = np.array(scene["start_q"])
         else:
-            # Fallback to home pose
-            env.q = np.array([0.0, 0.0, 0.0, -1.57, 0.0, 1.57, 0.785])
+            q_init = env.kin.inverse_kinematics(
+                np.concatenate([env.x_start, np.array([0, 0, 0, 1])])
+            )
+            if q_init is not None:
+                env.q = q_init
+            else:
+                # Fallback to home pose
+                env.q = np.array([0.0, 0.0, 0.0, -1.57, 0.0, 1.57, 0.785])
 
         env.dq = np.zeros(env.n)
 
@@ -97,6 +100,7 @@ class ValidationSet:
         env.step_count = 0
         env._integral_err = np.zeros(3)
         env.ee_trajectory.clear()
+        env.path_param = 0.0
 
 
 def evaluate_on_validation_set(agent, env, val_set: ValidationSet,

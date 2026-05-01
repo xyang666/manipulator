@@ -69,6 +69,10 @@ def parse_args():
                    help="Save a periodic checkpoint every N episodes")
     p.add_argument("--run_name",    type=str,   default=None,
                    help="Run directory name; auto-generated if not set")
+    p.add_argument("--scene_json", type=str,   default=None,
+                   help="Path to JSON with scenes (for fixed-scene training)")
+    p.add_argument("--scene_id",   type=int,   default=0,
+                   help="Scene ID to use when --scene_json is set")
     p.add_argument("--render",      action="store_true",
                    help="Render the scene with MuJoCo viewer during training")
     return p.parse_args()
@@ -79,24 +83,46 @@ def main():
 
     # -------- Setup --------
     dyn = ManipulatorDynamics(args.urdf)
-    env = ManipulatorEnv(urdf_path=args.urdf, xml_path=args.xml, obs_radius=0.03, n_obstacles=5,
-                         use_trajectory_generator=True,
+
+    # If fixed scene mode, load scene first to get correct obstacle count
+    fixed_scene = None
+    if args.scene_json is not None:
+        _vs = ValidationSet(args.scene_json)
+        fixed_scene = _vs.get_scene(args.scene_id)
+        n_obs = len(fixed_scene["obstacles"])
+        print(f"[train] Fixed scene mode: scene_id={args.scene_id}, "
+              f"start={fixed_scene['start']}, goal={fixed_scene['goal']}, "
+              f"obstacles={n_obs}")
+    else:
+        n_obs = 5
+
+    env = ManipulatorEnv(urdf_path=args.urdf, xml_path=args.xml, obs_radius=0.03,
+                         n_obstacles=n_obs,
+                         use_trajectory_generator=fixed_scene is None,
                          d_critical=args.d_critical, alpha_relax=args.alpha_relax)
 
-    # Load validation set if provided
+    # Apply fixed scene and patch reset to skip random generation
+    if fixed_scene is not None:
+        _vs.apply_scene_to_env(env, fixed_scene)
+        env.reset = (lambda _vs, _scene:
+                     lambda seed=None: (_vs.apply_scene_to_env(env, _scene), env._get_obs())[1]
+                     )(_vs, fixed_scene)
+
+    state_dim  = env.obs_dim
+    action_dim = env.act_dim
+
+    # -------- Load validation set --------
     val_set = None
     if args.val_json is not None:
         val_json_path = args.val_json
         if not os.path.isabs(val_json_path):
-            # Relative to project root
             val_json_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), val_json_path)
         if os.path.exists(val_json_path):
             val_set = ValidationSet(val_json_path)
+            if fixed_scene is not None:
+                print(f"[train] Validation set: {len(val_set.scenes)} scenes available")
         else:
             print(f"Warning: Validation file not found at {val_json_path}")
-
-    state_dim  = env.obs_dim
-    action_dim = env.act_dim
 
     agent = SACAgent(
         state_dim=state_dim,
@@ -105,6 +131,7 @@ def main():
         lambda_dyn=args.lambda_dyn,
         device='cuda' if torch.cuda.is_available() else 'cpu',
         critic_warmup=5000,
+        total_steps=args.steps,
     )
     buffer = ReplayBuffer(args.buffer_size, state_dim, action_dim)
 
@@ -120,7 +147,7 @@ def main():
         "lambda_dyn":   args.lambda_dyn,
         "d_critical":   args.d_critical,
         "alpha_relax":  args.alpha_relax,
-        "lr":           3e-4,
+        "lr":           1e-4,
         "gamma":        0.99,
         "tau":          0.005,
         "state_dim":    state_dim,
@@ -134,6 +161,7 @@ def main():
     total_steps = 0
     episode     = 0
     best_reward = -np.inf
+    reward_scale = 2.0  # normalize reward magnitude for stable Q learning
 
     print(f"Run directory: {run_dir}")
     print(f"{'Episode':>8} {'Steps':>8} {'Reward':>10} "
@@ -142,6 +170,7 @@ def main():
 
     while total_steps < args.steps:
         obs = env.reset()
+        agent.obs_normalizer.update(obs)
         ep_reward   = 0.0
         ep_l_actor  = 0.0
         ep_l_dyn    = 0.0
@@ -171,8 +200,12 @@ def main():
 
             dq_next = env.dq.copy()
 
+            # Update observation normalizer and scale reward
+            agent.obs_normalizer.update(next_obs)
+            reward_scaled = reward / reward_scale
+
             buffer.push(
-                obs, action, reward, next_obs, done,
+                obs, action, reward_scaled, next_obs, done,
                 q=q_prev, dq=dq_prev, dq_next=dq_next,
                 J=env._last_J, sigma=env._last_sigma, dx_nom=env._last_dx_nom
             )

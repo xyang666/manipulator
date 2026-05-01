@@ -41,6 +41,7 @@ except ImportError:
     HAS_MPC = False
     print("[env] WARNING: MPC controller not available.")
 
+
 # Default Panda-like joint limits
 Q_MIN = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
 Q_MAX = np.array([ 2.8973,  1.7628,  2.8973, -0.0698,  2.8973,  3.7525,  2.8973])
@@ -66,7 +67,7 @@ class ManipulatorEnv:
                  episode_len: int = 200,
                  n_obstacles: int = 3,
                  obs_radius: float = 0.1,
-                 use_mpc: bool = False,
+                 controller: str = "rl",
                  mpc_horizon: int = 10,
                  d_critical: float = 0.05,
                  alpha_relax: float = 0.1,
@@ -81,7 +82,7 @@ class ManipulatorEnv:
         episode_len : max steps per episode
         n_obstacles : number of spherical obstacles
         obs_radius  : obstacle radius (m)
-        use_mpc     : whether to use MPC controller
+        controller  : control mode ("rl", "mpc")
         mpc_horizon : MPC prediction horizon
         use_trajectory_generator : if True, use TrajectoryGenerator for reset
         manipulability_threshold : minimum manipulability for generated trajectories
@@ -125,19 +126,17 @@ class ManipulatorEnv:
                                         d_critical=d_critical, alpha_relax=alpha_relax)
         self.sdf = ObstacleSDF(n_obstacles, obs_radius)
 
-        # MPC controller (optional)
-        self.use_mpc = use_mpc
+        # Controllers
+        self.controller = controller
         self.mpc = None
-        if use_mpc and HAS_MPC:
+        if self.controller == "mpc" and HAS_MPC:
             self.mpc = MPCController(
                 n_states=n_joints * 2,
                 n_controls=n_joints,
                 horizon=mpc_horizon,
                 dt=dt
             )
-            print(f"[env] MPC controller enabled with horizon={mpc_horizon}")
-        elif use_mpc and not HAS_MPC:
-            print("[env] WARNING: MPC requested but not available")
+            print(f"[env] MPC controller enabled (horizon={mpc_horizon})")
 
         # End-effector trajectory tracking
         self.ee_trajectory = []
@@ -172,22 +171,25 @@ class ManipulatorEnv:
         -------
         obs, reward, done, info
         """
-        if self.use_mpc and self.mpc is not None:
-            # MPC mode: directly optimize task-space tracking
+        if self.controller == "mpc" and self.mpc is not None:
+            # MPC mode: directly optimize task-space tracking with obstacle avoidance
             dq_cmd = self.mpc.compute_control_task_space(
-                self.q, self.dq, self.x_d, self.dx_d, self.kin
+                self.q, self.dq, self.x_d, self.dx_d, self.kin,
+                obs_centers=self.sdf.centers if self.sdf.n_obs > 0 else None,
+                obs_radii=self.sdf.radii if self.sdf.n_obs > 0 else None
             )
             # Store dummy values for MPC mode (physics loss disabled via buffer guard)
             self._last_J = np.zeros((6, self.n), dtype=np.float32)
             self._last_sigma = np.float32(0.0)
             self._last_dx_nom = np.zeros(6, dtype=np.float32)
+
         else:
             # Decompose 13D action into task relaxation + null-space components
             delta_x_rl = action[:6]   # Δẋ_RL ∈ R^6 (task-space relaxation)
             dq0        = action[6:]   # dq0 ∈ R^7 (null-space self-motion)
 
-            # Compute nominal task-space velocity (PD tracking)
-            dx_nom = self._compute_task_velocity()  # ẋ_d + Kp(x_d - x)
+            # Compute nominal task-space velocity (PID tracking)
+            dx_nom = self._compute_task_velocity()  # ẋ_d + Kp(x_d - x) + Ki*∫(x_d - x)dt
 
             # Gate operator σ: scales task relaxation based on obstacle distance
             # σ → 0 when safe (d_obs >= d_safe), σ → 1 when dangerous
@@ -242,19 +244,20 @@ class ManipulatorEnv:
         else:
             nominal_s = self.step_count / total  # linear
 
-        # Modulate by tracking error: error > 0.1m → freeze, error ≈ 0 → catch up
-        advance_rate = float(np.clip(1.0 - tracking_error / 0.1, 0.0, 1.0))
+        # Modulate by tracking error with dead zone and low-pass filter
+        # Dead zone: errors < 2cm don't slow progression (prevents accumulating lag)
+        err_deadzone = max(0.0, tracking_error - 0.02)
+        raw_advance = float(np.clip(1.0 - err_deadzone / 0.10, 0.0, 1.0))
+        advance_rate = 0.5 * raw_advance + 0.5 * getattr(self, '_last_advance', raw_advance)
+        self._last_advance = advance_rate
         self.path_param = min(1.0, self.path_param + (nominal_s - self.path_param) * advance_rate)
 
-        # Update target position
+        # Update target position and compute actual target velocity
+        prev_x_d = self.x_d.copy()
         self.x_d = (1.0 - self.path_param) * self.x_start + self.path_param * self.x_goal
 
-        # Desired feed-forward velocity along path
-        direction = self.x_goal - self.x_start
-        dist = np.linalg.norm(direction)
-        if dist > 1e-6:
-            path_speed = advance_rate * dist / (total * self.dt)
-            self.dx_d[:3] = (direction / dist) * path_speed
+        # Feed-forward velocity = actual target motion, decoupled from advance_rate
+        self.dx_d[:3] = (self.x_d - prev_x_d) / self.dt
 
         self.step_count += 1
 
@@ -647,23 +650,24 @@ class ManipulatorEnv:
 
     def _compute_task_velocity(self) -> np.ndarray:
         """
-        PID tracking in task space: ẋ_cmd = ẋ_d + Kp*e + Ki*∫e dt
-        - Adaptive Kp: increases with error magnitude
-        - Integral term: eliminates steady-state error
-        - Velocity saturation: conservative limit for stability
+        PID tracking in task space: ẋ_cmd = ẋ_d + Kp(e)*e + Ki*∫e dt
+        - Adaptive Kp: increases with error magnitude for quick convergence
+        - Leaky integral with anti-windup clamp prevents overshoot oscillation
         """
         x_ee, _ = self.kin.forward_kinematics(self.q)
         pos_err = self.x_d - x_ee
         err_norm = np.linalg.norm(pos_err)
 
-        # Adaptive proportional gain
-        Kp_base = 5.0
-        Kp = Kp_base * (1.0 + 2.0 * np.tanh(err_norm / 0.05))
+        # Adaptive proportional gain — stronger when far from target
+        Kp_base = 4.0
+        Kp = Kp_base * (1.0 + np.tanh(err_norm / 0.05))
 
-        # Integral gain (anti-windup: clamp integral to ±0.05m)
-        Ki = 2.0
+        # Leaky integral with anti-windup clamp
+        Ki = 0.5
         self._integral_err = getattr(self, '_integral_err', np.zeros(3))
-        self._integral_err = np.clip(self._integral_err + pos_err * self.dt, -0.05, 0.05)
+        self._integral_err *= 0.98
+        self._integral_err += pos_err * self.dt
+        self._integral_err = np.clip(self._integral_err, -0.02, 0.02)
 
         dx_cmd = np.zeros(6)
         dx_cmd[:3] = self.dx_d[:3] + Kp * pos_err + Ki * self._integral_err

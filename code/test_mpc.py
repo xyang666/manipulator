@@ -33,6 +33,8 @@ def parse_args():
 
     p.add_argument("--urdf", type=str, default=_default_urdf)
     p.add_argument("--xml", type=str, default=_default_xml)
+    p.add_argument("--n_obstacles", type=int, default=0, help="Number of obstacles")
+    p.add_argument("--obs_radius", type=float, default=0.08, help="Obstacle radius")
     return p.parse_args()
 
 
@@ -108,35 +110,37 @@ def main():
     print("=" * 60)
     print("MPC Controller Test")
     print("=" * 60)
+    print(f"Obstacles: {args.n_obstacles} (radius={args.obs_radius})")
 
+    # --- No-obstacle comparison ---
     # Test 1: Baseline KP controller
-    print("\n[1/2] Testing baseline KP controller...")
+    print("\n[1/4] Testing baseline KP controller (no obstacles)...")
     env_kp = ManipulatorEnv(
         urdf_path=args.urdf,
         xml_path=args.xml,
         n_obstacles=0,
         obs_radius=0.03,
         episode_len=args.steps,
-        use_mpc=False
+        controller="rl"
     )
-    results_kp = test_controller(env_kp, args, "KP Controller")
+    results_kp = test_controller(env_kp, args, "KP Controller (no obs)")
 
-    # Test 2: MPC controller
-    print("\n[2/2] Testing MPC controller...")
+    # Test 2: MPC controller (no obstacles)
+    print("\n[2/4] Testing MPC controller (no obstacles)...")
     env_mpc = ManipulatorEnv(
         urdf_path=args.urdf,
         xml_path=args.xml,
         n_obstacles=0,
         obs_radius=0.03,
         episode_len=args.steps,
-        use_mpc=True,
+        controller="mpc",
         mpc_horizon=args.horizon
     )
-    results_mpc = test_controller(env_mpc, args, "MPC Controller")
+    results_mpc = test_controller(env_mpc, args, "MPC Controller (no obs)")
 
-    # Comparison
+    # Comparison (no obstacles)
     print("\n" + "=" * 60)
-    print("Comparison")
+    print("Comparison: No Obstacles")
     print("=" * 60)
     print(f"{'Metric':<30} {'KP':>12} {'MPC':>12} {'Improvement':>12}")
     print("-" * 60)
@@ -155,6 +159,43 @@ def main():
     reward_mpc = results_mpc['total_reward']
     improvement = (reward_mpc - reward_kp) / abs(reward_kp) * 100
     print(f"{'Total reward':<30} {reward_kp:>12.1f} {reward_mpc:>12.1f} {improvement:>11.1f}%")
+
+    # --- Obstacle comparison (if enabled) ---
+    if args.n_obstacles > 0:
+        # Test 3: KP with obstacles (no avoidance)
+        print(f"\n[3/4] Testing KP controller ({args.n_obstacles} obstacles)...")
+        env_kp_obs = ManipulatorEnv(
+            urdf_path=args.urdf,
+            xml_path=args.xml,
+            n_obstacles=args.n_obstacles,
+            obs_radius=args.obs_radius,
+            episode_len=args.steps,
+            controller="rl"
+        )
+        results_kp_obs = test_controller(env_kp_obs, args, "KP Controller (obs)")
+
+        # Test 4: MPC with obstacles and avoidance
+        print(f"\n[4/4] Testing MPC with obstacle avoidance ({args.n_obstacles} obstacles)...")
+        env_mpc_obs = ManipulatorEnv(
+            urdf_path=args.urdf,
+            xml_path=args.xml,
+            n_obstacles=args.n_obstacles,
+            obs_radius=args.obs_radius,
+            episode_len=args.steps,
+            controller="mpc",
+            mpc_horizon=args.horizon
+        )
+        results_mpc_obs = test_controller(env_mpc_obs, args, "MPC+Avoid (obs)")
+
+        # Comparison (with obstacles)
+        print("\n" + "=" * 60)
+        print("Comparison: With Obstacles")
+        print("=" * 60)
+        print(f"{'Metric':<30} {'KP':>12} {'MPC+Avoid':>12}")
+        print("-" * 60)
+        print(f"{'Mean tracking error (m)':<30} {results_kp_obs['mean_error']:>12.4f} {results_mpc_obs['mean_error']:>12.4f}")
+        print(f"{'Max tracking error (m)':<30} {results_kp_obs['max_error']:>12.4f} {results_mpc_obs['max_error']:>12.4f}")
+        print(f"{'Total reward':<30} {results_kp_obs['total_reward']:>12.1f} {results_mpc_obs['total_reward']:>12.1f}")
 
     print("\nTest completed!")
     return 0

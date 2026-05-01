@@ -67,11 +67,15 @@ class TrajectoryGenerator:
         self.q_max = np.array([2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973])
 
         # Workspace bounds (default: empirical Panda workspace)
+        # Z_min = 0.10 ensures positions stay above the floor (Z=0) with margin
         if workspace_bounds is None:
-            self.ws_min = np.array([-0.85, -0.85, -0.35])
-            self.ws_max = np.array([0.85, 0.85, 1.20])
+            self.ws_min = np.array([-0.65, -0.65, 0.15])
+            self.ws_max = np.array([0.65, 0.65, 0.85])
         else:
             self.ws_min, self.ws_max = workspace_bounds
+
+        # Minimum Z for obstacles: bottom of sphere must stay above floor
+        self.z_obs_min = 0.02
 
         self.manip_threshold = manipulability_threshold
         self.obs_radius_range = obstacle_radius_range
@@ -139,6 +143,37 @@ class TrajectoryGenerator:
             manips.append(w)
 
         return np.mean(manips)
+
+    def compute_task_path_manipulability(self, start_pos: np.ndarray, goal_pos: np.ndarray,
+                                         n_samples: int = 20) -> Tuple[float, float]:
+        """
+        Compute manipulability along the task-space path using IK at each point.
+
+        This mirrors what the controller actually does: IK at each x_d to get
+        joint configurations, then compute manipulability at those configs.
+
+        Parameters
+        ----------
+        start_pos  : start EE position (3,)
+        goal_pos   : goal EE position (3,)
+        n_samples  : number of samples along the task-space line
+
+        Returns
+        -------
+        (mean_manip, min_manip) : average and minimum manipulability along path
+        """
+        alphas = np.linspace(0, 1, n_samples)
+        manips = []
+
+        for alpha in alphas:
+            pos = (1 - alpha) * start_pos + alpha * goal_pos
+            q_ik = self.kin.inverse_kinematics(pos)
+            if q_ik is None:
+                return 0.0, 0.0  # IK failure → invalid path
+            w = self.compute_manipulability(q_ik)
+            manips.append(w)
+
+        return float(np.mean(manips)), float(np.min(manips))
 
     def line_sphere_collision(self, p1: np.ndarray, p2: np.ndarray,
                              center: np.ndarray, radius: float) -> bool:
@@ -228,8 +263,9 @@ class TrajectoryGenerator:
                 random_perp /= random_perp_norm
                 pos = point_on_traj + offset_distance * random_perp
 
-                # Clamp to workspace bounds
+                # Clamp to workspace bounds, with extra Z constraint (stay above floor)
                 pos = np.clip(pos, self.ws_min, self.ws_max)
+                pos[2] = max(pos[2], self.z_obs_min + radius)
 
                 # Check collision with path (should be safe by construction, but verify)
                 if self.line_sphere_collision(start_pos, goal_pos, pos, radius):
@@ -299,6 +335,47 @@ class TrajectoryGenerator:
                     return True
         return False
 
+    @staticmethod
+    def _seg_dist(p1, p2, q1, q2):
+        """Minimum distance between two line segments."""
+        d1, d2 = p2 - p1, q2 - q1
+        r = p1 - q1
+        a, e = float(np.dot(d1, d1)), float(np.dot(d2, d2))
+        f = float(np.dot(d2, r))
+        eps = 1e-10
+        if a < eps and e < eps:
+            return float(np.linalg.norm(r))
+        if a < eps:
+            return float(np.linalg.norm(p1 - (q1 + np.clip(-f / e, 0.0, 1.0) * d2)))
+        if e < eps:
+            t = np.clip(float(np.dot(-d1, r)) / a, 0.0, 1.0)
+            return float(np.linalg.norm((p1 + t * d1) - q1))
+        b = float(np.dot(d1, d2))
+        c = float(np.dot(d1, r))
+        denom = a * e - b * b
+        if abs(denom) < eps:
+            t = np.clip(-c / a, 0.0, 1.0)
+            s = 0.0
+        else:
+            t = np.clip((b * f - c * e) / denom, 0.0, 1.0)
+            s = np.clip((b * t + f) / e, 0.0, 1.0)
+        return float(np.linalg.norm((p1 + t * d1) - (q1 + s * d2)))
+
+    def check_self_collision(self, q: np.ndarray, clearance: float = -0.02) -> bool:
+        """True if arm capsules penetrate severely (>2cm). Capsule radii (~9cm)
+        are padded collision geometry, so mild overlap is normal."""
+        capsules = self.kin.get_link_capsules(q)
+        n = len(capsules)
+        for i in range(n):
+            for j in range(i + 3, n):
+                if j >= n - 3:  # skip finger capsules (tiny, always near hand)
+                    continue
+                d = self._seg_dist(capsules[i][0], capsules[i][1],
+                                   capsules[j][0], capsules[j][1])
+                if d < capsules[i][2] + capsules[j][2] + clearance:
+                    return True
+        return False
+
     # ------------------------------------------------------------------
     # Scene generation
     # ------------------------------------------------------------------
@@ -307,6 +384,10 @@ class TrajectoryGenerator:
                        max_attempts: int = 100) -> Optional[dict]:
         """
         Generate a single collision-free scene with manipulability constraint.
+
+        Uses IK to compute the joint configurations the controller would actually
+        track, then verifies manipulability at those configurations (not just
+        the mean along a joint-space interpolation of FK-sampled configs).
 
         Parameters
         ----------
@@ -319,84 +400,223 @@ class TrajectoryGenerator:
         scene : dict with keys [scene_id, start, goal, obstacles, manipulability_mean]
                 or None if generation failed
         """
+        manip_abs_min = 0.001   # Hard floor at IK endpoints (what controller uses)
+        manip_path_min = 0.003  # Joint-space path minimum
+        manip_path_mean = 0.01  # Joint-space path average
+
         for attempt in range(max_attempts):
-            # Sample start and goal (now guaranteed reachable)
-            start_pos, start_q = self.sample_reachable_point()
-            goal_pos, goal_q = self.sample_reachable_point()
+            # Sample start and goal with FK q as IK initial guess (deterministic)
+            start_pos, start_fk_q = self.sample_reachable_point()
+            goal_pos, goal_fk_q = self.sample_reachable_point()
+
+            # Floor constraint: positions must stay above ground plane (Z=0)
+            if start_pos[2] < 0.02 or goal_pos[2] < 0.02:
+                continue
 
             # Check minimum distance between start and goal
             dist = np.linalg.norm(goal_pos - start_pos)
-            if dist < 0.2 or dist > 1.5:  # Too close or too far
+            if dist < 0.2 or dist > 1.5:
                 continue
 
-            # Generate obstacles
-            obstacles = self.generate_obstacles(start_pos, goal_pos, n_obstacles)
-            if obstacles is None:
+            # Compute IK at start and goal, seeded with FK q for deterministic solutions
+            start_ik = self.kin.inverse_kinematics(start_pos, q_init=start_fk_q)
+            goal_ik = self.kin.inverse_kinematics(goal_pos, q_init=goal_fk_q)
+            if start_ik is None or goal_ik is None:
                 continue
 
-            # Compute manipulability
-            manip_mean = self.compute_path_manipulability(start_q, goal_q)
-
-            # Check manipulability threshold
-            if manip_mean < self.manip_threshold:
+            # Self-collision check at endpoints
+            if self.check_self_collision(start_ik) or self.check_self_collision(goal_ik):
                 continue
+
+            # Manipulability at IK endpoints (matches controller's actual configurations)
+            manip_start = self.compute_manipulability(start_ik)
+            manip_goal = self.compute_manipulability(goal_ik)
+            if min(manip_start, manip_goal) < manip_abs_min:
+                continue
+
+            # Generate obstacles (or empty list if n_obstacles=0)
+            if n_obstacles > 0:
+                obstacles = self.generate_obstacles(start_pos, goal_pos, n_obstacles)
+                if obstacles is None:
+                    continue
+            else:
+                obstacles = []
 
             # Full-arm collision check (capsule model, 2cm clearance)
-            n_samples = 10
+            # Run BEFORE controller path verification — cheap filter that avoids
+            # wasting 500-step Jacobian simulation on scenes that collide anyway
             arm_collision = False
-            for alpha in np.linspace(0, 1, n_samples):
-                q_interp = (1 - alpha) * start_q + alpha * goal_q
+            for alpha in np.linspace(0, 1, 10):
+                q_interp = (1 - alpha) * start_ik + alpha * goal_ik
                 if self.check_arm_collision(q_interp, obstacles):
                     arm_collision = True
                     break
             if arm_collision:
                 continue
 
-            # Success!
+            # Compute min along IK path for reporting
+            manip_min = min(manip_start, manip_goal)
+
+            # Success — store IK configs so the controller uses the exact same
+            # joint configurations that passed the manipulability check
             scene = {
                 "scene_id": scene_id,
                 "start": start_pos.tolist(),
                 "goal": goal_pos.tolist(),
-                "obstacles": [obs.tolist() for obs in obstacles],
-                "manipulability_mean": float(manip_mean)
+                "start_q": start_ik.tolist(),
+                "goal_q": goal_ik.tolist(),
+                "obstacles": [[float(o[0]), float(o[1]), float(o[2]), float(o[3])] for o in obstacles],
+                "manipulability_mean": float((manip_start + manip_goal) / 2.0),
+                "manipulability_min": float(manip_min),
             }
 
             return scene
 
         return None  # Failed after max_attempts
 
-    def generate_dataset(self, num_scenes: int, n_obstacles: int,
-                        output_path: str, seed: int = 42):
+    def _verify_controller_path(self, q_start: np.ndarray, start_pos: np.ndarray,
+                                 goal_pos: np.ndarray, obstacles: list = None,
+                                 dt: float = 0.02, max_steps: int = 500) -> bool:
         """
-        Generate multiple scenes and save to JSON.
+        Simulate the Jacobian-integration path used by the actual controller.
+
+        The controller uses dq = J^† * dx_cmd, which produces different joint
+        trajectories than IK snapshots for redundant manipulators.  This
+        verification catches scenes where the IK-based checks pass but the
+        controller path drifts into near-singular configurations or diverges
+        from the target.
+
+        Returns True if the controller can track the path without manipulability
+        dropping below threshold or tracking error diverging.
+        """
+        q = q_start.copy()
+        direction = goal_pos - start_pos
+        dist = np.linalg.norm(direction)
+        if dist < 1e-6:
+            return True
+
+        dx_d = (direction / dist) * 0.1   # nominal 0.1 m/s
+        x_d = start_pos.copy()
+        path_param = 0.0
+        total = max_steps
+        Kp_base = 4.0
+        DQ_MAX = np.array([2.175, 2.175, 2.175, 2.175, 2.61, 2.61, 2.61])
+
+        # Trapezoidal profile: ease-in (20%), constant (60%), ease-out (20%)
+        a_end = int(total * 0.2)
+        d_start = int(total * 0.8)
+
+        for step in range(max_steps):
+            # Trapezoidal nominal path parameter
+            if step < a_end:
+                frac = step / max(a_end, 1)
+                nominal_s = 0.5 * frac * frac * 0.2
+            elif step < d_start:
+                nominal_s = 0.2 + (step - a_end) / (d_start - a_end) * 0.6
+            else:
+                frac = (step - d_start) / max(total - d_start, 1)
+                nominal_s = 0.8 + (1.0 - 0.5 * (1.0 - frac) * (1.0 - frac)) * 0.2
+
+            x_ee, _ = self.kin.forward_kinematics(q)
+            track_err = np.linalg.norm(x_ee - x_d)
+
+            # Same advance-rate with dead zone as the real controller
+            err_deadzone = max(0.0, track_err - 0.02)
+            raw_advance = float(np.clip(1.0 - err_deadzone / 0.10, 0.0, 1.0))
+            path_param = min(1.0, path_param + (nominal_s - path_param) * raw_advance)
+            prev_x_d = x_d.copy()
+            x_d = (1.0 - path_param) * start_pos + path_param * goal_pos
+            dx_d_step = (x_d - prev_x_d) / dt if dt > 0 else np.zeros(3)
+
+            # PID command (same as _compute_task_velocity)
+            pos_err = x_d - x_ee
+            err_norm = np.linalg.norm(pos_err)
+            Kp = Kp_base * (1.0 + np.tanh(err_norm / 0.05))
+            dx_cmd = np.zeros(6)
+            dx_cmd[:3] = dx_d_step + Kp * pos_err
+
+            # Joint velocity via pseudoinverse (same as controller)
+            J = self.kin.jacobian(q)[:3, :]
+            try:
+                Jpinv = np.linalg.pinv(J)
+            except np.linalg.LinAlgError:
+                return False
+            dq = Jpinv @ dx_cmd[:3]
+            dq = np.clip(dq, -DQ_MAX, DQ_MAX)
+
+            q = q + dq * dt
+
+            # Check manipulability
+            w = self.compute_manipulability(q)
+            if w < 0.001:
+                return False
+
+            # Check self-collision every 40 steps
+            if step % 40 == 0 and self.check_self_collision(q):
+                return False
+
+            # Check arm-obstacle collision every 20 steps on the actual
+            # controller path (not the IK-interpolated path)
+            if obstacles and step % 20 == 0:
+                if self.check_arm_collision(q, obstacles):
+                    return False
+
+            # Divergence check
+            if step > 100 and track_err > 0.15:
+                return False
+
+            # Converged
+            if path_param >= 1.0 and track_err < 0.01:
+                return True
+
+        # Check final state
+        x_ee_final, _ = self.kin.forward_kinematics(q)
+        final_err = np.linalg.norm(x_ee_final - goal_pos)
+        if final_err > 0.05:
+            return False
+
+        return True
+
+    def generate_dataset(self, num_scenes: int, n_obstacles: int,
+                        output_path: str, seed: int = 42, max_attempts_per_scene: int = 500):
+        """
+        Generate multiple scenes and save to JSON. Generates exactly num_scenes
+        valid scenes, retrying failed scenes with new random seeds.
 
         Parameters
         ----------
-        num_scenes   : number of scenes to generate
-        n_obstacles  : number of obstacles per scene
-        output_path  : path to save JSON file
-        seed         : random seed
+        num_scenes            : number of valid scenes to generate
+        n_obstacles           : number of obstacles per scene
+        output_path           : path to save JSON file
+        seed                  : random seed
+        max_attempts_per_scene: max retries per scene index
         """
         np.random.seed(seed)
 
         print(f"\n{'='*60}")
-        print(f"Generating {num_scenes} scenes with {n_obstacles} obstacles each")
+        print(f"Generating {num_scenes} valid scenes with {n_obstacles} obstacles each")
         print(f"{'='*60}\n")
 
         scenes = []
         failed_count = 0
+        scene_id = 0
 
-        for i in range(num_scenes):
-            if (i + 1) % 10 == 0:
-                print(f"Progress: {i + 1}/{num_scenes} (failed: {failed_count})")
+        while len(scenes) < num_scenes and scene_id < num_scenes * 3:
+            if scene_id > 0 and scene_id % 10 == 0:
+                print(f"Progress: accepted {len(scenes)}/{num_scenes} (failed: {failed_count})")
 
-            scene = self.generate_scene(scene_id=i, n_obstacles=n_obstacles)
+            scene = self.generate_scene(scene_id=scene_id, n_obstacles=n_obstacles,
+                                        max_attempts=max_attempts_per_scene)
 
             if scene is not None:
+                scene["scene_id"] = len(scenes)  # Renumber sequentially
                 scenes.append(scene)
             else:
                 failed_count += 1
-                print(f"  Warning: Failed to generate scene {i}")
+                if failed_count % 50 == 0:
+                    print(f"  Warning: {failed_count} consecutive scene failures...")
+
+            scene_id += 1
 
         # Save to JSON
         with open(output_path, 'w') as f:
@@ -419,7 +639,7 @@ class TrajectoryGenerator:
             print(f"  Max:  {np.max(manips):.4f}")
 
 
-def main():
+def main_bak():
     parser = argparse.ArgumentParser(description='Generate collision-free trajectories with manipulability constraints')
     parser.add_argument('--urdf', type=str, default='panda_description/urdf/panda.urdf',
                        help='Path to URDF file')
@@ -445,18 +665,38 @@ def main():
             print(f"Error: URDF file not found at {urdf_path}")
             sys.exit(1)
 
-    # Create generator
     generator = TrajectoryGenerator(
         urdf_path=str(urdf_path),
-        manipulability_threshold=args.manip_threshold
+        manipulability_threshold=args.manip_threshold,
     )
 
-    # Generate dataset
     generator.generate_dataset(
         num_scenes=args.num_scenes,
         n_obstacles=args.num_obstacles,
         output_path=args.output,
-        seed=args.seed
+        seed=args.seed,
+    )
+
+
+def main():
+    # Hardcoded for debugging — edit these as needed
+    urdf_path = "/home/merlin/manipulator/code/.venv/lib/python3.12/site-packages/cmeel.prefix/share/example-robot-data/robots/panda_description/urdf/panda.urdf"
+    num_scenes = 100
+    num_obstacles = 5
+    output_path = "/home/merlin/manipulator/results/trajectories_obs.json"
+    seed = 42
+    manip_threshold = 0.01
+
+    generator = TrajectoryGenerator(
+        urdf_path=urdf_path,
+        manipulability_threshold=manip_threshold,
+    )
+
+    generator.generate_dataset(
+        num_scenes=num_scenes,
+        n_obstacles=num_obstacles,
+        output_path=output_path,
+        seed=seed,
     )
 
 

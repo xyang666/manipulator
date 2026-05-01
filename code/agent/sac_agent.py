@@ -19,6 +19,7 @@ import torch.optim as optim
 import copy
 
 from agent.physics_policy import PhysicsInformedActor, SoftmaxCritic, PhysicsRegularizer
+from utils.normalizer import RunningMeanStd
 
 
 class SACAgent:
@@ -30,7 +31,7 @@ class SACAgent:
                  state_dim:    int,
                  action_dim:   int,
                  dynamics,
-                 lr:           float = 3e-4,
+                 lr:           float = 1e-4,
                  gamma:        float = 0.99,
                  tau:          float = 0.005,
                  alpha:        float = 0.2,
@@ -38,7 +39,8 @@ class SACAgent:
                  action_scale: float = 0.3,
                  hidden_dims:  tuple = (256, 256),
                  device:       str   = "cpu",
-                 critic_warmup: int = 5000):
+                 critic_warmup: int = 5000,
+                 total_steps:  int   = 0):
         self.gamma       = gamma
         self.tau         = tau
         self.alpha       = alpha
@@ -66,6 +68,19 @@ class SACAgent:
         self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
         self.alpha_opt = optim.Adam([self.log_alpha], lr=lr)
 
+        # Observation normalization
+        self.obs_normalizer = RunningMeanStd(shape=(state_dim,))
+
+        # Cosine learning rate annealing
+        if total_steps > 0:
+            self.actor_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                self.actor_opt, T_max=total_steps, eta_min=lr * 0.1)
+            self.critic_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                self.critic_opt, T_max=total_steps, eta_min=lr * 0.1)
+        else:
+            self.actor_scheduler = None
+            self.critic_scheduler = None
+
     def _get_dt_default(self):
         """Get simulation timestep (matches env default)."""
         return 0.02
@@ -76,7 +91,8 @@ class SACAgent:
 
     @torch.no_grad()
     def select_action(self, state: np.ndarray, deterministic: bool = False) -> np.ndarray:
-        s = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+        s = self.obs_normalizer.normalize(state)
+        s = torch.FloatTensor(s).unsqueeze(0).to(self.device)
         action, _, mean = self.actor.sample(s)
         if deterministic:
             return mean.squeeze(0).cpu().numpy()
@@ -92,10 +108,13 @@ class SACAgent:
 
         Returns dict with loss values for logging.
         """
-        s  = torch.FloatTensor(batch["state"]).to(self.device)
+        # Normalize observations in batch
+        s  = self.obs_normalizer.normalize(batch["state"])
+        s_ = self.obs_normalizer.normalize(batch["next_state"])
+        s  = torch.FloatTensor(s).to(self.device)
+        s_ = torch.FloatTensor(s_).to(self.device)
         a  = torch.FloatTensor(batch["action"]).to(self.device)
         r  = torch.FloatTensor(batch["reward"]).to(self.device)
-        s_ = torch.FloatTensor(batch["next_state"]).to(self.device)
         d  = torch.FloatTensor(batch["done"]).to(self.device)
 
         # -------- Critic update --------
@@ -161,6 +180,11 @@ class SACAgent:
         for p, p_t in zip(self.critic.parameters(), self.critic_target.parameters()):
             p_t.data.copy_(self.tau * p.data + (1 - self.tau) * p_t.data)
 
+        # Step learning rate schedulers
+        if self.actor_scheduler is not None and not doing_warmup:
+            self.actor_scheduler.step()
+            self.critic_scheduler.step()
+
         return {
             "critic_loss":  critic_loss.item(),
             "actor_rl_loss": actor_rl_loss.item() if not doing_warmup else 0.0,
@@ -171,17 +195,18 @@ class SACAgent:
 
     def save(self, path: str, metadata: dict = None):
         torch.save({
-            "actor":      self.actor.state_dict(),
-            "critic":     self.critic.state_dict(),
-            "actor_opt":  self.actor_opt.state_dict(),
-            "critic_opt": self.critic_opt.state_dict(),
-            "alpha_opt":  self.alpha_opt.state_dict(),
-            "log_alpha":  self.log_alpha.item(),
-            "metadata":   metadata or {},
+            "actor":          self.actor.state_dict(),
+            "critic":         self.critic.state_dict(),
+            "actor_opt":      self.actor_opt.state_dict(),
+            "critic_opt":     self.critic_opt.state_dict(),
+            "alpha_opt":      self.alpha_opt.state_dict(),
+            "log_alpha":      self.log_alpha.item(),
+            "obs_normalizer": self.obs_normalizer.state_dict(),
+            "metadata":       metadata or {},
         }, path)
 
     def load(self, path: str, load_optimizers: bool = True) -> dict:
-        ckpt = torch.load(path, map_location=self.device)
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
         self.actor.load_state_dict(ckpt["actor"])
         self.critic.load_state_dict(ckpt["critic"])
         if load_optimizers:
@@ -191,4 +216,6 @@ class SACAgent:
                 self.alpha_opt.load_state_dict(ckpt["alpha_opt"])
                 self.log_alpha.data.fill_(ckpt["log_alpha"])
                 self.alpha = self.log_alpha.exp().item()
+        if "obs_normalizer" in ckpt:
+            self.obs_normalizer.load_state_dict(ckpt["obs_normalizer"])
         return ckpt.get("metadata", {})

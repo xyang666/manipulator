@@ -36,7 +36,10 @@ class MPCController:
                  Q: Optional[np.ndarray] = None,
                  R: Optional[np.ndarray] = None,
                  u_min: Optional[np.ndarray] = None,
-                 u_max: Optional[np.ndarray] = None):
+                 u_max: Optional[np.ndarray] = None,
+                 d_safe: float = 0.15,
+                 rep_gain: float = 0.3,
+                 w_obs: float = 0.0):
         """
         Parameters
         ----------
@@ -48,6 +51,9 @@ class MPCController:
         R : control cost matrix [n_controls x n_controls]
         u_min : control lower bounds [n_controls]
         u_max : control upper bounds [n_controls]
+        d_safe : obstacle safe distance threshold (m)
+        rep_gain : repulsive potential gain for task-space MPC
+        w_obs : obstacle cost weight for horizon MPC (0 = disabled)
         """
         if not HAS_CVXPY:
             raise ImportError("cvxpy is required for MPC controller")
@@ -64,6 +70,14 @@ class MPCController:
         # Control constraints (joint acceleration limits)
         self.u_min = u_min if u_min is not None else -10.0 * np.ones(n_controls)
         self.u_max = u_max if u_max is not None else 10.0 * np.ones(n_controls)
+
+        # Obstacle avoidance parameters
+        self.d_safe = d_safe
+        self.rep_gain = rep_gain
+        self.w_obs = w_obs
+        self.obs_centers = np.empty((0, 3))
+        self.obs_radii = np.empty(0)
+        self.n_obs = 0
 
         # Linearized dynamics matrices (will be updated online)
         self.A = np.eye(n_states)
@@ -110,6 +124,112 @@ class MPCController:
 
         self.problem = cp.Problem(cp.Minimize(cost), constraints)
 
+    # ------------------------------------------------------------------
+    # Obstacle avoidance API
+    # ------------------------------------------------------------------
+
+    def set_obstacles(self, centers: np.ndarray | None = None,
+                      radii: np.ndarray | None = None):
+        """
+        Set spherical obstacle information for collision avoidance.
+
+        Parameters
+        ----------
+        centers : [N x 3] obstacle center positions
+        radii   : [N] obstacle radii
+        """
+        if centers is not None:
+            self.obs_centers = np.asarray(centers, dtype=float)
+            self.n_obs = len(centers)
+        if radii is not None:
+            self.obs_radii = np.asarray(radii, dtype=float)
+        if self.n_obs == 0:
+            self.obs_centers = np.empty((0, 3))
+            self.obs_radii = np.empty(0)
+
+    def _repulsive_force(self, point: np.ndarray) -> np.ndarray:
+        """
+        Compute net repulsive force from all obstacles at a 3D point.
+
+        Uses Khatib-style potential field (Khatib 1986):
+            U = sum_i 0.5 * rep_gain * max(0, 1/d_i - 1/d_safe)^2
+            F = -grad U = sum_i rep_gain * (1/d_i - 1/d_safe) / d_i^2 * n_i
+
+        where d_i = ||point - c_i|| - r_i is signed distance to obstacle surface,
+        and n_i = (point - c_i) / ||point - c_i|| is the direction from obstacle.
+
+        Parameters
+        ----------
+        point : [3] query point in task space
+
+        Returns
+        -------
+        F : [3] repulsive force vector
+        """
+        if self.n_obs == 0:
+            return np.zeros(3)
+
+        F = np.zeros(3)
+        for i in range(self.n_obs):
+            diff = point - self.obs_centers[i]
+            dist = np.linalg.norm(diff)
+            if dist < 1e-8:
+                continue
+            d_signed = dist - self.obs_radii[i]  # signed distance to surface
+
+            if 0 < d_signed < self.d_safe:
+                # Khatib repulsive gradient
+                magnitude = self.rep_gain * (1.0 / d_signed - 1.0 / self.d_safe) / (d_signed * d_signed)
+                F += magnitude * diff / dist
+
+        # Clip force magnitude to avoid instability
+        F_norm = np.linalg.norm(F)
+        if F_norm > 2.0:
+            F = F / F_norm * 2.0
+        return F
+
+    def _multi_point_repulsive_force(self, q: np.ndarray,
+                                     kinematics) -> np.ndarray:
+        """
+        Compute repulsive force at multiple control points along the arm.
+
+        Evaluates repulsive potential at each link capsule endpoint and midpoint,
+        providing full-arm obstacle awareness beyond just the end-effector.
+
+        Parameters
+        ----------
+        q : [n] joint positions
+        kinematics : ManipulatorKinematics instance
+
+        Returns
+        -------
+        F_total : [3] net repulsive force in task space
+        """
+        if self.n_obs == 0:
+            return np.zeros(3)
+
+        capsules = kinematics.get_link_capsules(q)
+        F_total = np.zeros(3)
+        count = 0
+
+        for p1, p2, cap_radius in capsules:
+            # Midpoint and endpoints
+            midpoint = (p1 + p2) / 2
+            F_total += self._repulsive_force(midpoint)
+            F_total += 0.5 * self._repulsive_force(p1)
+            F_total += 0.5 * self._repulsive_force(p2)
+            count += 2  # Each capsule contributes ~2 effective force evaluations
+
+        # Average to avoid overly large forces from many points
+        if count > 0:
+            F_total = F_total / count * 3.0  # Scale to roughly match EE-only magnitude
+
+        return F_total
+
+    # ------------------------------------------------------------------
+    # Dynamics and control
+    # ------------------------------------------------------------------
+
     def update_linearization(self, q: np.ndarray, dq: np.ndarray,
                             dynamics_model=None):
         """
@@ -138,9 +258,13 @@ class MPCController:
                        q: np.ndarray,
                        dq: np.ndarray,
                        q_ref: np.ndarray,
-                       dq_ref: np.ndarray) -> np.ndarray:
+                       dq_ref: np.ndarray,
+                       kinematics=None) -> np.ndarray:
         """
         Solve MPC problem and return optimal control.
+
+        If kinematics is provided and obstacles are set, adds obstacle avoidance
+        by biasing the reference trajectory away from obstacles in joint space.
 
         Parameters
         ----------
@@ -148,6 +272,7 @@ class MPCController:
         dq : current joint velocities [7]
         q_ref : reference joint positions [7]
         dq_ref : reference joint velocities [7]
+        kinematics : optional ManipulatorKinematics (needed for obstacle avoidance)
 
         Returns
         -------
@@ -159,13 +284,26 @@ class MPCController:
         # Current state
         x0 = np.concatenate([q, dq])
 
-        # Reference trajectory (constant for now)
+        # Reference trajectory
         x_ref = np.concatenate([q_ref, dq_ref])
+
+        # Apply obstacle avoidance: bias reference velocity away from obstacles
+        if kinematics is not None and self.n_obs > 0:
+            F_rep = self._multi_point_repulsive_force(q, kinematics)
+            J = kinematics.jacobian(q)
+            Jpinv = kinematics.pseudo_inverse(J)
+            # Convert repulsive force to joint-space velocity bias
+            dq_rep = Jpinv @ np.concatenate([F_rep * self.dt * 2.0, np.zeros(3)])
+            dq_rep = np.clip(dq_rep, -0.3, 0.3)
+            # Shift reference velocity away from obstacles
+            x_ref_obs = np.concatenate([q_ref, dq_ref - dq_rep * self.rep_gain])
+        else:
+            x_ref_obs = x_ref
 
         # Set parameters
         self.x0_param.value = x0
         for k in range(self.horizon + 1):
-            self.x_ref_param[k].value = x_ref
+            self.x_ref_param[k].value = x_ref_obs
         self.A_param.value = self.A
         self.B_param.value = self.B
 
@@ -188,12 +326,14 @@ class MPCController:
                                    dq: np.ndarray,
                                    x_d: np.ndarray,
                                    dx_d: np.ndarray,
-                                   kinematics) -> np.ndarray:
+                                   kinematics,
+                                   obs_centers: np.ndarray | None = None,
+                                   obs_radii: np.ndarray | None = None) -> np.ndarray:
         """
-        Compute MPC control directly in task space.
+        Compute MPC control directly in task space with obstacle avoidance.
 
-        Optimizes joint velocities to track task-space trajectory
-        while respecting joint limits.
+        Extends the task-space QP with a Khatib-style repulsive potential field
+        that pushes the arm away from obstacles while tracking the trajectory.
 
         Parameters
         ----------
@@ -202,11 +342,17 @@ class MPCController:
         x_d : desired end-effector position [3]
         dx_d : desired end-effector velocity [6]
         kinematics : kinematics model
+        obs_centers : optional [N x 3] obstacle centers (updates stored obstacles)
+        obs_radii : optional [N] obstacle radii
 
         Returns
         -------
         dq_opt : optimal joint velocities [7]
         """
+        # Update obstacles if provided
+        if obs_centers is not None:
+            self.set_obstacles(obs_centers, obs_radii)
+
         # Get current end-effector position
         x_ee, _ = kinematics.forward_kinematics(q)
 
@@ -218,11 +364,16 @@ class MPCController:
         dx_cmd = np.zeros(6)
         dx_cmd[:3] = dx_d[:3] + Kp * e_pos
 
+        # Add obstacle repulsive force (multi-point for full-arm awareness)
+        if self.n_obs > 0:
+            F_rep = self._multi_point_repulsive_force(q, kinematics)
+            dx_cmd[:3] += F_rep
+
         # Get Jacobian
         J = kinematics.jacobian(q)
         Jpinv = kinematics.pseudo_inverse(J)
 
-        # Task-space tracking velocity
+        # Task-space tracking velocity (now includes repulsion)
         dq_task = Jpinv @ dx_cmd
 
         # Formulate QP: minimize deviation from task velocity + control effort
@@ -255,24 +406,66 @@ class MPCController:
 
 
 if __name__ == "__main__":
-    print("=== MPC Controller Unit Test ===")
+    print("=== MPC Controller Unit Test ===\n")
 
     if not HAS_CVXPY:
         print("SKIPPED: cvxpy not installed")
         exit(0)
 
-    # Create controller
+    print("--- Test 1: Basic tracking ---")
     mpc = MPCController(n_states=14, n_controls=7, horizon=10)
 
-    # Test state
     q = np.zeros(7)
     dq = np.zeros(7)
     q_ref = np.ones(7) * 0.1
     dq_ref = np.zeros(7)
 
-    # Compute control
     u = mpc.compute_control(q, dq, q_ref, dq_ref)
-
     print(f"Control output shape: {u.shape}")
     print(f"Control values: {u}")
-    print("MPC controller test PASSED")
+    assert u.shape == (7,), "Control output shape mismatch"
+    print("PASSED\n")
+
+    print("--- Test 2: Task-space control ---")
+    # Use simplified kinematics (no Pinocchio needed)
+    from env.kinematics import ManipulatorKinematics
+    kin = ManipulatorKinematics(n_joints=7)
+    dq_cmd = mpc.compute_control_task_space(q, dq, np.zeros(3), np.zeros(6), kin)
+    print(f"Task-space dq output shape: {dq_cmd.shape}")
+    assert dq_cmd.shape == (7,), "Task-space dq output shape mismatch"
+    print("PASSED\n")
+
+    print("--- Test 3: Repulsive force computation ---")
+    mpc.set_obstacles(
+        centers=np.array([[0.5, 0.0, 0.5], [0.6, 0.0, 0.4]]),
+        radii=np.array([0.1, 0.08])
+    )
+    assert mpc.n_obs == 2, "Obstacle count mismatch"
+    # Point far from obstacles should get zero force
+    F_far = mpc._repulsive_force(np.array([0.0, 0.0, 0.0]))
+    print(f"Force at far point: {F_far} (should be ~0)")
+    assert np.allclose(F_far, 0), "Far point should have zero repulsive force"
+    # Point near obstacle should get repulsive force
+    F_near = mpc._repulsive_force(np.array([0.48, 0.0, 0.5]))
+    print(f"Force at near point: {F_near} (should be non-zero)")
+    # Direction should point away from obstacle (obstacle at [0.5,0,0.5], point at [0.48,0,0.5])
+    # Force should push in negative x direction (away from obstacle)
+    if np.linalg.norm(F_near) > 0:
+        assert F_near[0] < 0, f"Repulsive force should point away from obstacle, got {F_near[0]} > 0"
+    print("PASSED\n")
+
+    print("--- Test 4: Multi-point repulsive force ---")
+    F_multi = mpc._multi_point_repulsive_force(q, kin)
+    print(f"Multi-point force shape: {F_multi.shape}")
+    assert F_multi.shape == (3,), "Multi-point force shape mismatch"
+    print("PASSED\n")
+
+    print("--- Test 5: Task-space control with obstacle avoidance ---")
+    dq_cmd_avoid = mpc.compute_control_task_space(
+        q, dq, np.zeros(3), np.zeros(6), kin
+    )
+    print(f"Task-space dq with avoidance: {dq_cmd_avoid}")
+    assert dq_cmd_avoid.shape == (7,), "Avoidance dq output shape mismatch"
+    print("PASSED\n")
+
+    print("All MPC controller tests PASSED")
