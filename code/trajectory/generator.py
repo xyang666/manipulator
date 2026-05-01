@@ -690,6 +690,7 @@ def main():
     generator = TrajectoryGenerator(
         urdf_path=urdf_path,
         manipulability_threshold=manip_threshold,
+        obstacle_radius_range=(0.02, 0.08),  # smaller obstacles
     )
 
     generator.generate_dataset(

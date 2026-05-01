@@ -1,0 +1,3 @@
+python code/train.py --scene_json results/trajectories_obs.json --scene_id 0
+python code/test.py --method rl --render --scene_json results/trajectories_obs.json --scene_id 0  --checkpoint checkpoints/run_20260501_163031/ckpt_ep00150.pt 
+python code/test.py --method kp --render --scene_json results/trajectories_obs.json --scene_id 0 
