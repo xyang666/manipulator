@@ -380,8 +380,30 @@ class TrajectoryGenerator:
     # Scene generation
     # ------------------------------------------------------------------
 
+    def _sample_ahead_trajectory(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Sample start/goal on a Y-parallel line in front of the robot, symmetric about X-axis.
+
+        Trajectory: same X and Z, Y varies symmetrically about 0.
+        This produces horizontal sweeping motions straight ahead of the base.
+
+        Returns
+        -------
+        (start_pos, goal_pos, start_seed_q, goal_seed_q)
+        """
+        x = np.random.uniform(0.35, 0.55)   # arm's length in front
+        z = np.random.uniform(0.25, 0.50)   # comfortable height
+        half_span = np.random.uniform(0.15, 0.30)  # Y half-span
+        start_pos = np.array([x, -half_span, z])
+        goal_pos  = np.array([x,  half_span, z])
+        # Random joint configs as IK seeds
+        start_seed = np.random.uniform(self.q_min, self.q_max)
+        goal_seed  = np.random.uniform(self.q_min, self.q_max)
+        return start_pos, goal_pos, start_seed, goal_seed
+
     def generate_scene(self, scene_id: int, n_obstacles: int,
-                       max_attempts: int = 100) -> Optional[dict]:
+                       max_attempts: int = 100,
+                       ahead_mode: bool = False) -> Optional[dict]:
         """
         Generate a single collision-free scene with manipulability constraint.
 
@@ -394,6 +416,7 @@ class TrajectoryGenerator:
         scene_id     : scene identifier
         n_obstacles  : number of obstacles
         max_attempts : max attempts to generate valid scene
+        ahead_mode   : if True, trajectory is a Y-parallel line in front of robot
 
         Returns
         -------
@@ -401,26 +424,27 @@ class TrajectoryGenerator:
                 or None if generation failed
         """
         manip_abs_min = 0.001   # Hard floor at IK endpoints (what controller uses)
-        manip_path_min = 0.003  # Joint-space path minimum
-        manip_path_mean = 0.01  # Joint-space path average
 
         for attempt in range(max_attempts):
             # Sample start and goal with FK q as IK initial guess (deterministic)
-            start_pos, start_fk_q = self.sample_reachable_point()
-            goal_pos, goal_fk_q = self.sample_reachable_point()
+            if ahead_mode:
+                start_pos, goal_pos, start_seed_q, goal_seed_q = self._sample_ahead_trajectory()
+            else:
+                start_pos, start_seed_q = self.sample_reachable_point()
+                goal_pos, goal_seed_q = self.sample_reachable_point()
 
-            # Floor constraint: positions must stay above ground plane (Z=0)
-            if start_pos[2] < 0.02 or goal_pos[2] < 0.02:
-                continue
+                # Floor constraint: positions must stay above ground plane (Z=0)
+                if start_pos[2] < 0.02 or goal_pos[2] < 0.02:
+                    continue
 
-            # Check minimum distance between start and goal
-            dist = np.linalg.norm(goal_pos - start_pos)
-            if dist < 0.2 or dist > 1.5:
-                continue
+                # Check minimum distance between start and goal
+                dist = np.linalg.norm(goal_pos - start_pos)
+                if dist < 0.2 or dist > 1.5:
+                    continue
 
-            # Compute IK at start and goal, seeded with FK q for deterministic solutions
-            start_ik = self.kin.inverse_kinematics(start_pos, q_init=start_fk_q)
-            goal_ik = self.kin.inverse_kinematics(goal_pos, q_init=goal_fk_q)
+            # Compute IK at start and goal
+            start_ik = self.kin.inverse_kinematics(start_pos, q_init=start_seed_q)
+            goal_ik = self.kin.inverse_kinematics(goal_pos, q_init=goal_seed_q)
             if start_ik is None or goal_ik is None:
                 continue
 
@@ -578,7 +602,8 @@ class TrajectoryGenerator:
         return True
 
     def generate_dataset(self, num_scenes: int, n_obstacles: int,
-                        output_path: str, seed: int = 42, max_attempts_per_scene: int = 500):
+                        output_path: str, seed: int = 42, max_attempts_per_scene: int = 500,
+                        ahead_mode: bool = False):
         """
         Generate multiple scenes and save to JSON. Generates exactly num_scenes
         valid scenes, retrying failed scenes with new random seeds.
@@ -606,7 +631,8 @@ class TrajectoryGenerator:
                 print(f"Progress: accepted {len(scenes)}/{num_scenes} (failed: {failed_count})")
 
             scene = self.generate_scene(scene_id=scene_id, n_obstacles=n_obstacles,
-                                        max_attempts=max_attempts_per_scene)
+                                        max_attempts=max_attempts_per_scene,
+                                        ahead_mode=ahead_mode)
 
             if scene is not None:
                 scene["scene_id"] = len(scenes)  # Renumber sequentially
@@ -698,6 +724,7 @@ def main():
         n_obstacles=num_obstacles,
         output_path=output_path,
         seed=seed,
+        ahead_mode=True,  # Y-parallel trajectories in front of robot
     )
 
 
