@@ -30,9 +30,9 @@ class ReplayBuffer:
         self.dq_prev  = np.zeros((capacity, joints), dtype=np.float32)
         self.dq_next  = np.zeros((capacity, joints), dtype=np.float32)
         # Fields for differentiable physics loss (Plan B)
-        self.J        = np.zeros((capacity, 6, joints), dtype=np.float32)
+        self.J        = np.zeros((capacity, 3, joints), dtype=np.float32)
         self.sigma    = np.zeros((capacity, 1),        dtype=np.float32)
-        self.dx_nom   = np.zeros((capacity, 6),        dtype=np.float32)
+        self.dx_nom   = np.zeros((capacity, 3),        dtype=np.float32)
 
         self.ptr = 0
         self.size = 0

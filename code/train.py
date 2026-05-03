@@ -180,8 +180,8 @@ def main():
         while not done:
             # Action selection
             if total_steps < args.start_steps:
-                # Random exploration: separate ranges for task relaxation (6D) and null-space (7D)
-                a_task = np.random.uniform(-0.1, 0.1, 6)    # small task relaxation
+                # Random exploration: separate ranges for task relaxation (3D) and null-space (7D)
+                a_task = np.random.uniform(-0.1, 0.1, 3)    # position relaxation (Route A)
                 a_null = np.random.uniform(-0.3, 0.3, env.n) # larger null-space motion
                 action = np.concatenate([a_task, a_null])
             else:

@@ -99,6 +99,13 @@ class ManipulatorEnv:
 
         self.kin = ManipulatorKinematics(urdf_path, n_joints,
                                           q_min=Q_MIN, q_max=Q_MAX)
+        # Sync env DOF with actual model loaded by Pinocchio (may differ from n_joints)
+        self.n = self.kin.n
+        self.obs_dim = self.n * 2 + 3 + 3 + 3 + 1 + 1
+        self.act_dim = 3 + self.n  # 10D: 3 for position relaxation + 7 for null-space
+
+        # Truncate DQ_MAX to match actual DOF
+        self._dq_max = DQ_MAX[:self.n]
         self.dyn = ManipulatorDynamics(urdf_path, n_joints)
 
         # Trajectory generator (optional)
@@ -242,7 +249,7 @@ class ManipulatorEnv:
             self._last_dx_nom = dx_nom.copy()
 
         # Clamp joint velocities to actuator limits
-        dq_cmd = np.clip(dq_cmd, -self.DQ_MAX, self.DQ_MAX)
+        dq_cmd = np.clip(dq_cmd, -self._dq_max, self._dq_max)
 
         # Integrate (kinematics-only mode)
         q_new = self.q + dq_cmd * self.dt
