@@ -332,6 +332,12 @@ class ManipulatorEnv:
         else:
             path_complete = self.path_param >= 0.99
         done = self.step_count >= self.episode_len or path_complete
+
+        # Sparse success bonus when reaching goal
+        SUCCESS_BONUS = 200.0
+        if path_complete:
+            reward += SUCCESS_BONUS
+
         info = {"d_obs": d_obs, "w": w, "success": path_complete, "collision": collision,
                 "path_param": self.path_param, **reward_info}
 

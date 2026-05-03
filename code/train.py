@@ -34,13 +34,13 @@ def parse_args():
     p.add_argument("--steps",       type=int,   default=500_000,
                    help="Total environment steps (SAC typically needs 500k-1M)")
     p.add_argument("--batch_size",  type=int,   default=512)
-    p.add_argument("--start_steps", type=int,   default=10_000,
+    p.add_argument("--start_steps", type=int,   default=2_000,
                    help="Random exploration steps before training begins")
     p.add_argument("--update_every",type=int,   default=1)
     p.add_argument("--grad_steps",  type=int,   default=4,
                    help="Number of gradient updates per env step")
     p.add_argument("--buffer_size", type=int,   default=100_000)
-    p.add_argument("--lambda_dyn",  type=float, default=0.01,
+    p.add_argument("--lambda_dyn",  type=float, default=1.0,
                    help="Weight of physics regularization loss")
     p.add_argument("--d_critical",  type=float, default=0.05,
                    help="Critical distance for primary task relaxation (m)")
