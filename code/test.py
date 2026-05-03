@@ -105,7 +105,7 @@ def apply_scene(env, scene: dict) -> bool:
     env.x_start = start_pos.copy()
     env.x_goal = goal_pos.copy()
     env.x_d = start_pos.copy()
-    env.dx_d = np.zeros(6)
+    env.dx_d = np.zeros(3)
     env.step_count = 0
     env.path_param = 0.0
     env.ee_trajectory.clear()
@@ -132,8 +132,120 @@ def apply_scene(env, scene: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Control methods
+# Paper experiment scenario setups
 # ---------------------------------------------------------------------------
+
+def _scene1_setup(env):
+    """
+    Scene 1: 稀疏静态障碍（验证基线跟踪性能）
+
+    Paper: Section 4.1.3, Scenario 1
+      - Figure-8 lemniscate trajectory in yz-plane
+      - 3 static spherical obstacles placed near but not intersecting the path
+      - Purpose: verify EE tracking accuracy and that gate operator
+        does NOT activate unnecessarily in safe regions (d_obs > d_critical)
+    """
+    # Figure-8: y = 0.15·sin(t), z = 0.4 + 0.1·sin(2t), t ∈ [0, 2π]
+    x_center = 0.4  # constant x (trajectory in yz-plane)
+
+    def pos_func(t):
+        return np.array([x_center,
+                         0.15 * np.sin(t),
+                         0.4 + 0.1 * np.sin(2.0 * t)])
+
+    def vel_func(t):
+        return np.array([0.0,
+                         0.15 * np.cos(t),
+                         0.2 * np.cos(2.0 * t)])
+
+    env.set_parametric_trajectory(pos_func, vel_func)
+
+    # Three static obstacles, placed well clear of the trajectory path
+    # (d_obs > 0.10 m throughout).  The goal in Scene 1 is to verify that
+    # the gate operator does NOT activate in safe regions.
+    obstacles = [
+        ([0.4,  0.0,   0.65], 0.08),  # far above the figure-8 (z-peak≈0.50)
+        ([0.4, -0.35,  0.40], 0.08),  # far left of y-extent (±0.15)
+        ([0.4,  0.35,  0.30], 0.08),  # far right-lower
+    ]
+    centers = [np.array(o[0]) for o in obstacles]
+    radii   = [o[1] for o in obstacles]
+    env.sdf.set_static_obstacles(centers, radii)
+    env._sync_obstacles_to_mujoco()
+
+    print("[Scene1] Figure-8 lemniscate  +  3 static obstacles (d_obs > d_critical)")
+    return env
+
+
+def _scene2_setup(env):
+    """
+    Scene 2: 密集障碍窄通道（考验避障与松弛机制）
+
+    Paper: Section 4.1.3, Scenario 2
+      - Linear trajectory through narrow corridor
+      - 14 obstacles in staggered formation, 0.14 m gap
+    """
+    # Linear trajectory along y-axis
+    x_start = np.array([0.4, -0.20, 0.4])
+    x_goal  = np.array([0.4,  0.20, 0.4])
+    env.x_start = x_start
+    env.x_goal  = x_goal
+    env.x_d     = x_start.copy()
+    direction = x_goal - x_start
+    env.dx_d[:3] = (direction / np.linalg.norm(direction)) * 0.08
+
+    # 14 obstacles: two staggered rows forming a 0.14 m gap
+    obs_radius = 0.06
+    spacing = 0.10
+    centers = []
+    for i in range(7):
+        offset = spacing * i - 0.30
+        centers.append(np.array([0.4 - 0.07, offset, 0.4]))  # left row
+        centers.append(np.array([0.4 + 0.07, offset, 0.4]))  # right row
+    radii = [obs_radius] * len(centers)
+    env.sdf.set_static_obstacles(centers, radii)
+    env._sync_obstacles_to_mujoco()
+
+    print(f"[Scene2] Linear corridor  +  {len(centers)} obstacles (gap=0.14 m)")
+    return env
+
+
+def _scene3_setup(env):
+    """
+    Scene 3: 动态障碍环境（检验在线自适应能力）
+
+    Paper: Section 4.1.3, Scenario 3
+      - Linear trajectory
+      - 3 moving obstacles crossing the path
+    """
+    # Linear trajectory along x-axis
+    x_start = np.array([0.5,  0.0, 0.5])
+    x_goal  = np.array([0.2,  0.0, 0.5])
+    env.x_start = x_start
+    env.x_goal  = x_goal
+    env.x_d     = x_start.copy()
+    direction = x_goal - x_start
+    env.dx_d[:3] = (direction / np.linalg.norm(direction)) * 0.10
+
+    # Static initial obstacle placement (dynamics handled by MuJoCo mocap)
+    obs_radius = 0.08
+    centers = [
+        np.array([0.45, -0.10, 0.5]),
+        np.array([0.35,  0.10, 0.5]),
+        np.array([0.25, -0.10, 0.5]),
+    ]
+    radii = [obs_radius] * len(centers)
+    env.sdf.set_static_obstacles(centers, radii)
+    env._sync_obstacles_to_mujoco()
+
+    # Store motion parameters so the stepping loop can update positions
+    env._scene3_motion = {
+        "amplitude": 0.15,
+        "speed": 0.1,
+        "centers_init": [c.copy() for c in centers],
+    }
+    print(f"[Scene3] Linear trajectory  +  3 moving obstacles (v=0.1 m/s)")
+    return env
 
 def run_kp(env, args):
     """
@@ -178,6 +290,222 @@ def run_rl(env, args, agent):
                     get_action=lambda obs: agent.select_action(obs, deterministic=True))
 
 
+# ---------------------------------------------------------------------------
+# RRT* planner
+# ---------------------------------------------------------------------------
+
+def _evaluate_rrt_path(env, path, obstacles, start_pos, goal_pos):
+    """
+    Evaluate a planned RRT* joint-space path at high resolution.
+
+    Returns dict with metrics compatible with the comparison table.
+    """
+    n_eval = max(200, len(path) * 5)
+    alphas = np.linspace(0, 1, n_eval)
+
+    joint_path_length = 0.0
+    task_path_length = 0.0
+    clearance = float("inf")
+    collisions = 0
+    tracking_errors = []
+    obstacle_distances = []
+    prev_ee = None
+    prev_q = path[0]
+
+    for i, alpha in enumerate(alphas):
+        # Interpolate along path
+        t = alpha * (len(path) - 1)
+        idx = int(t)
+        frac = t - idx
+        if idx >= len(path) - 1:
+            q = path[-1]
+        else:
+            q = (1 - frac) * path[idx] + frac * path[idx + 1]
+
+        # Joint-space path length
+        if i > 0:
+            joint_path_length += np.linalg.norm(q - prev_q)
+        prev_q = q
+
+        # FK
+        x_ee, _ = env.kin.forward_kinematics(q)
+        if prev_ee is not None:
+            task_path_length += np.linalg.norm(x_ee - prev_ee)
+        prev_ee = x_ee
+
+        # Tracking error vs linear start→goal
+        x_d = (1 - alpha) * start_pos + alpha * goal_pos
+        track_err = np.linalg.norm(x_ee - x_d)
+        tracking_errors.append(track_err)
+
+        # Obstacle clearance
+        from planner.rrt_star import capsule_sphere_distance
+        capsules = env.kin.get_link_capsules(q)
+        min_d = float("inf")
+        for p1, p2, cap_r in capsules:
+            for obs in obstacles:
+                center = np.array(obs[:3], dtype=float)
+                r = float(obs[3])
+                d = capsule_sphere_distance(p1, p2, cap_r, center, r)
+                min_d = min(min_d, d)
+        obstacle_distances.append(min_d)
+        clearance = min(clearance, min_d)
+        if min_d < 0:
+            collisions += 1
+
+    # Compute final metrics
+    mean_error = float(np.mean(tracking_errors))
+    max_error = float(np.max(tracking_errors))
+    mean_d_obs = float(np.mean(obstacle_distances))
+    min_d_obs = float(np.min(obstacle_distances))
+
+    return {
+        "joint_path_length": joint_path_length,
+        "task_path_length": task_path_length,
+        "clearance": clearance,
+        "collisions": collisions,
+        "n_steps": n_eval,
+        "mean_error": mean_error,
+        "max_error": max_error,
+        "mean_d_obs": mean_d_obs,
+        "min_d_obs": min_d_obs,
+    }
+
+
+def run_rrt_star(env, args):
+    """
+    RRT* motion planner: finds a collision-free joint-space path
+    from start to goal, then evaluates path quality.
+    """
+    from planner.rrt_star import RRTStar
+
+    # Extract obstacles
+    obstacles = []
+    if hasattr(env, 'sdf') and hasattr(env.sdf, 'centers') and hasattr(env.sdf, 'radii'):
+        for c, r in zip(env.sdf.centers, env.sdf.radii):
+            obstacles.append([float(c[0]), float(c[1]), float(c[2]), float(r)])
+    if not obstacles and hasattr(args, 'scene_json') and args.scene_json is not None:
+        # Fall back to reading from JSON if env doesn't have obstacles set
+        sid = max(args.scene_id, 0)
+        scene = load_scene_from_json(args.scene_json, sid)
+        obstacles = scene.get("obstacles", [])
+
+    start_pos = env.x_start.copy()
+    goal_pos = env.x_goal.copy()
+    q_start = env.q.copy()
+
+    # Get joint limits and clamp
+    q_min = env.kin.q_min
+    q_max = env.kin.q_max
+    if q_min is not None and q_max is not None:
+        q_start = np.clip(q_start, q_min, q_max)
+
+    # Goal IK — prefer stored goal_q from JSON (guarantees good clearance)
+    from planner.rrt_star import capsule_sphere_distance
+    q_goal = None
+    try:
+        if args.scene_json is not None and args.scene_id >= 0:
+            scene = load_scene_from_json(args.scene_json, args.scene_id)
+            if "goal_q" in scene:
+                q_stored = np.array(scene["goal_q"])
+                if q_min is not None and q_max is not None:
+                    q_stored = np.clip(q_stored, q_min, q_max)
+                # Verify stored goal is collision-free enough
+                caps = env.kin.get_link_capsules(q_stored)
+                md = float("inf")
+                for p1, p2, cr in caps:
+                    for o in obstacles:
+                        d = capsule_sphere_distance(p1, p2, cr, np.array(o[:3]), float(o[3]))
+                        md = min(md, d)
+                print(f"[RRT*] Stored goal_q clearance: {md:.4f}m")
+                if md >= -0.01:  # allow tiny penetration
+                    q_goal = q_stored
+    except Exception:
+        pass
+
+    if q_goal is None:
+        # Fallback: IK with multiple seeds
+        for seed_idx in range(30):
+            q_seed = np.random.uniform(q_min, q_max) if seed_idx > 0 else None
+            q_ik = env.kin.inverse_kinematics(goal_pos,
+                                              q_init=q_seed if seed_idx > 0 else None)
+            if q_ik is None:
+                continue
+            if q_min is not None and q_max is not None:
+                q_ik = np.clip(q_ik, q_min, q_max)
+            q_goal = q_ik
+            # Check clearance
+            caps = env.kin.get_link_capsules(q_ik)
+            md = float("inf")
+            for p1, p2, cr in caps:
+                for o in obstacles:
+                    d = capsule_sphere_distance(p1, p2, cr, np.array(o[:3]), float(o[3]))
+                    md = min(md, d)
+            if md >= 0.02:
+                print(f"[RRT*] IK seed {seed_idx}: clearance {md:.4f}m")
+                break
+            q_goal = q_ik  # use best found
+    if q_goal is None:
+        print("[RRT*] IK failed for goal position — cannot plan")
+        return {
+            "label": "RRT*",
+            "planning_time": 0.0, "n_nodes": 0,
+            "joint_path_length": 0.0, "task_path_length": 0.0,
+            "clearance": 0.0, "collisions": 0, "n_steps": 0,
+            "mean_error": 0.0, "max_error": 0.0,
+            "mean_d_obs": 0.0, "min_d_obs": 0.0,
+        }
+    if q_min is not None and q_max is not None:
+        q_goal = np.clip(q_goal, q_min, q_max)
+
+    print(f"[RRT*] Planning from start → goal ({len(obstacles)} obstacles)")
+    print(f"[RRT*] Obstacles: {len(obstacles)}")
+
+    planner = RRTStar(
+        kin=env.kin,
+        q_min=env.kin.q_min if hasattr(env.kin, 'q_min') else env.q_min,
+        q_max=env.kin.q_max if hasattr(env.kin, 'q_max') else env.q_max,
+        obstacles=obstacles,
+        goal_bias=args.rrt_goal_bias,
+        max_iterations=args.rrt_max_iter,
+        step_size=args.rrt_step_size,
+    )
+
+    path, planning_time, n_nodes = planner.plan(q_start, q_goal)
+
+    if not path or len(path) < 2:
+        print(f"[RRT*] No path found in {planning_time:.2f}s ({n_nodes} nodes)")
+        return {
+            "label": "RRT*",
+            "planning_time": planning_time, "n_nodes": n_nodes,
+            "joint_path_length": 0.0, "task_path_length": 0.0,
+            "clearance": 0.0, "collisions": 0, "n_steps": 0,
+            "mean_error": 0.0, "max_error": 0.0,
+            "mean_d_obs": 0.0, "min_d_obs": 0.0,
+        }
+
+    print(f"[RRT*] Path found: {len(path)} waypoints "
+          f"in {planning_time:.2f}s ({n_nodes} nodes)")
+
+    # Evaluate path quality
+    metrics = _evaluate_rrt_path(env, path, obstacles, start_pos, goal_pos)
+    metrics["label"] = "RRT*"
+    metrics["planning_time"] = planning_time
+    metrics["n_nodes"] = n_nodes
+
+    # Print summary
+    print(f"\n[RRT*] Path evaluation:")
+    print(f"  Joint path length:     {metrics['joint_path_length']:.4f}")
+    print(f"  Task path length:      {metrics['task_path_length']:.4f} m")
+    print(f"  Min obstacle clearance: {metrics['clearance']:.4f} m")
+    print(f"  Collisions:             {metrics['collisions']}")
+    print(f"  Mean tracking error:    {metrics['mean_error']:.4f} m")
+    print(f"  Planning time:          {planning_time:.3f}s")
+    print(f"  Nodes explored:         {n_nodes}")
+
+    return metrics
+
+
 
 # ---------------------------------------------------------------------------
 # Shared loop and reporting
@@ -197,6 +525,25 @@ def _run_env(env, args, label, get_action=None):
     print("-" * 50)
 
     for step in range(args.steps):
+
+        # ------------------------------------------------------------------
+        # Scene 3: update dynamic obstacle positions (moving along y-axis)
+        # ------------------------------------------------------------------
+        if hasattr(env, '_scene3_motion'):
+            motion = env._scene3_motion
+            t = step * env.dt
+            new_centers = []
+            for i, c_init in enumerate(motion["centers_init"]):
+                # Each obstacle oscillates in y-direction with different phase
+                phase = i * (2.0 * np.pi / 3.0)  # 120° phase offset
+                y_offset = motion["amplitude"] * np.sin(motion["speed"] * t + phase)
+                new_center = c_init.copy()
+                new_center[1] = c_init[1] + y_offset
+                new_centers.append(new_center)
+            env.sdf.set_static_obstacles(new_centers,
+                                         [env.sdf.radii[i] for i in range(len(new_centers))])
+            env._sync_obstacles_to_mujoco()
+
         if get_action is not None:
             action = get_action(env._get_obs())
         else:
@@ -269,21 +616,50 @@ def print_comparison(results_list):
     print("Controller Comparison")
     print(f"{'=' * 70}")
 
-    headers = ["Metric"] + [r["label"] for r in results_list]
-    col_width = 18
-    header_fmt = "{:<22}" + "{:>16}" * (len(results_list))
-    row_fmt = "{:<22}" + "{:>16.4f}" * (len(results_list))
+    n = len(results_list)
+    hdr = "{:<28}" + "{:>14}" * n
+    row_f = "{:<28}" + "{:>14.4f}" * n
+    row_i = "{:<28}" + "{:>14d}" * n
+    row_s = "{:<28}" + "{:>14}" * n
 
-    print(header_fmt.format(*headers))
+    print(hdr.format("Metric", *[r["label"] for r in results_list]))
     print("-" * 70)
 
-    print(row_fmt.format("Mean tracking error (m)", *[r["mean_error"] for r in results_list]))
-    print(row_fmt.format("Max tracking error (m)", *[r["max_error"] for r in results_list]))
-    print(row_fmt.format("Total reward", *[r["total_reward"] for r in results_list]))
-    print(row_fmt.format("Mean reward", *[r["mean_reward"] for r in results_list]))
-    print(row_fmt.format("Min d_obs (m)", *[r["min_d_obs"] for r in results_list]))
-    print(row_fmt.format("Mean d_obs (m)", *[r["mean_d_obs"] for r in results_list]))
-    print("{:<22}".format("Collisions") + "".join(f"{r['collisions']:>16d}" for r in results_list))
+    # Common metrics
+    if all("mean_error" in r for r in results_list):
+        print(row_f.format("Mean tracking error (m)", *[r["mean_error"] for r in results_list]))
+    if all("max_error" in r for r in results_list):
+        print(row_f.format("Max tracking error (m)", *[r["max_error"] for r in results_list]))
+    if all("min_d_obs" in r for r in results_list):
+        print(row_f.format("Min d_obs (m)", *[r["min_d_obs"] for r in results_list]))
+    if all("mean_d_obs" in r for r in results_list):
+        print(row_f.format("Mean d_obs (m)", *[r["mean_d_obs"] for r in results_list]))
+    if all("collisions" in r for r in results_list):
+        print(row_i.format("Collisions", *[r["collisions"] for r in results_list]))
+
+    # RRT* path planning metrics
+    def _fmt(r, key, is_int=False):
+        """Format value or '-' if key not in result."""
+        if key not in r:
+            return "-"
+        v = r[key]
+        if is_int:
+            return f"{v:d}" if isinstance(v, int) else str(v)
+        return f"{v:.4f}"
+
+    if any("joint_path_length" in r for r in results_list):
+        print(f"\n  --- Path Planning Metrics ---")
+        row_any = "{:<28}" + "{:>14}" * n
+        print(row_any.format("  Joint path length",
+              *[_fmt(r, "joint_path_length") for r in results_list]))
+        print(row_any.format("  Task path length (m)",
+              *[_fmt(r, "task_path_length") for r in results_list]))
+        print(row_any.format("  Min clearance (m)",
+              *[_fmt(r, "clearance") for r in results_list]))
+        print(row_any.format("  Planning time (s)",
+              *[_fmt(r, "planning_time") for r in results_list]))
+        print(row_any.format("  Nodes explored",
+              *[_fmt(r, "n_nodes", is_int=True) for r in results_list]))
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +669,7 @@ def print_comparison(results_list):
 def parse_args():
     p = argparse.ArgumentParser(description="Unified manipulator test script")
     p.add_argument("--method", type=str, default="kp",
-                   choices=["kp", "mpc", "rl"],
+                   choices=["kp", "mpc", "rl", "rrt_star"],
                    help="Control method to test")
     p.add_argument("--render", action="store_true", help="Enable MuJoCo viewer")
     p.add_argument("--steps", type=int, default=1000, help="Max simulation steps")
@@ -314,6 +690,20 @@ def parse_args():
                    help=f"Path to scene JSON (default: {_DEFAULT_SCENE_JSON})")
     p.add_argument("--scene_id", type=int, default=-1,
                    help="Scene ID to load from --scene_json (default: auto-detect)")
+
+    # Paper experiment scenarios
+    p.add_argument("--scene", type=str, default=None,
+                   choices=["scene1", "scene2", "scene3"],
+                   help="Paper evaluation scenario: scene1=sparse+figure8, "
+                        "scene2=dense+narrow, scene3=dynamic+obstacles")
+
+    # RRT* parameters
+    p.add_argument("--rrt_max_iter", type=int, default=3000,
+                   help="Max RRT* iterations")
+    p.add_argument("--rrt_step_size", type=float, default=0.25,
+                   help="RRT* step size in normalized joint space")
+    p.add_argument("--rrt_goal_bias", type=float, default=0.15,
+                   help="RRT* goal sampling bias (0-1)")
     return p.parse_args()
 
 
@@ -327,7 +717,7 @@ def setup_env(args):
       3. Default:                     fixed trajectory with random obstacles
     """
     # Map method names to controller parameter
-    if args.method in ("kp", "rl"):
+    if args.method in ("kp", "rl", "rrt_star"):
         ctrl = "rl"
     else:
         ctrl = args.method
@@ -353,8 +743,17 @@ def setup_env(args):
     )
     env.reset()
 
-    # Override with JSON scene if specified (takes highest priority)
-    if args.scene_json is not None:
+    # Paper scenarios: highest priority (overrides JSON / generator / defaults)
+    if args.scene is not None:
+        if args.scene == "scene1":
+            _scene1_setup(env)
+        elif args.scene == "scene2":
+            _scene2_setup(env)
+        elif args.scene == "scene3":
+            _scene3_setup(env)
+
+    # Override with JSON scene if specified (takes second priority)
+    elif args.scene_json is not None:
         sid = max(args.scene_id, 0)  # default to scene 0 if not set
         scene = load_scene_from_json(args.scene_json, sid)
         if not apply_scene(env, scene):
@@ -373,6 +772,8 @@ def run_single(args):
         results = run_mpc(env, args)
     elif args.method == "rl":
         results = run_rl(env, args, agent=None)
+    elif args.method == "rrt_star":
+        results = run_rrt_star(env, args)
     else:
         raise ValueError(f"Unknown method: {args.method}")
 
@@ -422,6 +823,15 @@ def run_comparison(args):
         results_list.append(r)
     else:
         print(f"\n[SKIP] RL checkpoint not found at {args.checkpoint}")
+
+    # RRT* (always runs — no checkpoint needed)
+    print(f"\n{'#' * 60}")
+    print(f"# Running RRT*")
+    print(f"{'#' * 60}")
+    args.method = "rrt_star"
+    env = setup_env(args)
+    r = run_rrt_star(env, args)
+    results_list.append(r)
 
     print_comparison(results_list)
 

@@ -59,13 +59,14 @@ class TrajectoryGenerator:
         obstacle_radius_range    : (min, max) radius for obstacles (m)
         min_obstacle_distance    : minimum clearance from path to obstacle surface (m)
         """
-        self.kin = ManipulatorKinematics(urdf_path=urdf_path, n_joints=n_joints)
         self.n = n_joints
 
         # Joint limits (Panda default)
         self.q_min = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
         self.q_max = np.array([2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973])
 
+        self.kin = ManipulatorKinematics(urdf_path=urdf_path, n_joints=n_joints,
+                                          q_min=self.q_min, q_max=self.q_max)
         # Workspace bounds (default: empirical Panda workspace)
         # Z_min = 0.10 ensures positions stay above the floor (Z=0) with margin
         if workspace_bounds is None:
@@ -446,6 +447,12 @@ class TrajectoryGenerator:
             start_ik = self.kin.inverse_kinematics(start_pos, q_init=start_seed_q)
             goal_ik = self.kin.inverse_kinematics(goal_pos, q_init=goal_seed_q)
             if start_ik is None or goal_ik is None:
+                continue
+
+            # Joint limit check at endpoints
+            if np.any(start_ik < self.q_min) or np.any(start_ik > self.q_max):
+                continue
+            if np.any(goal_ik < self.q_min) or np.any(goal_ik > self.q_max):
                 continue
 
             # Self-collision check at endpoints

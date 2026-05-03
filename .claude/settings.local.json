@@ -5,7 +5,8 @@
       "Bash(uv pip:*)",
       "WebSearch",
       "Bash(python tune_baseline.py --steps 300 --trials 20)",
-      "Bash(python3 tune_baseline.py --steps 300 --trials 20)"
+      "Bash(python3 tune_baseline.py --steps 300 --trials 20)",
+      "Bash(python3)"
     ]
   }
 }

@@ -1,3 +1,6 @@
+# python运行版本
+- 使用code/.venv/bin中的python虚拟环境
+
 # 论文写作规范
 
 ## 整体结构要求

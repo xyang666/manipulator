@@ -2,7 +2,7 @@
 manipulator_env.py
 ------------------
 MuJoCo-based 7-DOF manipulator environment with:
-  - 13D action space: [Δẋ_RL (6), dq0 (7)] — task relaxation + null-space self-motion
+  - 10D action space: [Δẋ_RL (3), dq0 (7)] — task relaxation + null-space self-motion
   - Dense reward combining tracking, obstacle avoidance, manipulability, energy
   - Signed distance field (simplified sphere model) for obstacle detection
   - Tracking-error-driven path progression (parameterized by s ∈ [0,1])
@@ -10,10 +10,11 @@ MuJoCo-based 7-DOF manipulator environment with:
 Observation space (paper Eq. state):
     s = [q (7), dq (7), x_ee (3), x_d (3), dx_d (3), d_obs (1), w(q) (1)]  dim=25
 
-Action space (paper):
-    a = [Δẋ_RL ∈ R^6, dq0 ∈ R^7]  dim=13
-    Control law: q̇ = J†(ẋ_d + Kp(x_d - x) + diag(σ)·Δẋ_RL) + N(q)dq0
+Action space (paper, Route A — position-only):
+    a = [Δẋ_RL ∈ R^3, dq0 ∈ R^7]  dim=10
+    Control law: q̇ = J⁺(ẋ_d + Kp(x_d - x) + diag(σ)·Δẋ_RL) + N(q)dq0
     Gate operator diag(σ): scaled by d_obs (σ→0 when safe, σ→1 when dangerous)
+    Uses position-only Jacobian J_pos ∈ ℝ³ˣ⁷ → null-space dimension = 4.
 """
 
 import numpy as np
@@ -94,9 +95,10 @@ class ManipulatorEnv:
 
         # Observation: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), d_obs(1), w(1)] = 25
         self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1  # 25
-        self.act_dim = 6 + n_joints  # 13D: 6 for task relaxation + 7 for null-space
+        self.act_dim = 3 + n_joints  # 10D: 3 for position relaxation + 7 for null-space
 
-        self.kin = ManipulatorKinematics(urdf_path, n_joints)
+        self.kin = ManipulatorKinematics(urdf_path, n_joints,
+                                          q_min=Q_MIN, q_max=Q_MAX)
         self.dyn = ManipulatorDynamics(urdf_path, n_joints)
 
         # Trajectory generator (optional)
@@ -145,6 +147,11 @@ class ManipulatorEnv:
         # Path parameterization (tracking-error-driven)
         self.path_param = 0.0  # s ∈ [0, 1]
 
+        # Parametric trajectory support (for figure-8, etc.)
+        self.use_parametric_traj = False
+        self._parametric_pos_func = None   # callable(t) → position (3,)
+        self._parametric_vel_func = None   # callable(t) → velocity (3,)
+
         self._reset_state()
 
     # ------------------------------------------------------------------
@@ -159,12 +166,34 @@ class ManipulatorEnv:
         self.path_param = 0.0
         return self._get_obs()
 
+    def set_parametric_trajectory(self, pos_func, vel_func):
+        """
+        Switch to a time-parameterized trajectory (e.g. figure-8).
+
+        When set, the target position x_d and velocity dx_d are computed from
+        the provided functions of time (t = step_count * dt), overriding the
+        default linear start→goal progression.
+
+        Parameters
+        ----------
+        pos_func : callable(t: float) -> ndarray (3,)
+            Desired EE position at time t.
+        vel_func : callable(t: float) -> ndarray (3,)
+            Desired EE velocity (analytical derivative) at time t.
+        """
+        self.use_parametric_traj = True
+        self._parametric_pos_func = pos_func
+        self._parametric_vel_func = vel_func
+        t = self.step_count * self.dt
+        self.x_d = pos_func(t)
+        self.dx_d[:3] = vel_func(t)
+
     def step(self, action: np.ndarray):
         """
         Parameters
         ----------
-        action : 13D action [Δẋ_RL (6), dq0 (7)]
-                 Δẋ_RL: task-space relaxation velocity (gated by d_obs)
+        action : 10D action [Δẋ_RL (3), dq0 (7)]
+                 Δẋ_RL: position-space relaxation velocity (gated by d_obs)
                  dq0  : null-space self-motion velocity
 
         Returns
@@ -179,14 +208,14 @@ class ManipulatorEnv:
                 obs_radii=self.sdf.radii if self.sdf.n_obs > 0 else None
             )
             # Store dummy values for MPC mode (physics loss disabled via buffer guard)
-            self._last_J = np.zeros((6, self.n), dtype=np.float32)
+            self._last_J = np.zeros((3, self.n), dtype=np.float32)
             self._last_sigma = np.float32(0.0)
-            self._last_dx_nom = np.zeros(6, dtype=np.float32)
+            self._last_dx_nom = np.zeros(3, dtype=np.float32)
 
         else:
-            # Decompose 13D action into task relaxation + null-space components
-            delta_x_rl = action[:6]   # Δẋ_RL ∈ R^6 (task-space relaxation)
-            dq0        = action[6:]   # dq0 ∈ R^7 (null-space self-motion)
+            # Decompose 10D action into task relaxation + null-space components
+            delta_x_rl = action[:3]   # Δẋ_RL ∈ R^3 (position-space relaxation)
+            dq0        = action[3:]   # dq0 ∈ R^7 (null-space self-motion)
 
             # Compute nominal task-space velocity (PID tracking)
             dx_nom = self._compute_task_velocity()  # ẋ_d + Kp(x_d - x) + Ki*∫(x_d - x)dt
@@ -202,13 +231,13 @@ class ManipulatorEnv:
             sigma = raw_sigma * raw_sigma * (3.0 - 2.0 * raw_sigma)
             delta_x_gated = sigma * delta_x_rl  # diag(σ) · Δẋ_RL
 
-            # Combine: q̇ = J†(dx_nom + delta_x_gated) + N(q)dq0
-            dq_cmd = self.kin.combine_velocities_with_relaxation(
+            # Combine: q̇ = J_pos⁺(dx_nom + delta_x_gated) + N_pos(q)dq0
+            dq_cmd = self.kin.combine_velocities_with_relaxation_position(
                 self.q, dx_nom, delta_x_gated, dq0
             )
 
             # Save intermediate values for differentiable physics loss (Plan B)
-            self._last_J = self.kin.jacobian(self.q).copy()
+            self._last_J = self.kin.jacobian_position(self.q).copy()
             self._last_sigma = sigma
             self._last_dx_nom = dx_nom.copy()
 
@@ -252,12 +281,18 @@ class ManipulatorEnv:
         self._last_advance = advance_rate
         self.path_param = min(1.0, self.path_param + (nominal_s - self.path_param) * advance_rate)
 
-        # Update target position and compute actual target velocity
-        prev_x_d = self.x_d.copy()
-        self.x_d = (1.0 - self.path_param) * self.x_start + self.path_param * self.x_goal
-
-        # Feed-forward velocity = actual target motion, decoupled from advance_rate
-        self.dx_d[:3] = (self.x_d - prev_x_d) / self.dt
+        # Update target position: parametric vs linear trajectory
+        if self.use_parametric_traj and self._parametric_pos_func is not None:
+            t = self.step_count * self.dt
+            prev_x_d = self.x_d.copy()
+            self.x_d = self._parametric_pos_func(t)
+            self.dx_d[:3] = self._parametric_vel_func(t)
+        else:
+            # Original linear interpolation with tracking-error-driven progression
+            prev_x_d = self.x_d.copy()
+            self.x_d = (1.0 - self.path_param) * self.x_start + self.path_param * self.x_goal
+            # Feed-forward velocity = actual target motion, decoupled from advance_rate
+            self.dx_d[:3] = (self.x_d - prev_x_d) / self.dt
 
         self.step_count += 1
 
@@ -285,7 +320,10 @@ class ManipulatorEnv:
             collision = d_obs < 0.02
 
         # Termination conditions (collision does NOT terminate — agent needs to learn recovery)
-        path_complete = self.path_param >= 0.99
+        if self.use_parametric_traj:
+            path_complete = self.step_count >= self.episode_len
+        else:
+            path_complete = self.path_param >= 0.99
         done = self.step_count >= self.episode_len or path_complete
         info = {"d_obs": d_obs, "w": w, "success": path_complete, "collision": collision,
                 "path_param": self.path_param, **reward_info}
@@ -442,9 +480,9 @@ class ManipulatorEnv:
         self._integral_err = np.zeros(3)
 
         # Initialize physics loss storage fields (set during step())
-        self._last_J = np.zeros((6, self.n), dtype=np.float32)
+        self._last_J = np.zeros((3, self.n), dtype=np.float32)
         self._last_sigma = np.float32(0.0)
-        self._last_dx_nom = np.zeros(6, dtype=np.float32)
+        self._last_dx_nom = np.zeros(3, dtype=np.float32)
 
         if self.use_trajectory_generator and self.traj_gen is not None:
             # Generate new scene using TrajectoryGenerator
@@ -650,7 +688,8 @@ class ManipulatorEnv:
 
     def _compute_task_velocity(self) -> np.ndarray:
         """
-        PID tracking in task space: ẋ_cmd = ẋ_d + Kp(e)*e + Ki*∫e dt
+        PID tracking in position space: ẋ_cmd = ẋ_d + Kp(e)*e + Ki*∫e dt
+        Returns 3D position-only velocity (Route A).
         - Adaptive Kp: increases with error magnitude for quick convergence
         - Leaky integral with anti-windup clamp prevents overshoot oscillation
         """
@@ -669,8 +708,8 @@ class ManipulatorEnv:
         self._integral_err += pos_err * self.dt
         self._integral_err = np.clip(self._integral_err, -0.02, 0.02)
 
-        dx_cmd = np.zeros(6)
-        dx_cmd[:3] = self.dx_d[:3] + Kp * pos_err + Ki * self._integral_err
+        dx_cmd = np.zeros(3)
+        dx_cmd[:] = self.dx_d[:3] + Kp * pos_err + Ki * self._integral_err
 
         return dx_cmd
 

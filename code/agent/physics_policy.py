@@ -3,9 +3,9 @@ physics_policy.py
 -----------------
 Physics-Informed Policy Network (paper core contribution).
 
-Key idea: the actor network outputs 13D actions:
-    a = [Δẋ_RL (6), dq0 (7)]
-    - Δẋ_RL: task-space relaxation (scaled to allow obstacle avoidance)
+Key idea: the actor network outputs 10D actions:
+    a = [Δẋ_RL (3), dq0 (7)]
+    - Δẋ_RL: position-space relaxation (scaled to allow obstacle avoidance)
     - dq0   : null-space self-motion velocities
 
 Differentiable physics regularization (Plan B):
@@ -15,7 +15,7 @@ Differentiable physics regularization (Plan B):
 Architecture:
     Input:  state s_t = [q, dq, x_ee, x_d, dx_d, d_obs, w(q)]  (dim=state_dim=25)
     Hidden: MLP with tanh activations
-    Output: 13D action [Δẋ_RL (6), dq0 (7)]
+    Output: 10D action [Δẋ_RL (3), dq0 (7)]
             task relaxation scaled by task_scale (small),
             null-space motion scaled by nullspace_scale (larger)
 """
@@ -33,7 +33,7 @@ LOG_STD_MAX = 2
 
 class PhysicsInformedActor(nn.Module):
     """
-    Gaussian actor for SAC outputting 13D actions: [Δẋ_RL (6), dq0 (7)].
+    Gaussian actor for SAC outputting 10D actions: [Δẋ_RL (3), dq0 (7)].
 
     Task relaxation and null-space components are scaled differently:
     - task_scale (default 0.1): small to preserve tracking priority
@@ -49,18 +49,18 @@ class PhysicsInformedActor(nn.Module):
         Parameters
         ----------
         state_dim      : dimension of input state (25)
-        action_dim     : total action dimension (13 = 6 + 7)
+        action_dim     : total action dimension (10 = 3 + 7)
         hidden_dims    : MLP hidden layer sizes
         action_scale   : legacy scale (unused when task/nullspace scales provided)
-        task_scale     : scale for task relaxation Δẋ_RL (first 6 dims)
+        task_scale     : scale for task relaxation Δẋ_RL (first 3 dims)
         nullspace_scale: scale for null-space velocity dq0 (last 7 dims)
         """
         super().__init__()
         self.action_scale    = action_scale
         self.task_scale      = task_scale
         self.nullspace_scale = nullspace_scale
-        self.task_dim        = 6
-        self.nullspace_dim   = action_dim - 6  # typically 7
+        self.task_dim        = 3  # position-only (Route A)
+        self.nullspace_dim   = action_dim - 3  # typically 7
 
         layers = []
         in_dim = state_dim
@@ -90,9 +90,9 @@ class PhysicsInformedActor(nn.Module):
 
         Returns
         -------
-        action   : [batch x 13]  [Δẋ_RL (6), dq0 (7)], separately scaled
+        action   : [batch x 10]  [Δẋ_RL (3), dq0 (7)], separately scaled
         log_prob : [batch x 1]
-        mean     : [batch x 13]  deterministic action
+        mean     : [batch x 10]  deterministic action
         """
         mean, log_std = self.forward(state)
         std = log_std.exp()
@@ -191,14 +191,16 @@ class PhysicsRegularizer:
         Reconstructs dq_cmd from current-policy action analytically, then
         computes torque via simplified dynamics and penalises limit violations.
 
+        Route A (position-only): uses 3D task space, J_pos ∈ ℝ³ˣⁿ.
+
         Parameters
         ----------
         q_batch       : [B x n] joint positions (from buffer, detached)
         dq_batch      : [B x n] previous joint velocities (from buffer)
-        J_batch       : [B x 6 x n] geometric Jacobian
+        J_batch       : [B x 3 x n] position-only Jacobian
         sigma_batch   : [B x 1] gate value
-        dx_nom_batch  : [B x 6] nominal task-space velocity
-        action_batch  : [B x 13] current-policy action  (*has grad*)
+        dx_nom_batch  : [B x 3] nominal position-space velocity
+        action_batch  : [B x 10] current-policy action  (*has grad*)
 
         Returns
         -------
@@ -208,19 +210,20 @@ class PhysicsRegularizer:
         n = self.n
         device = q_batch.device
         dtype = q_batch.dtype
-        lam = 1e-4  # damping for pseudo-inverse
+        task_dim = 3  # position-only (Route A)
+        lam = 1e-4    # damping for pseudo-inverse
 
         # Split action
-        delta_x = action_batch[:, :6]    # (B, 6)  *has grad*
-        dq0     = action_batch[:, 6:]   # (B, n)  *has grad*
+        delta_x = action_batch[:, :3]    # (B, 3)  *has grad*
+        dq0     = action_batch[:, 3:]    # (B, n)  *has grad*
 
         # ---- Reconstruct dq_cmd from action (differentiable) ----
 
         # Pseudo-inverse: J_pinv = J^T (J J^T + λI)^{-1}
-        JJT = J_batch @ J_batch.transpose(-2, -1)  # (B, 6, 6)
-        reg = lam * torch.eye(6, device=device, dtype=dtype).unsqueeze(0)
+        JJT = J_batch @ J_batch.transpose(-2, -1)  # (B, 3, 3)
+        reg = lam * torch.eye(task_dim, device=device, dtype=dtype).unsqueeze(0)
         JJT_inv = torch.linalg.inv(JJT + reg)
-        J_pinv = J_batch.transpose(-2, -1) @ JJT_inv  # (B, n, 6)
+        J_pinv = J_batch.transpose(-2, -1) @ JJT_inv  # (B, n, 3)
 
         # Null-space projector: N = I - J_pinv @ J
         I = torch.eye(n, device=device, dtype=dtype).unsqueeze(0)
@@ -228,8 +231,8 @@ class PhysicsRegularizer:
 
         # dq_cmd = J_pinv @ (dx_nom + σ·Δx) + N @ dq0
         sigma_flat = sigma_batch.view(B, 1, 1)          # (B, 1, 1)
-        dx_nom_r = dx_nom_batch.view(B, 6, 1)           # (B, 6, 1)
-        delta_x_r = delta_x.view(B, 6, 1)               # (B, 6, 1)
+        dx_nom_r = dx_nom_batch.view(B, task_dim, 1)    # (B, 3, 1)
+        delta_x_r = delta_x.view(B, task_dim, 1)        # (B, 3, 1)
         dq0_r     = dq0.view(B, n, 1)                   # (B, n, 1)
 
         dq_cmd = J_pinv @ (dx_nom_r + sigma_flat * delta_x_r) + N @ dq0_r
@@ -284,8 +287,8 @@ if __name__ == "__main__":
     from env.dynamics import ManipulatorDynamics
 
     n_joints = 7
-    state_dim = n_joints * 2 + 6 + 1 + 1   # q + dq + x_d + d_obs + w
-    action_dim = n_joints
+    state_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1   # q + dq + x_ee + x_d + dx_d + d_obs + w = 25
+    action_dim = 3 + n_joints  # 10D: Δẋ_RL (3) + dq0 (7)
 
     print("=== physics_policy.py unit tests ===")
 
@@ -303,10 +306,10 @@ if __name__ == "__main__":
     B = 4
     q_t = torch.zeros(B, n_joints)
     dq_t = torch.zeros(B, n_joints)
-    J_t = torch.eye(6, n_joints).unsqueeze(0).expand(B, -1, -1)
+    J_t = torch.eye(3, n_joints).unsqueeze(0).expand(B, -1, -1)  # position-only J
     sigma_t = torch.ones(B, 1) * 0.5  # partial gate opening
-    dx_nom_t = torch.full((B, 6), 0.5)  # nominal velocity
-    action_t = torch.full((B, 13), 2.0)  # large task relaxation + nullspace
+    dx_nom_t = torch.full((B, 3), 0.5)  # nominal position velocity (Route A)
+    action_t = torch.full((B, 10), 2.0)  # large task relaxation + nullspace
     action_t.requires_grad_(True)
 
     loss = reg.compute_loss_batch(q_t, dq_t, J_t, sigma_t, dx_nom_t, action_t)

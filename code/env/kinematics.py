@@ -34,16 +34,23 @@ class ManipulatorKinematics:
     """
 
     def __init__(self, urdf_path: str | None = None, n_joints: int = 7,
-                 damping: float = 1e-4):
+                 damping: float = 1e-4,
+                 q_min: np.ndarray | None = None,
+                 q_max: np.ndarray | None = None):
         """
         Parameters
         ----------
         urdf_path : path to URDF file (None → simplified mode)
         n_joints  : number of joints
         damping   : damping factor λ for damped pseudo-inverse
+        q_min     : joint lower limits [n] (None = no limit enforcement)
+        q_max     : joint upper limits [n] (None = no limit enforcement)
         """
         self.n = n_joints
         self.damping = damping
+        # Store joint limits (used by IK for clamping)
+        self.q_min = np.asarray(q_min, dtype=float) if q_min is not None else None
+        self.q_max = np.asarray(q_max, dtype=float) if q_max is not None else None
         self.model = None
         self.data = None
         self.ee_frame_id = None
@@ -106,6 +113,41 @@ class ManipulatorKinematics:
             return J.copy()   # [6 x n]
         else:
             return self._jacobian_simplified(q)
+
+    def link_jacobians_position(self, q: np.ndarray,
+                                 link_names: list[str]) -> dict[str, np.ndarray]:
+        """
+        Returns position Jacobians (3×n) for specified links.
+
+        Used for per-link null-space obstacle avoidance: each capsule point
+        needs its own link Jacobian so the repulsive force correctly maps
+        to joint motion.
+
+        Parameters
+        ----------
+        q          : joint positions [n]
+        link_names : list of link names (e.g. ["panda_link3", "panda_link4", ...])
+
+        Returns
+        -------
+        jacobians : dict {link_name: J_pos (3×n)}
+        """
+        if self.model is None:
+            return {}
+        pin.computeJointJacobians(self.model, self.data, q)
+        pin.updateFramePlacements(self.model, self.data)
+        result = {}
+        for name in link_names:
+            try:
+                fid = self.model.getFrameId(name)
+                J = pin.getFrameJacobian(
+                    self.model, self.data, fid,
+                    pin.ReferenceFrame.LOCAL_WORLD_ALIGNED
+                )
+                result[name] = J[:3, :].copy()  # position rows only
+            except Exception:
+                pass  # skip unknown frames
+        return result
 
     def pseudo_inverse(self, J: np.ndarray) -> np.ndarray:
         """
@@ -222,14 +264,46 @@ class ManipulatorKinematics:
 
         return capsules
 
+    def jacobian_position(self, q: np.ndarray) -> np.ndarray:
+        """
+        Position-only Jacobian J_pos ∈ R^{3 x n} (linear velocity rows only).
+
+        Used for Route A (position-only tracking): the 7-DOF arm has 3D task
+        constraints → null-space dimension = 7 - 3 = 4.
+        """
+        q = np.asarray(q, dtype=float)
+        if self.model is not None:
+            pin.computeJointJacobians(self.model, self.data, q)
+            pin.updateFramePlacements(self.model, self.data)
+            J_full = pin.getFrameJacobian(
+                self.model, self.data, self.ee_frame_id,
+                pin.ReferenceFrame.LOCAL_WORLD_ALIGNED
+            )
+            return J_full[:3, :].copy()  # [3 x n]
+        else:
+            return self._jacobian_simplified(q)[:3, :]
+
     def null_space_projector(self, q: np.ndarray) -> np.ndarray:
         """
         N(q) = I - J†(q) J(q)   ∈ R^{n x n}
 
         Any vector q̇₀ projected through N satisfies J @ (N @ q̇₀) ≈ 0,
         meaning it produces no end-effector motion (pure self-motion).
+
+        For 6x7 J: null-space dimension = 7 - rank(J) = 1.
         """
         J = self.jacobian(q)
+        Jpinv = self.pseudo_inverse(J)
+        return np.eye(self.n) - Jpinv @ J
+
+    def null_space_projector_position(self, q: np.ndarray) -> np.ndarray:
+        """
+        Position-only null-space projector N_pos ∈ R^{n x n}.
+
+        N_pos = I - J_pos† @ J_pos, where J_pos ∈ R^{3 x n}.
+        Null-space dimension = n - 3 = 4 (for a 7-DOF arm tracking only position).
+        """
+        J = self.jacobian_position(q)
         Jpinv = self.pseudo_inverse(J)
         return np.eye(self.n) - Jpinv @ J
 
@@ -304,6 +378,30 @@ class ManipulatorKinematics:
         dx_cmd = np.asarray(dx_desired, dtype=float) + np.asarray(delta_x, dtype=float)
 
         # Combined control law: task tracking + null-space self-motion
+        dq = Jpinv @ dx_cmd + N @ np.asarray(dq0, dtype=float)
+        return dq
+
+    def combine_velocities_with_relaxation_position(self, q: np.ndarray,
+                                                     dx_desired: np.ndarray,
+                                                     delta_x: np.ndarray,
+                                                     dq0: np.ndarray) -> np.ndarray:
+        """
+        Position-only control law (Route A):
+          q̇ = J_pos⁺(ẋ_d + Δẋ) + N_pos(q) @ dq0
+
+        All task vectors are ℝ³ (position only, no orientation).
+        Uses position-only Jacobian → 4D null space for 7-DOF arm.
+
+        Parameters
+        ----------
+        dx_desired : nominal EE velocity [3] (position only)
+        delta_x    : RL task relaxation [3] (position only)
+        dq0        : null-space velocity [n]
+        """
+        J = self.jacobian_position(q)
+        Jpinv = self.pseudo_inverse(J)
+        N = self.null_space_projector_position(q)
+        dx_cmd = np.asarray(dx_desired, dtype=float) + np.asarray(delta_x, dtype=float)
         dq = Jpinv @ dx_cmd + N @ np.asarray(dq0, dtype=float)
         return dq
 
@@ -396,7 +494,18 @@ class ManipulatorKinematics:
             if not success:
                 q = q + 0.1 * dq
 
-        # ---------- 最终检查 ----------
+            # Clamp to joint limits after each iteration
+            if self.q_min is not None:
+                q = np.maximum(q, self.q_min)
+            if self.q_max is not None:
+                q = np.minimum(q, self.q_max)
+
+        # Final check + joint limit clamp
+        if self.q_min is not None:
+            q = np.maximum(q, self.q_min)
+        if self.q_max is not None:
+            q = np.minimum(q, self.q_max)
+
         x_final, R_final = self.forward_kinematics(q)
         final_error = np.linalg.norm(x_target[:3] - x_final)
 

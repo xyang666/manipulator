@@ -39,7 +39,7 @@ class MPCController:
                  u_max: Optional[np.ndarray] = None,
                  d_safe: float = 0.15,
                  rep_gain: float = 0.3,
-                 w_obs: float = 0.0):
+                 w_obs: float = 0):
         """
         Parameters
         ----------
@@ -226,6 +226,53 @@ class MPCController:
 
         return F_total
 
+    def _null_space_repulsion(self, q: np.ndarray,
+                               kinematics) -> np.ndarray:
+        """
+        Compute null-space avoidance velocity using per-link Jacobians.
+
+        For each capsule point on the arm, the repulsive force is mapped to
+        joint-space velocity using THAT LINK'S OWN Jacobian (not the EE
+        Jacobian).  This ensures the force physically corresponds to moving
+        that specific link, so the null-space projection N preserves it.
+
+        Returns
+        -------
+        dq_avoid : [n] joint velocity in null space of the position task
+        """
+        # Link names in the same order as kinematics.get_link_capsules()
+        capsule_link_order = [
+            "panda_link0", "panda_link1", "panda_link2", "panda_link3",
+            "panda_link4", "panda_link5", "panda_link5",  # link5 has 2 capsules
+            "panda_link6", "panda_link7", "panda_hand",
+            "panda_leftfinger", "panda_rightfinger",
+        ]
+        capsules = kinematics.get_link_capsules(q)
+        # Get all link Jacobians at once
+        link_names = sorted(set(capsule_link_order))
+        link_jacs = kinematics.link_jacobians_position(q, link_names)
+
+        dq_rep = np.zeros(self.n_controls)
+        for ci, (p1, p2, cap_r) in enumerate(capsules):
+            link_name = capsule_link_order[ci] if ci < len(capsule_link_order) else None
+            if link_name not in link_jacs:
+                continue
+            J_link = link_jacs[link_name]  # [3×n]
+
+            for pt in [p1, (p1 + p2) / 2, p2]:
+                F_pt = self._repulsive_force(pt)
+                if np.linalg.norm(F_pt) < 1e-6:
+                    continue
+                # Map force to joint velocity via this link's Jacobian
+                Jpinv_link = kinematics.pseudo_inverse(J_link)
+                dq_rep += Jpinv_link @ F_pt
+
+        # Project into null space of the position task
+        J_pos = kinematics.jacobian(q)[:3, :]
+        Jpinv_pos = kinematics.pseudo_inverse(J_pos)
+        N = np.eye(self.n_controls) - Jpinv_pos @ J_pos
+        return N @ dq_rep
+
     # ------------------------------------------------------------------
     # Dynamics and control
     # ------------------------------------------------------------------
@@ -359,31 +406,34 @@ class MPCController:
         # Compute tracking error
         e_pos = x_d - x_ee
 
-        # Desired task-space velocity with feedback
-        Kp = 3.0
-        dx_cmd = np.zeros(6)
-        dx_cmd[:3] = dx_d[:3] + Kp * e_pos
+        # Desired velocity with feedback (position only — orientation is free)
+        Kp = 4.0
+        dx_cmd = dx_d[:3] + Kp * e_pos  # [3] position only
 
-        # Add obstacle repulsive force (multi-point for full-arm awareness)
+        # Position Jacobian [3×7] — orientation is not tracked, giving
+        # 4-DOF null space (7-3) for obstacle avoidance self-motion.
+        J_pos = kinematics.jacobian(q)[:3, :]
+        Jpinv = kinematics.pseudo_inverse(J_pos)
+
+        # Primary task: position tracking
+        dq_track = Jpinv @ dx_cmd
+
+        # Secondary task: obstacle avoidance in null space
+        dq_avoid = np.zeros(self.n_controls)
         if self.n_obs > 0:
-            F_rep = self._multi_point_repulsive_force(q, kinematics)
-            dx_cmd[:3] += F_rep
+            dq_avoid = self._null_space_repulsion(q, kinematics)
 
-        # Get Jacobian
-        J = kinematics.jacobian(q)
-        Jpinv = kinematics.pseudo_inverse(J)
+        # Combined command: tracking + null-space avoidance
+        dq_desired = dq_track + dq_avoid
 
-        # Task-space tracking velocity (now includes repulsion)
-        dq_task = Jpinv @ dx_cmd
-
-        # Formulate QP: minimize deviation from task velocity + control effort
-        # min ||dq - dq_task||² + λ||dq||²
+        # Formulate QP: minimize deviation from desired velocity + control effort
+        # min ||dq - dq_desired||² + λ||dq||²
         # s.t. dq_min ≤ dq ≤ dq_max
 
         dq_var = cp.Variable(self.n_controls)
 
-        # Cost: track task velocity + regularization
-        cost = cp.sum_squares(dq_var - dq_task) + 0.01 * cp.sum_squares(dq_var)
+        # Cost: track desired velocity + regularization
+        cost = cp.sum_squares(dq_var - dq_desired) + 0.01 * cp.sum_squares(dq_var)
 
         # Constraints
         dq_max = np.array([2.175, 2.175, 2.175, 2.175, 2.610, 2.610, 2.610])
@@ -399,10 +449,10 @@ class MPCController:
             if problem.status in [cp.OPTIMAL, cp.OPTIMAL_INACCURATE]:
                 return dq_var.value
             else:
-                return dq_task
+                return dq_desired
         except Exception as e:
             print(f"[MPC] Task-space solver error: {e}")
-            return dq_task
+            return dq_desired
 
 
 if __name__ == "__main__":
