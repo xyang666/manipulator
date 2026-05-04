@@ -75,6 +75,8 @@ def parse_args():
                    help="Scene ID to use when --scene_json is set")
     p.add_argument("--render",      action="store_true",
                    help="Render the scene with MuJoCo viewer during training")
+    p.add_argument("--resume",      type=str,   default=None,
+                   help="Path to checkpoint to resume training from")
     return p.parse_args()
 
 
@@ -157,10 +159,26 @@ def main():
 
     os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
 
-    # -------- Training loop --------
+    # -------- Resume from checkpoint --------
     total_steps = 0
     episode     = 0
     best_reward = -np.inf
+    if args.resume is not None:
+        ckpt_path = args.resume
+        if not os.path.isabs(ckpt_path):
+            ckpt_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ckpt_path)
+        if os.path.exists(ckpt_path):
+            meta = agent.load(ckpt_path)
+            total_steps = meta.get("step", 0)
+            episode     = meta.get("episode", 0)
+            best_reward = meta.get("best_reward", -np.inf)
+            logger.best_reward = best_reward
+            print(f"[train] Resumed from {ckpt_path}: step={total_steps}, episode={episode}, "
+                  f"best_reward={best_reward:.3f}")
+        else:
+            print(f"[train] WARNING: resume checkpoint not found: {ckpt_path}")
+
+    # -------- Training loop --------
     reward_scale = 2.0  # normalize reward magnitude for stable Q learning
 
     print(f"Run directory: {run_dir}")
