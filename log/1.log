@@ -1,0 +1,23 @@
+
+libgomp: Invalid value for environment variable OMP_NUM_THREADS
+[MPC] WARNING: cvxpy not found. MPC controller disabled.
+[dynamics] Loaded model 'panda' with 7 DOF.
+[Validation] Loaded 100 validation scenes from results/trajectories.json
+[train] Fixed scene mode: scene_id=0, obstacles=0
+[kinematics] Loaded model, n_joints=7, ee_frame='panda_hand_tcp_joint'
+[dynamics] Loaded model 'panda' with 7 DOF.
+[env] MuJoCo model loaded: /root/manipulator/models/panda_scene.xml
+Run directory: checkpoints/run_20260504_232043
+ Episode    Steps     Reward    L_actor      L_dyn    d_obs
+------------------------------------------------------------
+      10     1930    945.583     0.0000     0.0000      inf
+      20     3860    945.796        nan     0.0000      inf
+      30     5790    945.385        nan     0.0000      inf
+      40     7720    945.659        nan     0.0000      inf
+      50     9650    946.378        nan     0.0000      inf
+      60    11580    945.907        nan     0.0000      inf
+      70    13510    946.010        nan     0.0000      inf
+      80    15440    945.993        nan     0.0000      inf
+      90    17370    945.592        nan     0.0000      inf
+     100    19300    946.148        nan     0.0000      inf
+     110    21230    946.350        nan     0.0000      inf

@@ -7,14 +7,12 @@ source code/.venv/bin/activate
 python -u code/train.py 2>&1 | tee output.log
 python -u code/train.py --scene_json results/trajectories_obs.json --scene_id 4 2>&1 | tee output.log
 
-cd code/
-.venv/bin/python train.py \
-    --scene_json ../results/trajectories.json --scene_id 0 \
+code/.venv/bin/python -u code/train.py \
+    --scene_json results/trajectories.json --scene_id 0 \
     --steps 80000 --log_every 10 --checkpoint_every 50 \
-    --save_path ../checkpoints/stage1.pt
+    --save_path checkpoints/stage1.pt 2>&1 | tee log/1.log
 
-cd code/
-.venv/bin/python train.py \
-    --scene_json ../results/trajectories_obs.json --scene_id 1 \
+code/.venv/bin/python -u code/train.py \
+    --scene_json results/trajectories_obs.json --scene_id 0 \
     --steps 500000 --log_every 10 --checkpoint_every 50 \
-    --resume ../checkpoints/stage1.pt
+    --resume checkpoints/stage1.pt 2>&1 | tee log/1.log
