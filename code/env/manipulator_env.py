@@ -306,6 +306,7 @@ class ManipulatorEnv:
         # Compute reward
         x_ee, _ = self.kin.forward_kinematics(self.q)
         d_obs = self.sdf.min_distance(x_ee, self.q, kinematics=self.kin)
+        d_obs = float(np.clip(d_obs, -0.5, 0.5))  # cap inf for numerical stability
         w = self._manipulability()
 
         # Record end-effector position for trajectory visualization
@@ -753,6 +754,7 @@ class ManipulatorEnv:
     def _get_obs(self) -> np.ndarray:
         x_ee, _ = self.kin.forward_kinematics(self.q)
         d_obs = self.sdf.min_distance(x_ee, self.q, kinematics=self.kin)
+        d_obs = float(np.clip(d_obs, -0.5, 0.5))  # cap inf for numerical stability
         w = self._manipulability()
 
         # State: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), d_obs(1), w(1)] = 25
