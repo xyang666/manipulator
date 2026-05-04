@@ -71,8 +71,8 @@ def parse_args():
                    help="Run directory name; auto-generated if not set")
     p.add_argument("--scene_json", type=str,   default=None,
                    help="Path to JSON with scenes (for fixed-scene training)")
-    p.add_argument("--scene_id",   type=int,   default=0,
-                   help="Scene ID to use when --scene_json is set")
+    p.add_argument("--scene_id",   type=int,   default=-1,
+                   help="Scene ID (>=0 = fixed scene, -1 = random cycle through all scenes)")
     p.add_argument("--render",      action="store_true",
                    help="Render the scene with MuJoCo viewer during training")
     p.add_argument("--resume",      type=str,   default=None,
@@ -86,29 +86,44 @@ def main():
     # -------- Setup --------
     dyn = ManipulatorDynamics(args.urdf)
 
-    # If fixed scene mode, load scene first to get correct obstacle count
-    fixed_scene = None
+    # If scene JSON mode, load scenes (fixed or random cycle)
+    _scene_data = None  # (ValidationSet, scene_or_scenes)
     if args.scene_json is not None:
         _vs = ValidationSet(args.scene_json)
-        fixed_scene = _vs.get_scene(args.scene_id)
-        n_obs = len(fixed_scene["obstacles"])
-        print(f"[train] Fixed scene mode: scene_id={args.scene_id}, "
-              f"start={fixed_scene['start']}, goal={fixed_scene['goal']}, "
-              f"obstacles={n_obs}")
+        if args.scene_id >= 0:
+            # Fixed single scene
+            _scene_data = (_vs, _vs.get_scene(args.scene_id))
+            n_obs = len(_scene_data[1]["obstacles"])
+            print(f"[train] Fixed scene mode: scene_id={args.scene_id}, "
+                  f"obstacles={n_obs}")
+        else:
+            # Random cycle through all scenes
+            _scene_data = (_vs, _vs.scenes)
+            n_obs = len(_vs.scenes[0]["obstacles"])
+            print(f"[train] Scene cycle mode: {len(_vs.scenes)} scenes, "
+                  f"obs/scene={n_obs}")
     else:
         n_obs = 5
 
     env = ManipulatorEnv(urdf_path=args.urdf, xml_path=args.xml, obs_radius=0.03,
                          n_obstacles=n_obs,
-                         use_trajectory_generator=fixed_scene is None,
+                         use_trajectory_generator=_scene_data is None,
                          d_critical=args.d_critical, alpha_relax=args.alpha_relax)
 
-    # Apply fixed scene and patch reset to skip random generation
-    if fixed_scene is not None:
-        _vs.apply_scene_to_env(env, fixed_scene)
-        env.reset = (lambda _vs, _scene:
-                     lambda seed=None: (_vs.apply_scene_to_env(env, _scene), env._get_obs())[1]
-                     )(_vs, fixed_scene)
+    # Patch reset for scene JSON mode
+    if _scene_data is not None:
+        _vs, _scenes = _scene_data
+        if args.scene_id >= 0:
+            # Fixed single scene
+            _vs.apply_scene_to_env(env, _scenes)
+            env.reset = lambda seed=None: (_vs.apply_scene_to_env(env, _scenes), env._get_obs())[1]
+        else:
+            # Random scene each reset
+            _vs.apply_scene_to_env(env, _scenes[0])
+            env.reset = lambda seed=None: (
+                _vs.apply_scene_to_env(env, _scenes[np.random.randint(len(_scenes))]),
+                env._get_obs()
+            )[1]
 
     state_dim  = env.obs_dim
     action_dim = env.act_dim
