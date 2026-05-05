@@ -167,6 +167,24 @@ class TrainingLogger:
         self._val_csv_writer.writerow(row)
         self._val_csv_file.flush()
 
+    def log_episode_summary(self, step: int, episode: int, total_reward: float,
+                             min_d_obs: float, avg_actor_loss: float,
+                             avg_physics_loss: float) -> None:
+        """Write a single episode-summary row to the training CSV.
+
+        Used by the parallel training path (no per-step CSV logging).
+        """
+        row = {
+            "global_step":      step,
+            "episode":          episode,
+            "reward":           total_reward,
+            "d_obs":            min_d_obs,
+            "actor_rl_loss":    avg_actor_loss,
+            "physics_loss":     avg_physics_loss,
+        }
+        self._csv_writer.writerow(row)
+        self._csv_file.flush()
+
     def close(self) -> None:
         """Flush and close the CSV files."""
         self._csv_file.flush()

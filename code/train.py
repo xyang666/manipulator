@@ -399,6 +399,13 @@ def main():
                         print(f"{episode:>8d} {total_steps:>8d} {env_rewards[i]:>10.3f} "
                               f"{avg_l_actor:>10.4f} {avg_l_dyn:>10.4f} {min_d_obs:>8.3f}")
 
+                    # Write episode summary to CSV
+                    logger.log_episode_summary(
+                        step=total_steps, episode=episode,
+                        total_reward=env_rewards[i], min_d_obs=min_d_obs,
+                        avg_actor_loss=avg_l_actor, avg_physics_loss=avg_l_dyn,
+                    )
+
                     ckpt_meta = {
                         "step":        total_steps,
                         "episode":     episode,
