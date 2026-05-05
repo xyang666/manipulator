@@ -55,7 +55,7 @@ class RewardFunction:
         """
         if d_obs >= self.d_critical:
             return self.w_track
-        ratio = d_obs / self.d_critical
+        ratio = max(d_obs / self.d_critical, 0.0)  # clamp for d_obs < 0 (inside obstacle)
         return self.w_track * (self.alpha_relax + (1.0 - self.alpha_relax) * ratio)
 
     def compute(self, q, dq, x_ee, x_d, dx_d, d_obs, w):
