@@ -3,9 +3,18 @@ python code/test.py --method rl --render --scene_json results/trajectories_obs.j
 python code/test.py --method kp --render --scene_json results/trajectories_obs.json --scene_id 0 
 python code/test.py --method mpc --render --scene_json results/trajectories_obs.json --scene_id 0 
 
+# 并行训练（推荐）
+python code/train.py --n_envs 4 --steps 500000 --scene_json results/trajectories_obs.json
+
+# 更多并行环境
+python -u code/train.py --n_envs 8 --steps 500000 --scene_json results/trajectories_obs.json 2>&1 | tee log/output.log
+
+# 单 env 可视化（与之前一样）
+python code/train.py --render --steps 50000
+
 source code/.venv/bin/activate
-python -u code/train.py 2>&1 | tee output.log
-python -u code/train.py --scene_json results/trajectories_obs.json --scene_id 4 2>&1 | tee output.log
+python -u code/train.py 2>&1 | tee log/output.log
+python -u code/train.py --scene_json results/trajectories_obs.json --scene_id 4 2>&1 | tee log/output.log
 
 code/.venv/bin/python -u code/train.py \
     --scene_json results/trajectories.json --scene_id 0 \
