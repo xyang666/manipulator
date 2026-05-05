@@ -2,3 +2,4 @@ code/.venv/**
 *.pyc
 .claude/**
 checkpoints/**
+log/**

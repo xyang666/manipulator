@@ -15,4 +15,4 @@ code/.venv/bin/python -u code/train.py \
 code/.venv/bin/python -u code/train.py \
     --scene_json results/trajectories_obs.json --scene_id 0 \
     --steps 500000 --log_every 10 --checkpoint_every 50 \
-    --resume checkpoints/stage1.pt 2>&1 | tee log/1.log
+    --resume checkpoints/ckpt_ep00050.pt 2>&1 | tee log/2.log
