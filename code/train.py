@@ -11,6 +11,7 @@ Prints per-episode:
     episode | reward | L_RL | L_dyn | d_obs_min
 """
 
+import json
 import torch
 import argparse
 import sys
@@ -205,6 +206,17 @@ def main():
 
     os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
 
+    # Save config for reproducibility
+    _config = {
+        "command": " ".join(sys.argv),
+        "cli_args": vars(args),
+        "hyperparams": hyperparams,
+        "git_commit": os.popen("git rev-parse HEAD 2>/dev/null").read().strip(),
+    }
+    with open(os.path.join(run_dir, "config.json"), "w") as f:
+        json.dump(_config, f, indent=2, default=str)
+    print(f"[train] Config saved to {run_dir}/config.json")
+
     # -------- Resume from checkpoint --------
     total_steps = 0
     episode     = 0
@@ -359,7 +371,8 @@ def main():
             # Step all envs in parallel
             result = pool.step_all(actions)
 
-            # Store in buffer and track per-env metrics
+            # Store in buffer and track per-env metrics (episode completion
+            # checked inline so each done env sees its own total_steps)
             for i in range(n_envs):
                 buffer.push(
                     obs[i], actions[i], result["reward"][i] / reward_scale,
@@ -375,20 +388,6 @@ def main():
                 env_steps[i] += 1
                 agent.obs_normalizer.update(result["obs"][i])
 
-            obs = result["obs"]  # auto-reset obs for done envs
-
-            # Training update (one batch update per iteration)
-            if total_steps >= args.start_steps and len(buffer) >= args.batch_size:
-                for _ in range(args.grad_steps):
-                    batch = buffer.sample(args.batch_size)
-                    losses = agent.update(batch)
-                    # Don't call logger.log_update() here — it has unbounded
-                    # internal list growth in parallel mode. Loss values are
-                    # captured in last_losses for console logging below.
-                    last_losses = losses
-
-            # Episode completion — check each env
-            for i in range(n_envs):
                 if result["done"][i]:
                     episode += 1
                     avg_l_actor = last_losses.get("actor_rl_loss", 0.0)
@@ -399,7 +398,6 @@ def main():
                         print(f"{episode:>8d} {total_steps:>8d} {env_rewards[i]:>10.3f} "
                               f"{avg_l_actor:>10.4f} {avg_l_dyn:>10.4f} {min_d_obs:>8.3f}")
 
-                    # Write episode summary to CSV
                     logger.log_episode_summary(
                         step=total_steps, episode=episode,
                         total_reward=env_rewards[i], min_d_obs=min_d_obs,
@@ -432,6 +430,15 @@ def main():
                     env_rewards[i] = 0.0
                     env_d_obs[i]   = []
                     env_steps[i]   = 0
+
+            obs = result["obs"]  # auto-reset obs for done envs
+
+            # Training update (one batch update per iteration)
+            if total_steps >= args.start_steps and len(buffer) >= args.batch_size:
+                for _ in range(args.grad_steps):
+                    batch = buffer.sample(args.batch_size)
+                    losses = agent.update(batch)
+                    last_losses = losses
 
             # Validation evaluation
             if val_set is not None and episode > 0 and episode % args.val_every == 0:
