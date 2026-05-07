@@ -134,7 +134,8 @@ class PhysicsRegularizer:
     L_dyn = || relu(|τ| - τ_max) ||²
     """
 
-    def __init__(self, dynamics, tau_max: float = 15.0,
+    def __init__(self, dynamics,
+                 tau_max: float | list[float] | np.ndarray | None = None,
                  lambda_dyn: float = 0.1, dt: float = 0.02,
                  device: str = "cpu"):
         self.dt = dt
@@ -148,9 +149,16 @@ class PhysicsRegularizer:
             dtype=torch.float32
         )[:self.n]
         self._M_diag = inertias.to(self.device)
-        self._tau_max_t = torch.full(
-            (self.n,), tau_max, dtype=torch.float32, device=self.device
-        )
+
+        # Per-joint torque limits (Franka Panda defaults)
+        # Joints 1-4: 87 Nm, Joints 5-7: 12 Nm
+        if tau_max is None:
+            tau_max = [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0]
+        if isinstance(tau_max, (list, np.ndarray)):
+            tau_tensor = torch.tensor(tau_max, dtype=torch.float32)
+        else:
+            tau_tensor = torch.full((self.n,), tau_max, dtype=torch.float32)
+        self._tau_max_t = tau_tensor[:self.n].to(self.device)
 
     def _compute_simplified_torch(self, q: torch.Tensor,
                                    dq: torch.Tensor,
