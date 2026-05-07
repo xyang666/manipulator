@@ -90,6 +90,7 @@ class ParallelEnvPool:
             "done":      np.empty(n, dtype=bool),
             "info":      [None] * n,
             "sigma":     np.empty((n, 1), dtype=np.float32),
+            "scene_id":  np.empty(n, dtype=np.int32),
         }
         for k in ("obs", "q_before", "dq_before", "dq_after", "J", "dx_nom"):
             arr = np.concatenate([r[k][np.newaxis, ...] for r in results], axis=0)
@@ -99,6 +100,7 @@ class ParallelEnvPool:
             out["done"][i] = r["done"]
             out["info"][i] = r["info"]
             out["sigma"][i] = r["sigma"]
+            out["scene_id"][i] = r["scene_id"]
         return out
 
 
@@ -128,6 +130,7 @@ def _worker_loop(pipe: Connection, env_creator: Callable):
 
             obs, reward, done, info = env.step(action)
             dq_after = env.dq.copy()
+            scene_id = getattr(env, '_current_scene_id', -1)
 
             # Auto-reset: if done, start a new episode so the next iteration
             # can immediately continue without a separate reset call.
@@ -148,6 +151,7 @@ def _worker_loop(pipe: Connection, env_creator: Callable):
                 "reward":  np.float32(reward),
                 "done":    done,
                 "info":    info,
+                "scene_id": int(scene_id),
                 "q_before": q_before.astype(np.float32),
                 "dq_before": dq_before.astype(np.float32),
                 "dq_after": dq_after.astype(np.float32),

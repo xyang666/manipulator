@@ -18,6 +18,7 @@ import sys
 import os
 import numpy as np
 from datetime import datetime
+from multiprocessing import Array
 
 # Allow imports from code/ root
 sys.path.insert(0, os.path.dirname(__file__))
@@ -107,6 +108,16 @@ def main():
             n_obs = len(_vs.scenes[0]["obstacles"])
             print(f"[train] Scene cycle mode: {len(_vs.scenes)} scenes, "
                   f"obs/scene={n_obs}")
+
+        # Prioritized scene sampling: shared weights for parallel workers
+        _scene_weights = None
+        _scene_ema = None
+        _scene_counts = None
+        if args.n_envs > 1 and _scene_data is not None and args.scene_id < 0:
+            n_scenes = len(_scene_data[1])
+            _scene_weights = Array('d', [1.0] * n_scenes)
+            _scene_ema = np.zeros(n_scenes, dtype=np.float64)
+            _scene_counts = np.zeros(n_scenes, dtype=np.int32)
     else:
         n_obs = 5
 
@@ -164,11 +175,32 @@ def main():
                         _vs.apply_scene_to_env(e, _scenes), e._get_obs()
                     )[1]
                 else:
-                    _vs.apply_scene_to_env(e, _scenes[np.random.randint(len(_scenes))])
-                    e.reset = lambda seed=None: (
-                        _vs.apply_scene_to_env(e, _scenes[np.random.randint(len(_scenes))]),
-                        e._get_obs()
-                    )[1]
+                    n_s = len(_scenes)
+
+                    def _sample_idx() -> int:
+                        if _scene_weights is not None:
+                            raw = np.frombuffer(
+                                _scene_weights.get_obj(), dtype=np.float64
+                            ).copy()
+                            raw = np.maximum(raw, 0.0)
+                            total = raw.sum()
+                            if total > 0:
+                                probs = raw / total
+                            else:
+                                probs = np.ones(n_s, dtype=np.float64) / n_s
+                            return int(np.random.choice(n_s, p=probs))
+                        return int(np.random.randint(n_s))
+
+                    init_idx = _sample_idx()
+                    _vs.apply_scene_to_env(e, _scenes[init_idx])
+                    e._current_scene_id = init_idx
+
+                    def _reset(seed=None):
+                        new_idx = _sample_idx()
+                        _vs.apply_scene_to_env(e, _scenes[new_idx])
+                        e._current_scene_id = new_idx
+                        return e._get_obs()
+                    e.reset = _reset
             return e
 
         pool = ParallelEnvPool(args.n_envs, _create_env)
@@ -233,6 +265,24 @@ def main():
             episode     = meta.get("episode", 0)
             best_reward = meta.get("best_reward", -np.inf)
             logger.best_reward = best_reward
+
+            # Restore per-scene stats
+            if _scene_ema is not None and "scene_ema" in meta and meta["scene_ema"] is not None:
+                _scene_ema[:] = meta["scene_ema"]
+                _scene_counts[:] = meta["scene_counts"]
+                ema = _scene_ema.copy()
+                ema_min = ema.min()
+                ema_max = ema.max()
+                if ema_max > ema_min:
+                    norm = (ema - ema_min) / (ema_max - ema_min + 1e-8)
+                else:
+                    norm = np.ones_like(ema) * 0.5
+                weights = np.maximum(0.01, 1.0 - norm)
+                weights = weights / weights.sum()
+                for s in range(len(weights)):
+                    _scene_weights[s] = weights[s]
+                print(f"[train] Restored scene performance stats for {len(_scene_ema)} scenes")
+
             print(f"[train] Resumed from {ckpt_path}: step={total_steps}, episode={episode}, "
                   f"best_reward={best_reward:.3f}")
         else:
@@ -392,14 +442,35 @@ def main():
 
                 if result["done"][i]:
                     episode += 1
+                    scene_id = result["scene_id"][i]
                     avg_l_actor = last_losses.get("actor_rl_loss", 0.0)
                     avg_l_dyn   = last_losses.get("physics_loss", 0.0)
                     last_alpha  = last_losses.get("alpha", None)
                     min_d_obs   = min(env_d_obs[i]) if env_d_obs[i] else 0.0
 
+                    # Per-scene performance tracking
+                    if _scene_ema is not None:
+                        ema_alpha = 0.3
+                        _scene_ema[scene_id] = (ema_alpha * env_rewards[i]
+                                                + (1 - ema_alpha) * _scene_ema[scene_id])
+                        _scene_counts[scene_id] += 1
+                        if _scene_counts.min() >= 1:
+                            ema = _scene_ema.copy()
+                            ema_min = ema.min()
+                            ema_max = ema.max()
+                            if ema_max > ema_min:
+                                norm = (ema - ema_min) / (ema_max - ema_min + 1e-8)
+                            else:
+                                norm = np.ones_like(ema) * 0.5
+                            weights = np.maximum(0.01, 1.0 - norm)
+                            weights = weights / weights.sum()
+                            for s in range(len(weights)):
+                                _scene_weights[s] = weights[s]
+
                     if episode % args.log_every == 0:
                         print(f"{episode:>8d} {total_steps:>8d} {env_rewards[i]:>10.3f} "
-                              f"{avg_l_actor:>10.4f} {avg_l_dyn:>10.4f} {min_d_obs:>8.3f}")
+                              f"{avg_l_actor:>10.4f} {avg_l_dyn:>10.4f} {min_d_obs:>8.3f} "
+                              f"s={scene_id}")
 
                     logger.log_episode_summary(
                         step=total_steps, episode=episode,
@@ -414,6 +485,8 @@ def main():
                         "best_reward": best_reward,
                         "hyperparams": hyperparams,
                         "csv_path":    logger.csv_path,
+                        "scene_ema":   _scene_ema.tolist() if _scene_ema is not None else None,
+                        "scene_counts": _scene_counts.tolist() if _scene_counts is not None else None,
                     }
 
                     if episode % args.checkpoint_every == 0:

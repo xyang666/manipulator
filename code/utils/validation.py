@@ -50,6 +50,7 @@ class ValidationSet:
         scene : scene dictionary with start, goal, obstacles
         """
         # Extract scene data
+        env._current_scene_id = scene.get("scene_id", -1)
         env.x_start = np.array(scene["start"])
         env.x_goal = np.array(scene["goal"])
 
