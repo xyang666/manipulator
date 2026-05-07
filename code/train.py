@@ -40,14 +40,16 @@ def parse_args():
     p.add_argument("--update_every",type=int,   default=1)
     p.add_argument("--grad_steps",  type=int,   default=4,
                    help="Number of gradient updates per env step")
-    p.add_argument("--buffer_size", type=int,   default=100_000)
+    p.add_argument("--buffer_size", type=int,   default=500_000)
     p.add_argument("--lambda_dyn",  type=float, default=1.0,
                    help="Weight of physics regularization loss")
     p.add_argument("--d_critical",  type=float, default=0.05,
                    help="Critical distance for primary task relaxation (m)")
     p.add_argument("--alpha_relax", type=float, default=0.1,
                    help="Minimum tracking weight factor when d_obs < d_critical")
-    p.add_argument("--val_json",    type=str,   default=None,
+    p.add_argument("--critic_warmup", type=int, default=5000,
+                   help="Number of critic-only updates before actor starts training")
+    p.add_argument("--val_json",       type=str, default=None,
                    help="Path to validation trajectories JSON file")
     p.add_argument("--val_every",   type=int,   default=50,
                    help="Evaluate on validation set every N episodes")
@@ -74,7 +76,7 @@ def parse_args():
                    help="Path to JSON with scenes (for fixed-scene training)")
     p.add_argument("--scene_id",   type=int,   default=-1,
                    help="Scene ID (>=0 = fixed scene, -1 = random cycle through all scenes)")
-    p.add_argument("--n_envs",      type=int,   default=4,
+    p.add_argument("--n_envs",      type=int,   default=16,
                    help="Number of parallel environment workers (>>1 = faster GPU utilization)")
     p.add_argument("--render",      action="store_true",
                    help="Render the scene with MuJoCo viewer during training")
@@ -180,7 +182,7 @@ def main():
         dynamics=dyn,
         lambda_dyn=args.lambda_dyn,
         device='cuda' if torch.cuda.is_available() else 'cpu',
-        critic_warmup=5000,
+        critic_warmup=args.critic_warmup,
         total_steps=args.steps,
     )
     buffer = ReplayBuffer(args.buffer_size, state_dim, action_dim)
@@ -392,6 +394,7 @@ def main():
                     episode += 1
                     avg_l_actor = last_losses.get("actor_rl_loss", 0.0)
                     avg_l_dyn   = last_losses.get("physics_loss", 0.0)
+                    last_alpha  = last_losses.get("alpha", None)
                     min_d_obs   = min(env_d_obs[i]) if env_d_obs[i] else 0.0
 
                     if episode % args.log_every == 0:
@@ -402,6 +405,7 @@ def main():
                         step=total_steps, episode=episode,
                         total_reward=env_rewards[i], min_d_obs=min_d_obs,
                         avg_actor_loss=avg_l_actor, avg_physics_loss=avg_l_dyn,
+                        alpha=last_alpha,
                     )
 
                     ckpt_meta = {

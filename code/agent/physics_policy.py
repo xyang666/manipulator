@@ -134,7 +134,7 @@ class PhysicsRegularizer:
     L_dyn = || relu(|τ| - τ_max) ||²
     """
 
-    def __init__(self, dynamics, tau_max: float = 87.0,
+    def __init__(self, dynamics, tau_max: float = 15.0,
                  lambda_dyn: float = 0.1, dt: float = 0.02,
                  device: str = "cpu"):
         self.dt = dt
@@ -299,7 +299,7 @@ if __name__ == "__main__":
     print(f"log_prob shape: {logp.shape}  (expected [4, 1])")
 
     dyn = ManipulatorDynamics()
-    reg = PhysicsRegularizer(dyn, tau_max=87.0)
+    reg = PhysicsRegularizer(dyn, tau_max=15.0)
 
     # Test compute_loss_batch with dummy data (Plan B signature)
     # Use aggressive actions to exceed torque limits → verify gradient flow

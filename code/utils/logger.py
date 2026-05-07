@@ -169,7 +169,7 @@ class TrainingLogger:
 
     def log_episode_summary(self, step: int, episode: int, total_reward: float,
                              min_d_obs: float, avg_actor_loss: float,
-                             avg_physics_loss: float) -> None:
+                             avg_physics_loss: float, alpha: float = None) -> None:
         """Write a single episode-summary row to the training CSV.
 
         Used by the parallel training path (no per-step CSV logging).
@@ -182,6 +182,8 @@ class TrainingLogger:
             "actor_rl_loss":    avg_actor_loss,
             "physics_loss":     avg_physics_loss,
         }
+        if alpha is not None:
+            row["alpha"] = alpha
         self._csv_writer.writerow(row)
         self._csv_file.flush()
 
