@@ -307,6 +307,18 @@ class ManipulatorKinematics:
         Jpinv = self.pseudo_inverse(J)
         return np.eye(self.n) - Jpinv @ J
 
+    def null_space_basis_position(self, q: np.ndarray) -> np.ndarray:
+        """
+        Orthonormal basis B ∈ R^{n x (n-3)} for the position nullspace.
+
+        For 7-DOF arm: B ∈ R^{7x4} with J_pos @ B ≈ 0 and B^T B = I.
+        Maps low-dimensional coefficients to nullspace velocity:
+            dq_null = B @ z,   z ∈ R^{4}
+        """
+        J = self.jacobian_position(q)  # (3, n)
+        _, _, Vt = np.linalg.svd(J, full_matrices=True)  # Vt: (n, n)
+        return Vt.T[:, 3:]  # (n, n-3)
+
     def null_space_velocity(self, q: np.ndarray, dq0: np.ndarray) -> np.ndarray:
         """
         Project dq0 into null space: q̇_null = N(q) @ dq0

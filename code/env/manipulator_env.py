@@ -95,14 +95,14 @@ class ManipulatorEnv:
 
         # Observation: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), d_obs(1), w(1)] = 25
         self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1  # 25
-        self.act_dim = 3 + n_joints  # 10D: 3 for position relaxation + 7 for null-space
+        self.act_dim = n_joints  # 7D: 3 (task relaxation) + 4 (nullspace, = n-3)
 
         self.kin = ManipulatorKinematics(urdf_path, n_joints,
                                           q_min=Q_MIN, q_max=Q_MAX)
         # Sync env DOF with actual model loaded by Pinocchio (may differ from n_joints)
         self.n = self.kin.n
         self.obs_dim = self.n * 2 + 3 + 3 + 3 + 1 + 1
-        self.act_dim = 3 + self.n  # 10D: 3 for position relaxation + 7 for null-space
+        self.act_dim = self.n  # 7D: 3 (task) + 4 (nullspace, via nullspace basis)
 
         # Truncate DQ_MAX to match actual DOF
         self._dq_max = DQ_MAX[:self.n]
@@ -220,9 +220,9 @@ class ManipulatorEnv:
             self._last_dx_nom = np.zeros(3, dtype=np.float32)
 
         else:
-            # Decompose 10D action into task relaxation + null-space components
+            # Decompose 7D action into task relaxation + null-space coefficients
             delta_x_rl = action[:3]   # Δẋ_RL ∈ R^3 (position-space relaxation)
-            dq0        = action[3:]   # dq0 ∈ R^7 (null-space self-motion)
+            z          = action[3:]   # z ∈ R^4 (nullspace coefficients, via SVD basis)
 
             # Compute nominal task-space velocity (PID tracking)
             dx_nom = self._compute_task_velocity()  # ẋ_d + Kp(x_d - x) + Ki*∫(x_d - x)dt
@@ -238,7 +238,11 @@ class ManipulatorEnv:
             sigma = raw_sigma * raw_sigma * (3.0 - 2.0 * raw_sigma)
             delta_x_gated = sigma * delta_x_rl  # diag(σ) · Δẋ_RL
 
-            # Combine: q̇ = J_pos⁺(dx_nom + delta_x_gated) + N_pos(q)dq0
+            # Reconstruct 7D nullspace velocity from 4D coefficients via SVD basis
+            B = self.kin.null_space_basis_position(self.q)  # (7, 4), J_pos @ B ≈ 0
+            dq0 = B @ z  # (7,) nullspace self-motion
+
+            # Combine: q̇ = J_pos⁺(dx_nom + delta_x_gated) + B·z
             dq_cmd = self.kin.combine_velocities_with_relaxation_position(
                 self.q, dx_nom, delta_x_gated, dq0
             )

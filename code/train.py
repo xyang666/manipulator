@@ -361,7 +361,7 @@ def main():
             while not done:
                 if total_steps < args.start_steps:
                     a_task = np.random.uniform(-0.1, 0.1, 3)
-                    a_null = np.random.uniform(-0.3, 0.3, env.n)
+                    a_null = np.random.uniform(-0.3, 0.3, env.n - 3)
                     action = np.concatenate([a_task, a_null])
                 else:
                     action = agent.select_action(obs)
@@ -638,7 +638,7 @@ def main():
                 for i in range(n_envs):
                     if total_steps < args.start_steps:
                         a_task = np.random.uniform(-0.1, 0.1, 3)
-                        a_null = np.random.uniform(-0.3, 0.3, ref_env.n)
+                        a_null = np.random.uniform(-0.3, 0.3, ref_env.n - 3)
                         actions[i] = np.concatenate([a_task, a_null])
                     else:
                         actions[i] = agent.select_action(obs[i])

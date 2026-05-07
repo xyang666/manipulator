@@ -4,9 +4,9 @@ physics_policy.py
 Physics-Informed Policy Network (paper core contribution).
 
 Key idea: the actor network outputs 10D actions:
-    a = [Δẋ_RL (3), dq0 (7)]
+    a = [Δẋ_RL (3), z (4)]
     - Δẋ_RL: position-space relaxation (scaled to allow obstacle avoidance)
-    - dq0   : null-space self-motion velocities
+    - z    : null-space coefficients, lifted to 7D via SVD basis B(q)
 
 Differentiable physics regularization (Plan B):
     Reconstructs dq_cmd from action analytically using stored Jacobian,
@@ -33,11 +33,14 @@ LOG_STD_MAX = 2
 
 class PhysicsInformedActor(nn.Module):
     """
-    Gaussian actor for SAC outputting 10D actions: [Δẋ_RL (3), dq0 (7)].
+    Gaussian actor for SAC outputting 7D actions: [Δẋ_RL (3), z (4)].
 
     Task relaxation and null-space components are scaled differently:
-    - task_scale (default 0.1): small to preserve tracking priority
-    - nullspace_scale (default 0.3): larger for effective self-motion exploration
+    - task_scale (default 0.3): small to preserve tracking priority
+    - nullspace_scale (default 0.3): coefficient scale for SVD basis lift
+
+    The 4D nullspace coefficients z are lifted to 7D joint velocity via
+    the differentiable SVD nullspace basis B(q) in the physics regularizer.
     """
 
     def __init__(self, state_dim: int, action_dim: int,
@@ -200,6 +203,8 @@ class PhysicsRegularizer:
         computes torque via simplified dynamics and penalises limit violations.
 
         Route A (position-only): uses 3D task space, J_pos ∈ ℝ³ˣⁿ.
+        Nullspace coefficients z ∈ ℝⁿ⁻³ are lifted via differentiable SVD
+        basis B from J_batch: dq_null = B @ z.
 
         Parameters
         ----------
@@ -208,22 +213,22 @@ class PhysicsRegularizer:
         J_batch       : [B x 3 x n] position-only Jacobian
         sigma_batch   : [B x 1] gate value
         dx_nom_batch  : [B x 3] nominal position-space velocity
-        action_batch  : [B x 10] current-policy action  (*has grad*)
+        action_batch  : [B x a] current-policy action, a = 3 + (n - 3) = n  (*has grad*)
 
         Returns
         -------
         loss : torch scalar
         """
-        B = q_batch.shape[0]
+        B_batch = q_batch.shape[0]
         n = self.n
         device = q_batch.device
         dtype = q_batch.dtype
         task_dim = 3  # position-only (Route A)
         lam = 1e-4    # damping for pseudo-inverse
 
-        # Split action
-        delta_x = action_batch[:, :3]    # (B, 3)  *has grad*
-        dq0     = action_batch[:, 3:]    # (B, n)  *has grad*
+        # Split action: [task relaxation (3), nullspace coefficients (n-3)]
+        delta_x = action_batch[:, :3]          # (B, 3)  *has grad*
+        z       = action_batch[:, 3:]          # (B, n-3)  *has grad*
 
         # ---- Reconstruct dq_cmd from action (differentiable) ----
 
@@ -233,17 +238,19 @@ class PhysicsRegularizer:
         JJT_inv = torch.linalg.inv(JJT + reg)
         J_pinv = J_batch.transpose(-2, -1) @ JJT_inv  # (B, n, 3)
 
-        # Null-space projector: N = I - J_pinv @ J
-        I = torch.eye(n, device=device, dtype=dtype).unsqueeze(0)
-        N = I - J_pinv @ J_batch  # (B, n, n)
+        # Differentiable nullspace basis via SVD
+        # J_batch = U @ S @ Vh,  B = V[n-3:] = Vh.mT[:, :, n-3:]
+        _, _, Vh = torch.linalg.svd(J_batch, full_matrices=True)  # Vh: (B, n, n)
+        null_dim = n - task_dim
+        B = Vh.mT[:, :, task_dim:]  # (B, n, n-3), orthonormal nullspace basis
 
-        # dq_cmd = J_pinv @ (dx_nom + σ·Δx) + N @ dq0
-        sigma_flat = sigma_batch.view(B, 1, 1)          # (B, 1, 1)
-        dx_nom_r = dx_nom_batch.view(B, task_dim, 1)    # (B, 3, 1)
-        delta_x_r = delta_x.view(B, task_dim, 1)        # (B, 3, 1)
-        dq0_r     = dq0.view(B, n, 1)                   # (B, n, 1)
+        # dq_cmd = J_pinv @ (dx_nom + σ·Δx) + B @ z
+        sigma_flat = sigma_batch.view(B_batch, 1, 1)        # (B, 1, 1)
+        dx_nom_r = dx_nom_batch.view(B_batch, task_dim, 1)  # (B, 3, 1)
+        delta_x_r = delta_x.view(B_batch, task_dim, 1)      # (B, 3, 1)
+        z_r = z.view(B_batch, null_dim, 1)                  # (B, n-3, 1)
 
-        dq_cmd = J_pinv @ (dx_nom_r + sigma_flat * delta_x_r) + N @ dq0_r
+        dq_cmd = J_pinv @ (dx_nom_r + sigma_flat * delta_x_r) + B @ z_r
         dq_cmd = dq_cmd.squeeze(-1)  # (B, n)
 
         # ---- Torque computation (differentiable) ----
@@ -295,8 +302,10 @@ if __name__ == "__main__":
     from env.dynamics import ManipulatorDynamics
 
     n_joints = 7
+    task_dim = 3
+    null_dim = n_joints - task_dim  # 4
     state_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1   # q + dq + x_ee + x_d + dx_d + d_obs + w = 25
-    action_dim = 3 + n_joints  # 10D: Δẋ_RL (3) + dq0 (7)
+    action_dim = task_dim + null_dim  # 7D: Δẋ_RL (3) + z (4)
 
     print("=== physics_policy.py unit tests ===")
 
@@ -314,10 +323,10 @@ if __name__ == "__main__":
     B = 4
     q_t = torch.zeros(B, n_joints)
     dq_t = torch.zeros(B, n_joints)
-    J_t = torch.eye(3, n_joints).unsqueeze(0).expand(B, -1, -1)  # position-only J
+    J_t = torch.eye(task_dim, n_joints).unsqueeze(0).expand(B, -1, -1)  # position-only J
     sigma_t = torch.ones(B, 1) * 0.5  # partial gate opening
-    dx_nom_t = torch.full((B, 3), 0.5)  # nominal position velocity (Route A)
-    action_t = torch.full((B, 10), 2.0)  # large task relaxation + nullspace
+    dx_nom_t = torch.full((B, task_dim), 0.5)  # nominal position velocity (Route A)
+    action_t = torch.full((B, action_dim), 2.0)  # large task relaxation + nullspace
     action_t.requires_grad_(True)
 
     loss = reg.compute_loss_batch(q_t, dq_t, J_t, sigma_t, dx_nom_t, action_t)
