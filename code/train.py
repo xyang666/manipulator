@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from env.manipulator_env import ManipulatorEnv
 from env.dynamics import ManipulatorDynamics
 from agent.sac_agent import SACAgent
+from agent.ppo_agent import PPOAgent
 from utils.replay_buffer import ReplayBuffer
 from utils.logger import TrainingLogger
 from utils.validation import ValidationSet, evaluate_on_validation_set
@@ -50,6 +51,12 @@ def parse_args():
                    help="Minimum tracking weight factor when d_obs < d_critical")
     p.add_argument("--critic_warmup", type=int, default=5000,
                    help="Number of critic-only updates before actor starts training")
+    p.add_argument("--algo", type=str, default="sac", choices=["sac", "ppo"],
+                   help="RL algorithm: sac (off-policy) or ppo (on-policy)")
+    p.add_argument("--rollout_steps", type=int, default=200,
+                   help="PPO: steps per rollout collection (default: episode_len)")
+    p.add_argument("--ppo_epochs", type=int, default=10,
+                   help="PPO: number of training epochs per rollout")
     p.add_argument("--val_json",       type=str, default=None,
                    help="Path to validation trajectories JSON file")
     p.add_argument("--val_every",   type=int,   default=50,
@@ -120,6 +127,9 @@ def main():
             _scene_counts = np.zeros(n_scenes, dtype=np.int32)
     else:
         n_obs = 5
+        _scene_weights = None
+        _scene_ema = None
+        _scene_counts = None
 
     # -------- Environment setup --------
     _env_kwargs = dict(
@@ -208,16 +218,32 @@ def main():
         print(f"[train] Parallel mode: {args.n_envs} env workers")
 
     # -------- Agent, replay buffer, logger (CUDA init after fork) --------
-    agent = SACAgent(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        dynamics=dyn,
-        lambda_dyn=args.lambda_dyn,
-        device='cuda' if torch.cuda.is_available() else 'cpu',
-        critic_warmup=args.critic_warmup,
-        total_steps=args.steps,
-    )
-    buffer = ReplayBuffer(args.buffer_size, state_dim, action_dim)
+    _device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    if args.algo == "ppo":
+        agent = PPOAgent(
+            state_dim=state_dim,
+            action_dim=action_dim,
+            dynamics=dyn,
+            n_envs=args.n_envs,
+            rollout_steps=args.rollout_steps,
+            lambda_dyn=args.lambda_dyn,
+            ppo_epochs=args.ppo_epochs,
+            batch_size=args.batch_size,
+            device=_device,
+        )
+        buffer = None  # PPO uses internal RolloutBuffer
+    else:
+        agent = SACAgent(
+            state_dim=state_dim,
+            action_dim=action_dim,
+            dynamics=dyn,
+            lambda_dyn=args.lambda_dyn,
+            device=_device,
+            critic_warmup=args.critic_warmup,
+            total_steps=args.steps,
+        )
+        buffer = ReplayBuffer(args.buffer_size, state_dim, action_dim)
 
     run_name = args.run_name or f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     run_dir  = os.path.join(os.path.dirname(args.save_path), run_name)
@@ -406,133 +432,289 @@ def main():
         # Per-env episode tracking
         env_rewards = np.zeros(n_envs)
         env_d_obs   = [[] for _ in range(n_envs)]
+        env_w       = [[] for _ in range(n_envs)]
         env_steps   = np.zeros(n_envs, dtype=int)
         last_losses = {"actor_rl_loss": 0.0, "physics_loss": 0.0}
 
-        while total_steps < args.steps:
-            # Collect actions for all envs in parallel
-            actions = np.zeros((n_envs, action_dim), dtype=np.float32)
-            for i in range(n_envs):
-                if total_steps < args.start_steps:
-                    a_task = np.random.uniform(-0.1, 0.1, 3)
-                    a_null = np.random.uniform(-0.3, 0.3, ref_env.n)
-                    actions[i] = np.concatenate([a_task, a_null])
-                else:
-                    actions[i] = agent.select_action(obs[i])
+        if args.algo == "ppo":
+            # ============================================================
+            # PPO parallel training (on-policy: collect rollout, then update)
+            # ============================================================
+            while total_steps < args.steps:
+                agent.buffer.clear()
 
-            # Step all envs in parallel
-            result = pool.step_all(actions)
+                # --- Rollout collection ---
+                for step_in_rollout in range(args.rollout_steps):
+                    if total_steps >= args.steps:
+                        break
 
-            # Store in buffer and track per-env metrics (episode completion
-            # checked inline so each done env sees its own total_steps)
-            for i in range(n_envs):
-                buffer.push(
-                    obs[i], actions[i], result["reward"][i] / reward_scale,
-                    result["obs"][i], result["done"][i],
-                    q=result["q_before"][i], dq=result["dq_before"][i],
-                    dq_next=result["dq_after"][i],
-                    J=result["J"][i], sigma=result["sigma"][i],
-                    dx_nom=result["dx_nom"][i],
-                )
-                total_steps += 1
-                env_rewards[i] += result["reward"][i]
-                env_d_obs[i].append(result["info"][i].get("d_obs", 0.0))
-                env_steps[i] += 1
-                agent.obs_normalizer.update(result["obs"][i])
+                    # Get actions with log_probs and values from current policy
+                    actions = np.zeros((n_envs, action_dim), dtype=np.float32)
+                    log_probs = np.zeros(n_envs, dtype=np.float32)
+                    values = np.zeros(n_envs, dtype=np.float32)
+                    for i in range(n_envs):
+                        actions[i], log_probs[i], values[i] = agent.act(obs[i])
 
-                if result["done"][i]:
-                    episode += 1
-                    scene_id = result["scene_id"][i]
-                    avg_l_actor = last_losses.get("actor_rl_loss", 0.0)
-                    avg_l_dyn   = last_losses.get("physics_loss", 0.0)
-                    last_alpha  = last_losses.get("alpha", None)
-                    min_d_obs   = min(env_d_obs[i]) if env_d_obs[i] else 0.0
+                    result = pool.step_all(actions)
 
-                    # Per-scene performance tracking
-                    if _scene_ema is not None:
-                        ema_alpha = 0.3
-                        _scene_ema[scene_id] = (ema_alpha * env_rewards[i]
-                                                + (1 - ema_alpha) * _scene_ema[scene_id])
-                        _scene_counts[scene_id] += 1
-                        if _scene_counts.min() >= 1:
-                            ema = _scene_ema.copy()
-                            ema_min = ema.min()
-                            ema_max = ema.max()
-                            if ema_max > ema_min:
-                                norm = (ema - ema_min) / (ema_max - ema_min + 1e-8)
-                            else:
-                                norm = np.ones_like(ema) * 0.5
-                            weights = np.maximum(0.01, 1.0 - norm)
-                            weights = weights / weights.sum()
-                            for s in range(len(weights)):
-                                _scene_weights[s] = weights[s]
-
-                    if episode % args.log_every == 0:
-                        print(f"{episode:>8d} {total_steps:>8d} {env_rewards[i]:>10.3f} "
-                              f"{avg_l_actor:>10.4f} {avg_l_dyn:>10.4f} {min_d_obs:>8.3f} "
-                              f"s={scene_id}")
-
-                    logger.log_episode_summary(
-                        step=total_steps, episode=episode,
-                        total_reward=env_rewards[i], min_d_obs=min_d_obs,
-                        avg_actor_loss=avg_l_actor, avg_physics_loss=avg_l_dyn,
-                        alpha=last_alpha,
+                    # Push full step (all envs) into rollout buffer
+                    agent.buffer.push(
+                        obs, actions, result["reward"], result["done"],
+                        log_probs, values,
+                        q=result["q_before"], dq=result["dq_before"],
+                        dq_next=result["dq_after"],
+                        J=result["J"], sigma=result["sigma"],
+                        dx_nom=result["dx_nom"],
                     )
 
-                    ckpt_meta = {
-                        "step":        total_steps,
-                        "episode":     episode,
-                        "best_reward": best_reward,
-                        "hyperparams": hyperparams,
-                        "csv_path":    logger.csv_path,
-                        "scene_ema":   _scene_ema.tolist() if _scene_ema is not None else None,
-                        "scene_counts": _scene_counts.tolist() if _scene_counts is not None else None,
-                    }
+                    # Per-env tracking
+                    for i in range(n_envs):
+                        total_steps += 1
+                        env_rewards[i] += result["reward"][i]
+                        env_d_obs[i].append(result["info"][i].get("d_obs", 0.0))
+                        env_w[i].append(result["info"][i].get("w", 0.0))
+                        env_steps[i] += 1
+                        agent.obs_normalizer.update(result["obs"][i])
 
-                    if episode % args.checkpoint_every == 0:
-                        agent.save(
-                            logger.checkpoint_path(f"ep{episode:05d}"),
-                            metadata=ckpt_meta
-                        )
+                        if result["done"][i]:
+                            episode += 1
+                            scene_id = result["scene_id"][i]
+                            avg_l_actor = last_losses.get("actor_rl_loss", 0.0)
+                            avg_l_dyn   = last_losses.get("physics_loss", 0.0)
+                            last_critic = last_losses.get("critic_loss", None)
+                            last_actor_total = last_losses.get("actor_loss", None)
+                            last_alpha  = last_losses.get("alpha", None)
+                            min_d_obs   = min(env_d_obs[i]) if env_d_obs[i] else 0.0
+                            avg_w       = (sum(env_w[i]) / len(env_w[i])) if env_w[i] else None
 
-                    if env_rewards[i] > best_reward:
-                        best_reward = env_rewards[i]
-                        ckpt_meta["best_reward"] = best_reward
-                        agent.save(
-                            logger.checkpoint_path("best"),
-                            metadata=ckpt_meta
-                        )
+                            # Per-scene performance tracking
+                            if _scene_ema is not None:
+                                ema_alpha = 0.3
+                                _scene_ema[scene_id] = (ema_alpha * env_rewards[i]
+                                                        + (1 - ema_alpha) * _scene_ema[scene_id])
+                                _scene_counts[scene_id] += 1
+                                if _scene_counts.min() >= 1:
+                                    ema = _scene_ema.copy()
+                                    ema_min = ema.min()
+                                    ema_max = ema.max()
+                                    if ema_max > ema_min:
+                                        norm = (ema - ema_min) / (ema_max - ema_min + 1e-8)
+                                    else:
+                                        norm = np.ones_like(ema) * 0.5
+                                    weights = np.maximum(0.01, 1.0 - norm)
+                                    weights = weights / weights.sum()
+                                    for s in range(len(weights)):
+                                        _scene_weights[s] = weights[s]
 
-                    # Reset per-env tracking
-                    env_rewards[i] = 0.0
-                    env_d_obs[i]   = []
-                    env_steps[i]   = 0
+                            if episode % args.log_every == 0:
+                                print(f"{episode:>8d} {total_steps:>8d} {env_rewards[i]:>10.3f} "
+                                      f"{avg_l_actor:>10.4f} {avg_l_dyn:>10.4f} {min_d_obs:>8.3f} "
+                                      f"s={scene_id}")
 
-            obs = result["obs"]  # auto-reset obs for done envs
+                            logger.log_episode_summary(
+                                step=total_steps, episode=episode,
+                                total_reward=env_rewards[i], min_d_obs=min_d_obs,
+                                avg_actor_loss=avg_l_actor, avg_physics_loss=avg_l_dyn,
+                                alpha=last_alpha,
+                                avg_critic_loss=last_critic,
+                                avg_actor_total_loss=last_actor_total,
+                                avg_w=avg_w,
+                            )
 
-            # Training update (one batch update per iteration)
-            if total_steps >= args.start_steps and len(buffer) >= args.batch_size:
-                for _ in range(args.grad_steps):
-                    batch = buffer.sample(args.batch_size)
-                    losses = agent.update(batch)
+                            ckpt_meta = {
+                                "step":        total_steps,
+                                "episode":     episode,
+                                "best_reward": best_reward,
+                                "hyperparams": hyperparams,
+                                "csv_path":    logger.csv_path,
+                                "scene_ema":   _scene_ema.tolist() if _scene_ema is not None else None,
+                                "scene_counts": _scene_counts.tolist() if _scene_counts is not None else None,
+                            }
+
+                            if episode % args.checkpoint_every == 0:
+                                agent.save(
+                                    logger.checkpoint_path(f"ep{episode:05d}"),
+                                    metadata=ckpt_meta
+                                )
+
+                            if env_rewards[i] > best_reward:
+                                best_reward = env_rewards[i]
+                                ckpt_meta["best_reward"] = best_reward
+                                agent.save(
+                                    logger.checkpoint_path("best"),
+                                    metadata=ckpt_meta
+                                )
+
+                            # Reset per-env tracking
+                            env_rewards[i] = 0.0
+                            env_d_obs[i]   = []
+                            env_w[i]       = []
+                            env_steps[i]   = 0
+
+                    obs = result["obs"]
+
+                # --- GAE computation ---
+                if len(agent.buffer) > 0:
+                    last_values = agent.get_value(obs)
+                    agent.buffer.compute_advantages(last_values)
+
+                    # --- PPO update ---
+                    losses = agent.update()
                     last_losses = losses
 
-            # Validation evaluation
-            if val_set is not None and episode > 0 and episode % args.val_every == 0:
-                print(f"\n{'='*60}")
-                print(f"Validation at episode {episode}")
-                print(f"{'='*60}")
-                val_results = evaluate_on_validation_set(
-                    agent, ref_env, val_set,
-                    num_scenes=args.val_scenes, max_steps=ref_env.episode_len
-                )
-                print(f"Success Rate:      {val_results['success_rate']*100:.1f}%")
-                print(f"Avg Reward:        {val_results['avg_reward']:.3f}")
-                print(f"Avg Track Error:   {val_results['avg_tracking_error']:.4f}m")
-                print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
-                print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
-                print(f"{'='*60}\n")
-                logger.log_validation(episode, val_results)
+                # --- Validation ---
+                if val_set is not None and episode > 0 and episode % args.val_every == 0:
+                    print(f"\n{'='*60}")
+                    print(f"Validation at episode {episode}")
+                    print(f"{'='*60}")
+                    val_results = evaluate_on_validation_set(
+                        agent, ref_env, val_set,
+                        num_scenes=args.val_scenes, max_steps=ref_env.episode_len
+                    )
+                    print(f"Success Rate:      {val_results['success_rate']*100:.1f}%")
+                    print(f"Avg Reward:        {val_results['avg_reward']:.3f}")
+                    print(f"Avg Track Error:   {val_results['avg_tracking_error']:.4f}m")
+                    print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
+                    print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
+                    print(f"{'='*60}\n")
+                    logger.log_validation(episode, val_results)
+
+        else:
+            # ============================================================
+            # SAC parallel training (off-policy: store + update per step)
+            # ============================================================
+            while total_steps < args.steps:
+                # Collect actions for all envs in parallel
+                actions = np.zeros((n_envs, action_dim), dtype=np.float32)
+                for i in range(n_envs):
+                    if total_steps < args.start_steps:
+                        a_task = np.random.uniform(-0.1, 0.1, 3)
+                        a_null = np.random.uniform(-0.3, 0.3, ref_env.n)
+                        actions[i] = np.concatenate([a_task, a_null])
+                    else:
+                        actions[i] = agent.select_action(obs[i])
+
+                # Step all envs in parallel
+                result = pool.step_all(actions)
+
+                # Store in buffer and track per-env metrics (episode completion
+                # checked inline so each done env sees its own total_steps)
+                for i in range(n_envs):
+                    buffer.push(
+                        obs[i], actions[i], result["reward"][i] / reward_scale,
+                        result["obs"][i], result["done"][i],
+                        q=result["q_before"][i], dq=result["dq_before"][i],
+                        dq_next=result["dq_after"][i],
+                        J=result["J"][i], sigma=result["sigma"][i],
+                        dx_nom=result["dx_nom"][i],
+                    )
+                    total_steps += 1
+                    env_rewards[i] += result["reward"][i]
+                    env_d_obs[i].append(result["info"][i].get("d_obs", 0.0))
+                    env_w[i].append(result["info"][i].get("w", 0.0))
+                    env_steps[i] += 1
+                    agent.obs_normalizer.update(result["obs"][i])
+
+                    if result["done"][i]:
+                        episode += 1
+                        scene_id = result["scene_id"][i]
+                        avg_l_actor = last_losses.get("actor_rl_loss", 0.0)
+                        avg_l_dyn   = last_losses.get("physics_loss", 0.0)
+                        last_critic = last_losses.get("critic_loss", None)
+                        last_actor_total = last_losses.get("actor_loss", None)
+                        last_alpha  = last_losses.get("alpha", None)
+                        min_d_obs   = min(env_d_obs[i]) if env_d_obs[i] else 0.0
+                        avg_w       = (sum(env_w[i]) / len(env_w[i])) if env_w[i] else None
+
+                        # Per-scene performance tracking
+                        if _scene_ema is not None:
+                            ema_alpha = 0.3
+                            _scene_ema[scene_id] = (ema_alpha * env_rewards[i]
+                                                    + (1 - ema_alpha) * _scene_ema[scene_id])
+                            _scene_counts[scene_id] += 1
+                            if _scene_counts.min() >= 1:
+                                ema = _scene_ema.copy()
+                                ema_min = ema.min()
+                                ema_max = ema.max()
+                                if ema_max > ema_min:
+                                    norm = (ema - ema_min) / (ema_max - ema_min + 1e-8)
+                                else:
+                                    norm = np.ones_like(ema) * 0.5
+                                weights = np.maximum(0.01, 1.0 - norm)
+                                weights = weights / weights.sum()
+                                for s in range(len(weights)):
+                                    _scene_weights[s] = weights[s]
+
+                        if episode % args.log_every == 0:
+                            print(f"{episode:>8d} {total_steps:>8d} {env_rewards[i]:>10.3f} "
+                                  f"{avg_l_actor:>10.4f} {avg_l_dyn:>10.4f} {min_d_obs:>8.3f} "
+                                  f"s={scene_id}")
+
+                        logger.log_episode_summary(
+                            step=total_steps, episode=episode,
+                            total_reward=env_rewards[i], min_d_obs=min_d_obs,
+                            avg_actor_loss=avg_l_actor, avg_physics_loss=avg_l_dyn,
+                            alpha=last_alpha,
+                            avg_critic_loss=last_critic,
+                            avg_actor_total_loss=last_actor_total,
+                            avg_w=avg_w,
+                        )
+
+                        ckpt_meta = {
+                            "step":        total_steps,
+                            "episode":     episode,
+                            "best_reward": best_reward,
+                            "hyperparams": hyperparams,
+                            "csv_path":    logger.csv_path,
+                            "scene_ema":   _scene_ema.tolist() if _scene_ema is not None else None,
+                            "scene_counts": _scene_counts.tolist() if _scene_counts is not None else None,
+                        }
+
+                        if episode % args.checkpoint_every == 0:
+                            agent.save(
+                                logger.checkpoint_path(f"ep{episode:05d}"),
+                                metadata=ckpt_meta
+                            )
+
+                        if env_rewards[i] > best_reward:
+                            best_reward = env_rewards[i]
+                            ckpt_meta["best_reward"] = best_reward
+                            agent.save(
+                                logger.checkpoint_path("best"),
+                                metadata=ckpt_meta
+                            )
+
+                        # Reset per-env tracking
+                        env_rewards[i] = 0.0
+                        env_d_obs[i]   = []
+                        env_w[i]       = []
+                        env_steps[i]   = 0
+
+                obs = result["obs"]  # auto-reset obs for done envs
+
+                # Training update (one batch update per iteration)
+                if total_steps >= args.start_steps and len(buffer) >= args.batch_size:
+                    for _ in range(args.grad_steps):
+                        batch = buffer.sample(args.batch_size)
+                        losses = agent.update(batch)
+                        last_losses = losses
+
+                # Validation evaluation
+                if val_set is not None and episode > 0 and episode % args.val_every == 0:
+                    print(f"\n{'='*60}")
+                    print(f"Validation at episode {episode}")
+                    print(f"{'='*60}")
+                    val_results = evaluate_on_validation_set(
+                        agent, ref_env, val_set,
+                        num_scenes=args.val_scenes, max_steps=ref_env.episode_len
+                    )
+                    print(f"Success Rate:      {val_results['success_rate']*100:.1f}%")
+                    print(f"Avg Reward:        {val_results['avg_reward']:.3f}")
+                    print(f"Avg Track Error:   {val_results['avg_tracking_error']:.4f}m")
+                    print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
+                    print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
+                    print(f"{'='*60}\n")
+                    logger.log_validation(episode, val_results)
 
     # -------- Cleanup --------
     logger.close()
