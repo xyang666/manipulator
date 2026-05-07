@@ -21,11 +21,11 @@ class RewardFunction:
 
     def __init__(self,
                  w_track:       float = 1.0,
-                 w_obs:         float = 1.0,
+                 w_obs:         float = 5.0,
                  w_obs_safe:    float = 3.0,
                  w_manip:       float = 0.05,
                  w_energy:      float = 0.001,
-                 w_collision:   float = 0.2,
+                 w_collision:   float = 2.0,
                  d_safe:        float = 0.06,
                  d_critical:    float = 0.05,
                  alpha_relax:   float = 0.1,

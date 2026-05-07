@@ -303,8 +303,8 @@ if __name__ == "__main__":
     from env.dynamics import ManipulatorDynamics
 
     n_joints = 7
-    state_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1  # 25
-    action_dim = 3 + n_joints  # 10
+    state_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1 + 3  # 28
+    action_dim = 3 + (n_joints - 3)  # 7 = task(3) + nullspace(4)
 
     print("=== ppo_agent.py unit tests ===")
 

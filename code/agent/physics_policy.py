@@ -304,7 +304,7 @@ if __name__ == "__main__":
     n_joints = 7
     task_dim = 3
     null_dim = n_joints - task_dim  # 4
-    state_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1   # q + dq + x_ee + x_d + dx_d + d_obs + w = 25
+    state_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1 + 3   # 28: q+dq+x_ee+x_d+dx_d+d_obs+w+obs_dir
     action_dim = task_dim + null_dim  # 7D: Δẋ_RL (3) + z (4)
 
     print("=== physics_policy.py unit tests ===")

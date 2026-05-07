@@ -93,15 +93,15 @@ class ManipulatorEnv:
         self.episode_len = episode_len
         self.use_trajectory_generator = use_trajectory_generator
 
-        # Observation: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), d_obs(1), w(1)] = 25
-        self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1  # 25
+        # Observation: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), d_obs(1), w(1), obs_dir(3)] = 28
+        self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1 + 3  # 28
         self.act_dim = n_joints  # 7D: 3 (task relaxation) + 4 (nullspace, = n-3)
 
         self.kin = ManipulatorKinematics(urdf_path, n_joints,
                                           q_min=Q_MIN, q_max=Q_MAX)
         # Sync env DOF with actual model loaded by Pinocchio (may differ from n_joints)
         self.n = self.kin.n
-        self.obs_dim = self.n * 2 + 3 + 3 + 3 + 1 + 1
+        self.obs_dim = self.n * 2 + 3 + 3 + 3 + 1 + 1 + 3
         self.act_dim = self.n  # 7D: 3 (task) + 4 (nullspace, via nullspace basis)
 
         # Truncate DQ_MAX to match actual DOF
@@ -761,10 +761,20 @@ class ManipulatorEnv:
         d_obs = float(np.clip(d_obs, -0.5, 0.5))  # cap inf for numerical stability
         w = self._manipulability()
 
-        # State: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), d_obs(1), w(1)] = 25
+        # Direction to nearest obstacle center (from EE)
+        obs_dir = np.zeros(3, dtype=np.float32)
+        if self.sdf.n_obs > 0:
+            dists = np.linalg.norm(self.sdf.centers - x_ee, axis=1)
+            nearest = self.sdf.centers[np.argmin(dists)]
+            delta = nearest - x_ee  # vector from EE to obstacle
+            norm = np.linalg.norm(delta)
+            if norm > 1e-6:
+                obs_dir = delta / norm
+
+        # State: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), d_obs(1), w(1), obs_dir(3)] = 28
         obs = np.concatenate([
             self.q, self.dq, x_ee, self.x_d, self.dx_d[:3],
-            [d_obs], [w]
+            [d_obs], [w], obs_dir
         ])
 
         return obs.astype(np.float32)
