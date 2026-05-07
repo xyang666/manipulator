@@ -35,6 +35,13 @@ from typing import List, Tuple, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from env.kinematics import ManipulatorKinematics
+from utils.collision import CollisionDetector
+
+try:
+    import mujoco
+    HAS_MUJOCO = True
+except ImportError:
+    HAS_MUJOCO = False
 
 
 class TrajectoryGenerator:
@@ -81,6 +88,7 @@ class TrajectoryGenerator:
         self.manip_threshold = manipulability_threshold
         self.obs_radius_range = obstacle_radius_range
         self.min_clearance = min_obstacle_distance
+        self.collision_detector = None  # Set externally if MuJoCo is available
 
         print(f"[TrajectoryGenerator] Initialized")
         print(f"  Workspace: X[{self.ws_min[0]:.2f}, {self.ws_max[0]:.2f}], "
@@ -336,47 +344,6 @@ class TrajectoryGenerator:
                     return True
         return False
 
-    @staticmethod
-    def _seg_dist(p1, p2, q1, q2):
-        """Minimum distance between two line segments."""
-        d1, d2 = p2 - p1, q2 - q1
-        r = p1 - q1
-        a, e = float(np.dot(d1, d1)), float(np.dot(d2, d2))
-        f = float(np.dot(d2, r))
-        eps = 1e-10
-        if a < eps and e < eps:
-            return float(np.linalg.norm(r))
-        if a < eps:
-            return float(np.linalg.norm(p1 - (q1 + np.clip(-f / e, 0.0, 1.0) * d2)))
-        if e < eps:
-            t = np.clip(float(np.dot(-d1, r)) / a, 0.0, 1.0)
-            return float(np.linalg.norm((p1 + t * d1) - q1))
-        b = float(np.dot(d1, d2))
-        c = float(np.dot(d1, r))
-        denom = a * e - b * b
-        if abs(denom) < eps:
-            t = np.clip(-c / a, 0.0, 1.0)
-            s = 0.0
-        else:
-            t = np.clip((b * f - c * e) / denom, 0.0, 1.0)
-            s = np.clip((b * t + f) / e, 0.0, 1.0)
-        return float(np.linalg.norm((p1 + t * d1) - (q1 + s * d2)))
-
-    def check_self_collision(self, q: np.ndarray, clearance: float = -0.02) -> bool:
-        """True if arm capsules penetrate severely (>2cm). Capsule radii (~9cm)
-        are padded collision geometry, so mild overlap is normal."""
-        capsules = self.kin.get_link_capsules(q)
-        n = len(capsules)
-        for i in range(n):
-            for j in range(i + 3, n):
-                if j >= n - 3:  # skip finger capsules (tiny, always near hand)
-                    continue
-                d = self._seg_dist(capsules[i][0], capsules[i][1],
-                                   capsules[j][0], capsules[j][1])
-                if d < capsules[i][2] + capsules[j][2] + clearance:
-                    return True
-        return False
-
     # ------------------------------------------------------------------
     # Scene generation
     # ------------------------------------------------------------------
@@ -404,7 +371,8 @@ class TrajectoryGenerator:
 
     def generate_scene(self, scene_id: int, n_obstacles: int,
                        max_attempts: int = 100,
-                       ahead_mode: bool = False) -> Optional[dict]:
+                       ahead_mode: bool = False,
+                       collision_detector: CollisionDetector = None) -> Optional[dict]:
         """
         Generate a single collision-free scene with manipulability constraint.
 
@@ -455,9 +423,21 @@ class TrajectoryGenerator:
             if np.any(goal_ik < self.q_min) or np.any(goal_ik > self.q_max):
                 continue
 
-            # Self-collision check at endpoints
-            if self.check_self_collision(start_ik) or self.check_self_collision(goal_ik):
-                continue
+            # Self-collision check at endpoints (MuJoCo-based)
+            cd = collision_detector or self.collision_detector
+            if cd is not None and cd.has_mujoco:
+                # Check start IK
+                cd.data.qpos[:self.kin.n] = start_ik
+                mujoco.mj_forward(cd.model, cd.data)
+                _, n_self = cd.detect_self_collisions()
+                if n_self > 0:
+                    continue
+                # Check goal IK
+                cd.data.qpos[:self.kin.n] = goal_ik
+                mujoco.mj_forward(cd.model, cd.data)
+                _, n_self = cd.detect_self_collisions()
+                if n_self > 0:
+                    continue
 
             # Manipulability at IK endpoints (matches controller's actual configurations)
             manip_start = self.compute_manipulability(start_ik)
@@ -507,7 +487,8 @@ class TrajectoryGenerator:
 
     def _verify_controller_path(self, q_start: np.ndarray, start_pos: np.ndarray,
                                  goal_pos: np.ndarray, obstacles: list = None,
-                                 dt: float = 0.02, max_steps: int = 500) -> bool:
+                                 dt: float = 0.02, max_steps: int = 500,
+                                 collision_detector: CollisionDetector = None) -> bool:
         """
         Simulate the Jacobian-integration path used by the actual controller.
 
@@ -582,9 +563,14 @@ class TrajectoryGenerator:
             if w < 0.001:
                 return False
 
-            # Check self-collision every 40 steps
-            if step % 40 == 0 and self.check_self_collision(q):
-                return False
+            # Check self-collision every 40 steps (MuJoCo-based)
+            cd = collision_detector or self.collision_detector
+            if step % 40 == 0 and cd is not None and cd.has_mujoco:
+                cd.data.qpos[:self.kin.n] = q
+                mujoco.mj_forward(cd.model, cd.data)
+                _, n_self = cd.detect_self_collisions()
+                if n_self > 0:
+                    return False
 
             # Check arm-obstacle collision every 20 steps on the actual
             # controller path (not the IK-interpolated path)
@@ -672,10 +658,12 @@ class TrajectoryGenerator:
             print(f"  Max:  {np.max(manips):.4f}")
 
 
-def main_bak():
+def main():
     parser = argparse.ArgumentParser(description='Generate collision-free trajectories with manipulability constraints')
     parser.add_argument('--urdf', type=str, default='panda_description/urdf/panda.urdf',
                        help='Path to URDF file')
+    parser.add_argument('--xml', type=str, default=None,
+                       help='Path to MuJoCo XML file (enables self-collision check)')
     parser.add_argument('--num_scenes', type=int, default=100,
                        help='Number of scenes to generate')
     parser.add_argument('--num_obstacles', type=int, default=5,
@@ -703,37 +691,27 @@ def main_bak():
         manipulability_threshold=args.manip_threshold,
     )
 
+    # Set up MuJoCo collision detector if xml path provided
+    if args.xml and HAS_MUJOCO:
+        xml_path = Path(args.xml)
+        if not xml_path.is_absolute():
+            xml_path = Path(__file__).parent.parent.parent / args.xml
+        if xml_path.exists():
+            model = mujoco.MjModel.from_xml_path(str(xml_path))
+            data = mujoco.MjData(model)
+            generator.collision_detector = CollisionDetector(model, data)
+            print(f"[main] MuJoCo collision detector enabled: {xml_path}")
+        else:
+            print(f"[main] Warning: XML not found at {xml_path}, skipping self-collision check")
+    elif not HAS_MUJOCO:
+        print("[main] Warning: mujoco not installed, skipping self-collision check")
+
     generator.generate_dataset(
         num_scenes=args.num_scenes,
         n_obstacles=args.num_obstacles,
         output_path=args.output,
         seed=args.seed,
     )
-
-
-def main():
-    # Hardcoded for debugging — edit these as needed
-    urdf_path = "/home/merlin/manipulator/code/.venv/lib/python3.12/site-packages/cmeel.prefix/share/example-robot-data/robots/panda_description/urdf/panda.urdf"
-    num_scenes = 100
-    num_obstacles = 5
-    output_path = "/home/merlin/manipulator/results/trajectories_obs.json"
-    seed = 42
-    manip_threshold = 0.01
-
-    generator = TrajectoryGenerator(
-        urdf_path=urdf_path,
-        manipulability_threshold=manip_threshold,
-        obstacle_radius_range=(0.02, 0.08),  # smaller obstacles
-    )
-
-    generator.generate_dataset(
-        num_scenes=num_scenes,
-        n_obstacles=num_obstacles,
-        output_path=output_path,
-        seed=seed,
-        ahead_mode=True,  # Y-parallel trajectories in front of robot
-    )
-
 
 if __name__ == "__main__":
     main()

@@ -127,8 +127,10 @@ class ManipulatorEnv:
             self.mj_data = mujoco.MjData(self.mj_model)
             print(f"[env] MuJoCo model loaded: {xml_path}")
 
-        # Collision detector
+        # Collision detector (also share with trajectory generator for scene validation)
         self.collision_detector = CollisionDetector(self.mj_model, self.mj_data)
+        if self.traj_gen is not None:
+            self.traj_gen.collision_detector = self.collision_detector
 
         # Reward function with collision detection
         self.reward_fn = RewardFunction(dt=dt, collision_detector=self.collision_detector,
@@ -331,12 +333,12 @@ class ManipulatorEnv:
         else:
             collision = d_obs < 0.02
 
-        # Termination conditions (collision does NOT terminate — agent needs to learn recovery)
+        # Termination conditions (collision terminates — no reward for crashing through)
         if self.use_parametric_traj:
             path_complete = self.step_count >= self.episode_len
         else:
             path_complete = self.path_param >= 0.99
-        done = self.step_count >= self.episode_len or path_complete
+        done = self.step_count >= self.episode_len or path_complete or collision
 
         # Sparse success bonus when reaching goal
         SUCCESS_BONUS = 200.0
@@ -507,7 +509,7 @@ class ManipulatorEnv:
             scene = self.traj_gen.generate_scene(
                 scene_id=0,
                 n_obstacles=self.sdf.n_obs,
-                max_attempts=100
+                max_attempts=100,
             )
 
             if scene is not None:
@@ -545,16 +547,16 @@ class ManipulatorEnv:
         else:
             self.dx_d = np.zeros(3)
 
-        # Initial joint configuration via IK
-        q_init = self.kin.inverse_kinematics(
-            # np.concatenate([self.x_start, np.array([0, 0, 0, 1])])
-            self.x_start
-        )
-        if q_init is not None:
-            self.q = q_init
+        # Use scene-verified IK config (avoids recomputing IK that may self-collide)
+        if "start_q" in scene:
+            self.q = np.array(scene["start_q"])
         else:
-            print("[env] WARNING: IK failed for start position, using home pose")
-            self.q = np.array([0.0, 0.0, 0.0, -1.57, 0.0, 1.57, 0.785])
+            q_init = self.kin.inverse_kinematics(self.x_start)
+            if q_init is not None:
+                self.q = q_init
+            else:
+                print("[env] WARNING: IK failed for start position, using home pose")
+                self.q = np.array([0.0, 0.0, 0.0, -1.57, 0.0, 1.57, 0.785])
 
         self.dq = np.zeros(self.n)
         self._sync_obstacles_to_mujoco()

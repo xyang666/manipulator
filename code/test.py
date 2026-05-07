@@ -570,9 +570,12 @@ def _run_env(env, args, label, get_action=None):
             time.sleep(env.dt)
 
         if done:
-            print(f"\nEpisode terminated at step {step} "
-                  f"(success={info.get('success', False)})")
-            break
+            # Collision doesn't terminate test — run full trajectory for evaluation
+            if info.get("success", False):
+                print(f"\nGoal reached at step {step}")
+                break
+            if step >= args.steps - 1:
+                break
 
     return _summary(label, tracking_errors, obstacle_distances, rewards, collisions)
 
