@@ -172,7 +172,12 @@ class TrainingLogger:
                              avg_physics_loss: float, alpha: float = None,
                              avg_critic_loss: float = None,
                              avg_actor_total_loss: float = None,
-                             avg_w: float = None) -> None:
+                             avg_w: float = None,
+                             avg_r_track: float = None,
+                             avg_r_obs: float = None,
+                             avg_r_manip: float = None,
+                             avg_r_energy: float = None,
+                             avg_r_collision: float = None) -> None:
         """Write a single episode-summary row to the training CSV.
 
         Used by the parallel training path (no per-step CSV logging).
@@ -193,6 +198,16 @@ class TrainingLogger:
             row["w"] = avg_w
         if alpha is not None:
             row["alpha"] = alpha
+        if avg_r_track is not None:
+            row["r_track"] = avg_r_track
+        if avg_r_obs is not None:
+            row["r_obs"] = avg_r_obs
+        if avg_r_manip is not None:
+            row["r_manip"] = avg_r_manip
+        if avg_r_energy is not None:
+            row["r_energy"] = avg_r_energy
+        if avg_r_collision is not None:
+            row["r_collision"] = avg_r_collision
         self._csv_writer.writerow(row)
         self._csv_file.flush()
 

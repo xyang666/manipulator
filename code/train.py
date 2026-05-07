@@ -1,14 +1,37 @@
 """
 train.py
 --------
-Training entry point for physics-informed SAC on the manipulator env.
+Training entry point for physics-informed RL on the manipulator env.
+Supports SAC (off-policy) and PPO (on-policy) algorithms.
 
 Usage:
     cd code/
-    python train.py [--steps 50000] [--urdf path/to/panda.urdf]
+
+    # SAC training (default):
+    python train.py --steps 500000 --n_envs 16 --scene_json results/trajectories_obs.json
+
+    # PPO training:
+    python train.py --algo ppo --steps 500000 --n_envs 16 --rollout_steps 200 --ppo_epochs 10 \\
+                    --scene_json results/trajectories_obs.json
+
+    # Resume from checkpoint:
+    python train.py --resume checkpoints/run_name/ckpt_best.pt --steps 1000000
+
+    # Validation only:
+    python train.py --resume checkpoints/run_name/ckpt_best.pt --val_json results/trajectories_obs.json
+
+Key arguments:
+    --algo sac|ppo              RL algorithm (default: sac)
+    --steps N                   Total environment steps (default: 500000)
+    --n_envs N                  Parallel environments (default: 16)
+    --scene_json path           JSON with training scenes
+    --val_json path             JSON with validation scenes (optional)
+    --rollout_steps N           PPO: steps per rollout (default: 200)
+    --ppo_epochs N              PPO: training epochs per rollout (default: 10)
+    --render                    Single-env mode with MuJoCo viewer
 
 Prints per-episode:
-    episode | reward | L_RL | L_dyn | d_obs_min
+    episode | steps | reward | L_actor | L_dyn | d_obs [scene_id]
 """
 
 import json
@@ -76,7 +99,7 @@ def parse_args():
                    help="Path to MuJoCo scene XML (None = kinematics-only mode)")
     p.add_argument("--save_path",   type=str,   default="checkpoints/sac_pirl.pt")
     p.add_argument("--log_every",   type=int,   default=10)
-    p.add_argument("--checkpoint_every", type=int, default=50,
+    p.add_argument("--checkpoint_every", type=int, default=200,
                    help="Save a periodic checkpoint every N episodes")
     p.add_argument("--run_name",    type=str,   default=None,
                    help="Run directory name; auto-generated if not set")
@@ -433,6 +456,11 @@ def main():
         env_rewards = np.zeros(n_envs)
         env_d_obs   = [[] for _ in range(n_envs)]
         env_w       = [[] for _ in range(n_envs)]
+        env_r_track = [[] for _ in range(n_envs)]
+        env_r_obs   = [[] for _ in range(n_envs)]
+        env_r_manip = [[] for _ in range(n_envs)]
+        env_r_energy = [[] for _ in range(n_envs)]
+        env_r_collision = [[] for _ in range(n_envs)]
         env_steps   = np.zeros(n_envs, dtype=int)
         last_losses = {"actor_rl_loss": 0.0, "physics_loss": 0.0}
 
@@ -471,8 +499,14 @@ def main():
                     for i in range(n_envs):
                         total_steps += 1
                         env_rewards[i] += result["reward"][i]
-                        env_d_obs[i].append(result["info"][i].get("d_obs", 0.0))
-                        env_w[i].append(result["info"][i].get("w", 0.0))
+                        info_i = result["info"][i]
+                        env_d_obs[i].append(info_i.get("d_obs", 0.0))
+                        env_w[i].append(info_i.get("w", 0.0))
+                        env_r_track[i].append(info_i.get("r_track", 0.0))
+                        env_r_obs[i].append(info_i.get("r_obs", 0.0))
+                        env_r_manip[i].append(info_i.get("r_manip", 0.0))
+                        env_r_energy[i].append(info_i.get("r_energy", 0.0))
+                        env_r_collision[i].append(info_i.get("r_collision", 0.0))
                         env_steps[i] += 1
                         agent.obs_normalizer.update(result["obs"][i])
 
@@ -486,6 +520,11 @@ def main():
                             last_alpha  = last_losses.get("alpha", None)
                             min_d_obs   = min(env_d_obs[i]) if env_d_obs[i] else 0.0
                             avg_w       = (sum(env_w[i]) / len(env_w[i])) if env_w[i] else None
+                            avg_r_track = (sum(env_r_track[i]) / len(env_r_track[i])) if env_r_track[i] else None
+                            avg_r_obs   = (sum(env_r_obs[i]) / len(env_r_obs[i])) if env_r_obs[i] else None
+                            avg_r_manip = (sum(env_r_manip[i]) / len(env_r_manip[i])) if env_r_manip[i] else None
+                            avg_r_energy = (sum(env_r_energy[i]) / len(env_r_energy[i])) if env_r_energy[i] else None
+                            avg_r_collision = (sum(env_r_collision[i]) / len(env_r_collision[i])) if env_r_collision[i] else None
 
                             # Per-scene performance tracking
                             if _scene_ema is not None:
@@ -519,6 +558,11 @@ def main():
                                 avg_critic_loss=last_critic,
                                 avg_actor_total_loss=last_actor_total,
                                 avg_w=avg_w,
+                                avg_r_track=avg_r_track,
+                                avg_r_obs=avg_r_obs,
+                                avg_r_manip=avg_r_manip,
+                                avg_r_energy=avg_r_energy,
+                                avg_r_collision=avg_r_collision,
                             )
 
                             ckpt_meta = {
@@ -549,6 +593,11 @@ def main():
                             env_rewards[i] = 0.0
                             env_d_obs[i]   = []
                             env_w[i]       = []
+                            env_r_track[i] = []
+                            env_r_obs[i]   = []
+                            env_r_manip[i] = []
+                            env_r_energy[i] = []
+                            env_r_collision[i] = []
                             env_steps[i]   = 0
 
                     obs = result["obs"]
@@ -612,6 +661,11 @@ def main():
                     env_rewards[i] += result["reward"][i]
                     env_d_obs[i].append(result["info"][i].get("d_obs", 0.0))
                     env_w[i].append(result["info"][i].get("w", 0.0))
+                    env_r_track[i].append(result["info"][i].get("r_track", 0.0))
+                    env_r_obs[i].append(result["info"][i].get("r_obs", 0.0))
+                    env_r_manip[i].append(result["info"][i].get("r_manip", 0.0))
+                    env_r_energy[i].append(result["info"][i].get("r_energy", 0.0))
+                    env_r_collision[i].append(result["info"][i].get("r_collision", 0.0))
                     env_steps[i] += 1
                     agent.obs_normalizer.update(result["obs"][i])
 
@@ -625,6 +679,11 @@ def main():
                         last_alpha  = last_losses.get("alpha", None)
                         min_d_obs   = min(env_d_obs[i]) if env_d_obs[i] else 0.0
                         avg_w       = (sum(env_w[i]) / len(env_w[i])) if env_w[i] else None
+                        avg_r_track = (sum(env_r_track[i]) / len(env_r_track[i])) if env_r_track[i] else None
+                        avg_r_obs   = (sum(env_r_obs[i]) / len(env_r_obs[i])) if env_r_obs[i] else None
+                        avg_r_manip = (sum(env_r_manip[i]) / len(env_r_manip[i])) if env_r_manip[i] else None
+                        avg_r_energy = (sum(env_r_energy[i]) / len(env_r_energy[i])) if env_r_energy[i] else None
+                        avg_r_collision = (sum(env_r_collision[i]) / len(env_r_collision[i])) if env_r_collision[i] else None
 
                         # Per-scene performance tracking
                         if _scene_ema is not None:
@@ -658,6 +717,11 @@ def main():
                             avg_critic_loss=last_critic,
                             avg_actor_total_loss=last_actor_total,
                             avg_w=avg_w,
+                            avg_r_track=avg_r_track,
+                            avg_r_obs=avg_r_obs,
+                            avg_r_manip=avg_r_manip,
+                            avg_r_energy=avg_r_energy,
+                            avg_r_collision=avg_r_collision,
                         )
 
                         ckpt_meta = {
@@ -688,6 +752,11 @@ def main():
                         env_rewards[i] = 0.0
                         env_d_obs[i]   = []
                         env_w[i]       = []
+                        env_r_track[i] = []
+                        env_r_obs[i]   = []
+                        env_r_manip[i] = []
+                        env_r_energy[i] = []
+                        env_r_collision[i] = []
                         env_steps[i]   = 0
 
                 obs = result["obs"]  # auto-reset obs for done envs
