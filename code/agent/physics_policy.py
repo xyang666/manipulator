@@ -16,8 +16,8 @@ Architecture:
     Input:  state s_t = [q, dq, x_ee, x_d, dx_d, d_obs, w(q)]  (dim=state_dim=25)
     Hidden: MLP with tanh activations
     Output: 10D action [Δẋ_RL (3), dq0 (7)]
-            task relaxation scaled by task_scale (small),
-            null-space motion scaled by nullspace_scale (larger)
+            task relaxation scaled by task_scale (larger for avoidance),
+            null-space motion scaled by nullspace_scale (smaller to reduce self-collision)
 """
 
 import numpy as np
@@ -36,8 +36,8 @@ class PhysicsInformedActor(nn.Module):
     Gaussian actor for SAC outputting 7D actions: [Δẋ_RL (3), z (4)].
 
     Task relaxation and null-space components are scaled differently:
-    - task_scale (default 0.3): small to preserve tracking priority
-    - nullspace_scale (default 0.3): coefficient scale for SVD basis lift
+    - task_scale (default 0.5): larger to allow decisive avoidance
+    - nullspace_scale (default 0.15): smaller to reduce self-collision risk
 
     The 4D nullspace coefficients z are lifted to 7D joint velocity via
     the differentiable SVD nullspace basis B(q) in the physics regularizer.
@@ -46,8 +46,8 @@ class PhysicsInformedActor(nn.Module):
     def __init__(self, state_dim: int, action_dim: int,
                  hidden_dims: list[int] = (256, 256),
                  action_scale: float = 0.5,
-                 task_scale: float = 0.3,
-                 nullspace_scale: float = 0.3):
+                 task_scale: float = 0.5,
+                 nullspace_scale: float = 0.15):
         """
         Parameters
         ----------
@@ -56,7 +56,7 @@ class PhysicsInformedActor(nn.Module):
         hidden_dims    : MLP hidden layer sizes
         action_scale   : legacy scale (unused when task/nullspace scales provided)
         task_scale     : scale for task relaxation Δẋ_RL (first 3 dims)
-        nullspace_scale: scale for null-space velocity dq0 (last 7 dims)
+        nullspace_scale: scale for null-space coefficients (last dims, n_joints-3)
         """
         super().__init__()
         self.action_scale    = action_scale
