@@ -464,6 +464,7 @@ def main():
         env_r_manip = [[] for _ in range(n_envs)]
         env_r_energy = [[] for _ in range(n_envs)]
         env_r_collision = [[] for _ in range(n_envs)]
+        env_collision_penalty = [[] for _ in range(n_envs)]
         env_steps   = np.zeros(n_envs, dtype=int)
         last_losses = {"actor_rl_loss": 0.0, "physics_loss": 0.0}
 
@@ -510,6 +511,7 @@ def main():
                         env_r_manip[i].append(info_i.get("r_manip", 0.0))
                         env_r_energy[i].append(info_i.get("r_energy", 0.0))
                         env_r_collision[i].append(info_i.get("r_collision", 0.0))
+                        env_collision_penalty[i].append(info_i.get("collision_penalty", 0.0))
                         env_steps[i] += 1
                         agent.obs_normalizer.update(result["obs"][i])
 
@@ -528,6 +530,7 @@ def main():
                             avg_r_manip = (sum(env_r_manip[i]) / len(env_r_manip[i])) if env_r_manip[i] else None
                             avg_r_energy = (sum(env_r_energy[i]) / len(env_r_energy[i])) if env_r_energy[i] else None
                             avg_r_collision = (sum(env_r_collision[i]) / len(env_r_collision[i])) if env_r_collision[i] else None
+                            avg_collision_penalty = (sum(env_collision_penalty[i]) / len(env_collision_penalty[i])) if env_collision_penalty[i] else None
 
                             # Per-scene performance tracking
                             if _scene_ema is not None:
@@ -557,6 +560,7 @@ def main():
                                 step=total_steps, episode=episode,
                                 total_reward=env_rewards[i], min_d_obs=min_d_obs,
                                 avg_actor_loss=avg_l_actor, avg_physics_loss=avg_l_dyn,
+                                ep_step=env_steps[i],
                                 alpha=last_alpha,
                                 avg_critic_loss=last_critic,
                                 avg_actor_total_loss=last_actor_total,
@@ -566,6 +570,7 @@ def main():
                                 avg_r_manip=avg_r_manip,
                                 avg_r_energy=avg_r_energy,
                                 avg_r_collision=avg_r_collision,
+                                avg_collision_penalty=avg_collision_penalty,
                             )
 
                             ckpt_meta = {
@@ -601,8 +606,8 @@ def main():
                             env_r_manip[i] = []
                             env_r_energy[i] = []
                             env_r_collision[i] = []
+                            env_collision_penalty[i] = []
                             env_steps[i]   = 0
-
                     obs = result["obs"]
 
                 # --- GAE computation ---
@@ -669,6 +674,7 @@ def main():
                     env_r_manip[i].append(result["info"][i].get("r_manip", 0.0))
                     env_r_energy[i].append(result["info"][i].get("r_energy", 0.0))
                     env_r_collision[i].append(result["info"][i].get("r_collision", 0.0))
+                    env_collision_penalty[i].append(result["info"][i].get("collision_penalty", 0.0))
                     env_steps[i] += 1
                     agent.obs_normalizer.update(result["obs"][i])
 
@@ -687,6 +693,7 @@ def main():
                         avg_r_manip = (sum(env_r_manip[i]) / len(env_r_manip[i])) if env_r_manip[i] else None
                         avg_r_energy = (sum(env_r_energy[i]) / len(env_r_energy[i])) if env_r_energy[i] else None
                         avg_r_collision = (sum(env_r_collision[i]) / len(env_r_collision[i])) if env_r_collision[i] else None
+                        avg_collision_penalty = (sum(env_collision_penalty[i]) / len(env_collision_penalty[i])) if env_collision_penalty[i] else None
 
                         # Per-scene performance tracking
                         if _scene_ema is not None:
@@ -716,6 +723,7 @@ def main():
                             step=total_steps, episode=episode,
                             total_reward=env_rewards[i], min_d_obs=min_d_obs,
                             avg_actor_loss=avg_l_actor, avg_physics_loss=avg_l_dyn,
+                            ep_step=env_steps[i],
                             alpha=last_alpha,
                             avg_critic_loss=last_critic,
                             avg_actor_total_loss=last_actor_total,
@@ -725,6 +733,7 @@ def main():
                             avg_r_manip=avg_r_manip,
                             avg_r_energy=avg_r_energy,
                             avg_r_collision=avg_r_collision,
+                            avg_collision_penalty=avg_collision_penalty,
                         )
 
                         ckpt_meta = {
@@ -760,8 +769,8 @@ def main():
                         env_r_manip[i] = []
                         env_r_energy[i] = []
                         env_r_collision[i] = []
+                        env_collision_penalty[i] = []
                         env_steps[i]   = 0
-
                 obs = result["obs"]  # auto-reset obs for done envs
 
                 # Training update (one batch update per iteration)
