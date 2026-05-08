@@ -60,7 +60,7 @@ def parse_args():
     p.add_argument("--steps",       type=int,   default=500_000,
                    help="Total environment steps (SAC typically needs 500k-1M)")
     p.add_argument("--batch_size",  type=int,   default=512)
-    p.add_argument("--start_steps", type=int,   default=2_000,
+    p.add_argument("--start_steps", type=int,   default=10_000,
                    help="Random exploration steps before training begins")
     p.add_argument("--update_every",type=int,   default=1)
     p.add_argument("--grad_steps",  type=int,   default=4,
@@ -113,6 +113,8 @@ def parse_args():
                    help="Render the scene with MuJoCo viewer during training")
     p.add_argument("--resume",      type=str,   default=None,
                    help="Path to checkpoint to resume training from")
+    p.add_argument("--no_collision_term", action="store_true",
+                   help="Disable collision-based episode termination")
     return p.parse_args()
 
 
@@ -160,6 +162,7 @@ def main():
         n_obstacles=n_obs,
         use_trajectory_generator=_scene_data is None,
         d_critical=args.d_critical, alpha_relax=args.alpha_relax,
+        collision_term=not args.no_collision_term,
     )
 
     # Reference env for dimension / attribute access

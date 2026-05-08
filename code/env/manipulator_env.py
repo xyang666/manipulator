@@ -73,7 +73,8 @@ class ManipulatorEnv:
                  d_critical: float = 0.05,
                  alpha_relax: float = 0.1,
                  use_trajectory_generator: bool = False,
-                 manipulability_threshold: float = 0.01):
+                 manipulability_threshold: float = 0.01,
+                 collision_term: bool = True):
         """
         Parameters
         ----------
@@ -92,6 +93,7 @@ class ManipulatorEnv:
         self.dt = dt
         self.episode_len = episode_len
         self.use_trajectory_generator = use_trajectory_generator
+        self.collision_term = collision_term
 
         # Observation: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), d_obs(1), w(1), obs_dir(3)] = 28
         self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1 + 3  # 28
@@ -333,12 +335,14 @@ class ManipulatorEnv:
         else:
             collision = d_obs < 0.02
 
-        # Termination conditions (collision terminates — no reward for crashing through)
+        # Termination conditions
         if self.use_parametric_traj:
             path_complete = self.step_count >= self.episode_len
         else:
             path_complete = self.path_param >= 0.99
-        done = self.step_count >= self.episode_len or path_complete or collision
+        done = self.step_count >= self.episode_len or path_complete
+        if self.collision_term:
+            done = done or collision
 
         # Sparse success bonus when reaching goal
         SUCCESS_BONUS = 200.0
