@@ -37,3 +37,9 @@ WARNING: Nan, Inf or huge value in QACC at DOF 0. The simulation is unstable. Ti
 Sat Apr 25 23:39:10 2026
 ERROR: mjv_cameraInModel: mjvScene frustum_near too small
 
+Fri May  8 14:40:14 2026
+ERROR: could not initialize GLFW
+
+Fri May  8 14:51:04 2026
+ERROR: could not initialize GLFW
+
