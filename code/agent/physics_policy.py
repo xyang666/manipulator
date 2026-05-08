@@ -36,7 +36,7 @@ class PhysicsInformedActor(nn.Module):
     Gaussian actor for SAC outputting 7D actions: [Δẋ_RL (3), z (4)].
 
     Task relaxation and null-space components are scaled differently:
-    - task_scale (default 0.5): larger to allow decisive avoidance
+    - task_scale (default 1.5): larger to allow decisive avoidance
     - nullspace_scale (default 0.15): smaller to reduce self-collision risk
 
     The 4D nullspace coefficients z are lifted to 7D joint velocity via
@@ -46,7 +46,7 @@ class PhysicsInformedActor(nn.Module):
     def __init__(self, state_dim: int, action_dim: int,
                  hidden_dims: list[int] = (256, 256),
                  action_scale: float = 0.5,
-                 task_scale: float = 0.5,
+                 task_scale: float = 1.5,
                  nullspace_scale: float = 0.15):
         """
         Parameters
