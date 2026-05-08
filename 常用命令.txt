@@ -7,7 +7,14 @@ python code/test.py --method mpc --render --scene_json results/trajectories_obs.
 python code/train.py --n_envs 4 --steps 500000 --scene_json results/trajectories_obs.json
 
 # 更多并行环境
-python -u code/train.py --n_envs 8 --steps 500000 --scene_json results/trajectories_obs.json 2>&1 | tee log/output.log
+python -u code/train.py --n_envs 64 --steps 1000000 --scene_json results/trajectories_obs.json 2>&1 | tee log/sac.log
+python -u code/train.py --n_envs 64 --steps 1000000 --scene_json results/trajectories_obs.json 2>&1 --algo ppo | tee log/ppo.log
+python -u code/train.py --n_envs 64 --steps 1000000 --scene_json results/trajectories_obs.json 2>&1 --scene_id 0 | tee log/scene_0.log
+
+# 分步训练
+python -u code/train.py --algo sac --steps 300000 --n_envs 64 --scene_json results/trajectories_obs.json --no_collision_term --run_name phase1_explore 2>&1 | tee log/phase1_explore.log
+python -u code/train.py --steps 300000 --n_envs 64 --scene_json results/trajectories_obs.json --scene_id 0 --no_collision_term --run_name phase1_explore 2>&1 | tee log/phase1_explore.log
+
 
 # 单 env 可视化（与之前一样）
 python code/train.py --render --steps 50000
