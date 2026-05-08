@@ -169,7 +169,8 @@ class TrainingLogger:
 
     def log_episode_summary(self, step: int, episode: int, total_reward: float,
                              min_d_obs: float, avg_actor_loss: float,
-                             avg_physics_loss: float, alpha: float = None,
+                             avg_physics_loss: float, ep_step: int = None,
+                             alpha: float = None,
                              avg_critic_loss: float = None,
                              avg_actor_total_loss: float = None,
                              avg_w: float = None,
@@ -177,7 +178,8 @@ class TrainingLogger:
                              avg_r_obs: float = None,
                              avg_r_manip: float = None,
                              avg_r_energy: float = None,
-                             avg_r_collision: float = None) -> None:
+                             avg_r_collision: float = None,
+                             avg_collision_penalty: float = None) -> None:
         """Write a single episode-summary row to the training CSV.
 
         Used by the parallel training path (no per-step CSV logging).
@@ -190,6 +192,8 @@ class TrainingLogger:
             "actor_rl_loss":    avg_actor_loss,
             "physics_loss":     avg_physics_loss,
         }
+        if ep_step is not None:
+            row["ep_step"] = ep_step
         if avg_critic_loss is not None:
             row["critic_loss"] = avg_critic_loss
         if avg_actor_total_loss is not None:
@@ -208,6 +212,8 @@ class TrainingLogger:
             row["r_energy"] = avg_r_energy
         if avg_r_collision is not None:
             row["r_collision"] = avg_r_collision
+        if avg_collision_penalty is not None:
+            row["collision_penalty"] = avg_collision_penalty
         self._csv_writer.writerow(row)
         self._csv_file.flush()
 

@@ -104,7 +104,8 @@ class RewardFunction:
             )
             r_collision = -collision_penalty
 
-        total = r_track + r_obs + r_manip + r_energy + r_collision
+        # total = r_track + r_obs + r_manip + r_energy + r_collision
+        total = r_collision
 
         info = {
             "r_track":     r_track,

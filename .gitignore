@@ -3,3 +3,4 @@ code/.venv/**
 .claude/**
 checkpoints/**
 log/**
+.vscode/**
