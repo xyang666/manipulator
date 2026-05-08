@@ -99,7 +99,7 @@ def parse_args():
                    help="Path to MuJoCo scene XML (None = kinematics-only mode)")
     p.add_argument("--save_path",   type=str,   default="checkpoints/sac_pirl.pt")
     p.add_argument("--log_every",   type=int,   default=10)
-    p.add_argument("--checkpoint_every", type=int, default=200,
+    p.add_argument("--checkpoint_every", type=int, default=500,
                    help="Save a periodic checkpoint every N episodes")
     p.add_argument("--run_name",    type=str,   default=None,
                    help="Run directory name; auto-generated if not set")
