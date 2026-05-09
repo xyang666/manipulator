@@ -349,7 +349,7 @@ class ManipulatorEnv:
         if path_complete:
             reward += SUCCESS_BONUS
 
-        info = {"d_obs": d_obs, "w": w, "success": path_complete, "collision": collision,
+        info = {"d_obs": d_obs, "w": w, "success": path_complete and not collision, "collision": collision,
                 "path_param": self.path_param, **reward_info}
 
         return self._get_obs(), reward, done, info
