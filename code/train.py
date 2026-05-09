@@ -341,7 +341,7 @@ def main():
             print(f"[train] WARNING: resume checkpoint not found: {ckpt_path}")
 
     # -------- Training loop --------
-    reward_scale = 2.0  # normalize reward magnitude for stable Q learning
+    reward_scale = 1.0  # normalize reward magnitude for stable Q learning
 
     print(f"Run directory: {run_dir}")
     print(f"{'Episode':>8} {'Steps':>8} {'Reward':>10} "
