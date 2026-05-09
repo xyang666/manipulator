@@ -345,8 +345,9 @@ def main():
 
     print(f"Run directory: {run_dir}")
     print(f"{'Episode':>8} {'Steps':>8} {'Reward':>10} "
-          f"{'L_actor':>10} {'L_dyn':>10} {'d_obs':>8}")
-    print("-" * 60)
+          f"{'r_trk':>8} {'r_obs':>8} {'r_man':>7} {'r_en':>7} {'r_coll':>7} "
+          f"{'L_actor':>9} {'L_dyn':>8} {'d_obs':>8}")
+    print("-" * 100)
 
     if args.render:
         # ================================================================
@@ -359,6 +360,11 @@ def main():
             ep_l_actor  = 0.0
             ep_l_dyn    = 0.0
             ep_d_obs    = []
+            ep_r_track  = []
+            ep_r_obs    = []
+            ep_r_manip  = []
+            ep_r_energy = []
+            ep_r_coll   = []
             ep_steps    = 0
             done        = False
             while not done:
@@ -390,6 +396,11 @@ def main():
                 obs = next_obs
                 ep_reward += reward
                 ep_d_obs.append(info["d_obs"])
+                ep_r_track.append(info.get("r_track", 0.0))
+                ep_r_obs.append(info.get("r_obs", 0.0))
+                ep_r_manip.append(info.get("r_manip", 0.0))
+                ep_r_energy.append(info.get("r_energy", 0.0))
+                ep_r_coll.append(info.get("r_collision", 0.0))
                 total_steps += 1
                 ep_steps    += 1
 
@@ -410,8 +421,12 @@ def main():
             min_d_obs   = min(ep_d_obs) if ep_d_obs else 0.0
 
             if episode % args.log_every == 0:
+                def _avg(lst): return sum(lst)/len(lst) if lst else 0.0
                 print(f"{episode:>8d} {total_steps:>8d} {ep_reward:>10.3f} "
-                      f"{avg_l_actor:>10.4f} {avg_l_dyn:>10.4f} {min_d_obs:>8.3f}")
+                      f"{_avg(ep_r_track):>8.4f} {_avg(ep_r_obs):>8.4f} "
+                      f"{_avg(ep_r_manip):>7.4f} {_avg(ep_r_energy):>7.4f} "
+                      f"{_avg(ep_r_coll):>7.4f} "
+                      f"{avg_l_actor:>9.4f} {avg_l_dyn:>8.4f} {min_d_obs:>8.3f}")
 
             ckpt_meta = {
                 "step":         total_steps,
@@ -553,7 +568,10 @@ def main():
 
                             if episode % args.log_every == 0:
                                 print(f"{episode:>8d} {total_steps:>8d} {env_rewards[i]:>10.3f} "
-                                      f"{avg_l_actor:>10.4f} {avg_l_dyn:>10.4f} {min_d_obs:>8.3f} "
+                                      f"{avg_r_track or 0:>8.4f} {avg_r_obs or 0:>8.4f} "
+                                      f"{avg_r_manip or 0:>7.4f} {avg_r_energy or 0:>7.4f} "
+                                      f"{avg_r_collision or 0:>7.4f} "
+                                      f"{avg_l_actor:>9.4f} {avg_l_dyn:>8.4f} {min_d_obs:>8.3f} "
                                       f"s={scene_id}")
 
                             logger.log_episode_summary(
@@ -716,7 +734,10 @@ def main():
 
                         if episode % args.log_every == 0:
                             print(f"{episode:>8d} {total_steps:>8d} {env_rewards[i]:>10.3f} "
-                                  f"{avg_l_actor:>10.4f} {avg_l_dyn:>10.4f} {min_d_obs:>8.3f} "
+                                  f"{avg_r_track or 0:>8.4f} {avg_r_obs or 0:>8.4f} "
+                                  f"{avg_r_manip or 0:>7.4f} {avg_r_energy or 0:>7.4f} "
+                                  f"{avg_r_collision or 0:>7.4f} "
+                                  f"{avg_l_actor:>9.4f} {avg_l_dyn:>8.4f} {min_d_obs:>8.3f} "
                                   f"s={scene_id}")
 
                         logger.log_episode_summary(
