@@ -20,9 +20,9 @@ from typing import Optional
 class RewardFunction:
 
     def __init__(self,
-                 w_track:       float = 20.0,
-                 w_obs:         float = 2.0,
-                 w_obs_safe:    float = 1.0,
+                 w_track:       float = 3.0,
+                 w_obs:         float = 3.0,
+                 w_obs_safe:    float = 0.0,
                  w_manip:       float = 0.05,
                  w_energy:      float = 0.001,
                  w_collision:   float = 20,

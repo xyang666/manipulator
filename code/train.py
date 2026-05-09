@@ -344,10 +344,10 @@ def main():
     reward_scale = 1.0  # normalize reward magnitude for stable Q learning
 
     print(f"Run directory: {run_dir}")
-    print(f"{'Episode':>8}  {'Steps':>8}  {'Reward':>10}  "
-          f"{'r_trk':>9}  {'r_obs':>9}  {'r_manip':>8}  {'r_en':>7}  {'r_coll':>8}  "
-          f"{'L_actor':>10}  {'L_dyn':>9}  {'d_obs':>8}")
-    print("-" * 130)
+    print(f"{'Episode':^8}  {'Steps':^8}  {'Reward':^10}  "
+          f"{'r_trk':^9}  {'r_obs':^9}  {'r_manip':^8}  {'r_en':^7}  {'r_coll':^8}  "
+          f"{'L_actor':^10}  {'L_dyn':^9}  {'d_obs':^8}  {'suc':^5}")
+    print("-" * 140)
 
     if args.render:
         # ================================================================
@@ -574,12 +574,12 @@ def main():
                                 _log_success_count += 1
 
                             if episode % args.log_every == 0:
-                                print(f"{episode:>8d} {total_steps:>8d} {env_rewards[i]:>10.3f} "
+                                print(f"{episode:>8d}  {total_steps:>8d}  {env_rewards[i]:>10.3f}  "
                                       f"{avg_r_track or 0:>9.4f}  {avg_r_obs or 0:>9.4f}  "
                                       f"{avg_r_manip or 0:>8.4f}  {avg_r_energy or 0:>7.4f}  "
                                       f"{avg_r_collision or 0:>8.4f}  "
-                                      f"{avg_l_actor:>10.4f}  {avg_l_dyn:>9.4f}  {min_d_obs:>8.3f} "
-                                      f"suc={_log_success_count} s={scene_id}")
+                                      f"{avg_l_actor:>10.4f}  {avg_l_dyn:>9.4f}  {min_d_obs:>8.3f}  "
+                                      f"s={scene_id}  suc={_log_success_count}")
                                 _log_success_count = 0
 
                             logger.log_episode_summary(
@@ -748,12 +748,12 @@ def main():
                             _log_success_count += 1
 
                         if episode % args.log_every == 0:
-                            print(f"{episode:>8d} {total_steps:>8d} {env_rewards[i]:>10.3f} "
-                                  f"{avg_r_track or 0:>8.4f} {avg_r_obs or 0:>8.4f} "
-                                  f"{avg_r_manip or 0:>7.4f} {avg_r_energy or 0:>7.4f} "
-                                  f"{avg_r_collision or 0:>7.4f} "
-                                  f"{avg_l_actor:>9.4f} {avg_l_dyn:>8.4f} {min_d_obs:>8.3f} "
-                                  f"suc={_log_success_count} s={scene_id}")
+                            print(f"{episode:>8d}  {total_steps:>8d}  {env_rewards[i]:>10.3f}  "
+                                  f"{avg_r_track or 0:>9.4f}  {avg_r_obs or 0:>9.4f}  "
+                                  f"{avg_r_manip or 0:>8.4f}  {avg_r_energy or 0:>7.4f}  "
+                                  f"{avg_r_collision or 0:>8.4f}  "
+                                  f"{avg_l_actor:>10.4f}  {avg_l_dyn:>9.4f}  {min_d_obs:>8.3f}  "
+                                  f"s={scene_id}  suc={_log_success_count}")
                             _log_success_count = 0
 
                         logger.log_episode_summary(
