@@ -18,6 +18,7 @@ CSV_COLUMNS = [
     "reward", "d_obs", "w",
     "r_track", "r_obs", "r_manip", "r_energy", "r_collision", "collision_penalty",
     "critic_loss", "actor_rl_loss", "physics_loss", "actor_loss", "alpha",
+    "success",
 ]
 
 
@@ -179,7 +180,8 @@ class TrainingLogger:
                              avg_r_manip: float = None,
                              avg_r_energy: float = None,
                              avg_r_collision: float = None,
-                             avg_collision_penalty: float = None) -> None:
+                             avg_collision_penalty: float = None,
+                             success: bool = None) -> None:
         """Write a single episode-summary row to the training CSV.
 
         Used by the parallel training path (no per-step CSV logging).
@@ -214,6 +216,8 @@ class TrainingLogger:
             row["r_collision"] = avg_r_collision
         if avg_collision_penalty is not None:
             row["collision_penalty"] = avg_collision_penalty
+        if success is not None:
+            row["success"] = int(success)
         self._csv_writer.writerow(row)
         self._csv_file.flush()
 
