@@ -18,7 +18,7 @@ CSV_COLUMNS = [
     "reward", "d_obs", "w",
     "r_track", "r_obs", "r_manip", "r_energy", "r_collision", "collision_penalty",
     "critic_loss", "actor_rl_loss", "physics_loss", "actor_loss", "alpha",
-    "success",
+    "success", "ever_collided",
 ]
 
 
