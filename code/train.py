@@ -293,10 +293,20 @@ def main():
     os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
 
     # Save config for reproducibility
+    try:
+        from agent.reward import RewardFunction
+        import inspect
+        reward_defaults = {
+            k: v.default for k, v in inspect.signature(RewardFunction.__init__).parameters.items()
+            if v.default is not inspect.Parameter.empty and k not in ('self', 'collision_detector')
+        }
+    except Exception:
+        reward_defaults = {}
     _config = {
         "command": " ".join(sys.argv),
         "cli_args": vars(args),
         "hyperparams": hyperparams,
+        "reward_weights": reward_defaults,
         "git_commit": os.popen("git rev-parse HEAD 2>/dev/null").read().strip(),
     }
     with open(os.path.join(run_dir, "config.json"), "w") as f:
