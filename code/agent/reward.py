@@ -21,7 +21,7 @@ class RewardFunction:
 
     def __init__(self,
                  w_track:       float = 3.0,
-                 w_obs:         float = 3.0,
+                 w_obs:         float = 0.0,
                  w_obs_safe:    float = 0.0,
                  w_manip:       float = 0.05,
                  w_energy:      float = 0.001,

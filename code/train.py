@@ -480,7 +480,7 @@ def main():
         env_r_energy = [[] for _ in range(n_envs)]
         env_r_collision = [[] for _ in range(n_envs)]
         env_collision_penalty = [[] for _ in range(n_envs)]
-        env_success  = [False for _ in range(n_envs)]
+        env_ever_collided = [False for _ in range(n_envs)]
         env_steps   = np.zeros(n_envs, dtype=int)
         _log_success_count = 0
         last_losses = {"actor_rl_loss": 0.0, "physics_loss": 0.0}
@@ -529,12 +529,14 @@ def main():
                         env_r_energy[i].append(info_i.get("r_energy", 0.0))
                         env_r_collision[i].append(info_i.get("r_collision", 0.0))
                         env_collision_penalty[i].append(info_i.get("collision_penalty", 0.0))
-                        env_success[i] = env_success[i] or info_i.get("success", False)
+                        env_ever_collided[i] = env_ever_collided[i] or info_i.get("collision", False)
                         env_steps[i] += 1
                         agent.obs_normalizer.update(result["obs"][i])
 
                         if result["done"][i]:
                             episode += 1
+                            # Episode-end success: path_complete AND no collision during episode
+                            ep_success = info_i.get("success", False)
                             scene_id = result["scene_id"][i]
                             avg_l_actor = last_losses.get("actor_rl_loss", 0.0)
                             avg_l_dyn   = last_losses.get("physics_loss", 0.0)
@@ -570,7 +572,7 @@ def main():
                                         _scene_weights[s] = weights[s]
 
                             # Track success for logging window
-                            if env_success[i]:
+                            if ep_success:
                                 _log_success_count += 1
 
                             if episode % args.log_every == 0:
@@ -597,7 +599,8 @@ def main():
                                 avg_r_energy=avg_r_energy,
                                 avg_r_collision=avg_r_collision,
                                 avg_collision_penalty=avg_collision_penalty,
-                                success=int(env_success[i]),
+                                success=int(ep_success),
+                                ever_collided=int(env_ever_collided[i]),
                             )
 
                             ckpt_meta = {
@@ -634,7 +637,7 @@ def main():
                             env_r_energy[i] = []
                             env_r_collision[i] = []
                             env_collision_penalty[i] = []
-                            env_success[i] = False
+                            env_ever_collided[i] = False
                             env_steps[i]   = 0
                     obs = result["obs"]
 
@@ -703,12 +706,14 @@ def main():
                     env_r_energy[i].append(result["info"][i].get("r_energy", 0.0))
                     env_r_collision[i].append(result["info"][i].get("r_collision", 0.0))
                     env_collision_penalty[i].append(result["info"][i].get("collision_penalty", 0.0))
-                    env_success[i] = env_success[i] or result["info"][i].get("success", False)
+                    env_ever_collided[i] = env_ever_collided[i] or result["info"][i].get("collision", False)
                     env_steps[i] += 1
                     agent.obs_normalizer.update(result["obs"][i])
 
                     if result["done"][i]:
                         episode += 1
+                        # Episode-end success: path_complete AND no collision during episode
+                        ep_success = result["info"][i].get("success", False)
                         scene_id = result["scene_id"][i]
                         avg_l_actor = last_losses.get("actor_rl_loss", 0.0)
                         avg_l_dyn   = last_losses.get("physics_loss", 0.0)
@@ -744,7 +749,7 @@ def main():
                                     _scene_weights[s] = weights[s]
 
                         # Track success for logging window (every episode)
-                        if env_success[i]:
+                        if ep_success:
                             _log_success_count += 1
 
                         if episode % args.log_every == 0:
@@ -771,7 +776,8 @@ def main():
                             avg_r_energy=avg_r_energy,
                             avg_r_collision=avg_r_collision,
                             avg_collision_penalty=avg_collision_penalty,
-                            success=int(env_success[i]),
+                            success=int(ep_success),
+                            ever_collided=int(env_ever_collided[i]),
                         )
 
                         ckpt_meta = {
@@ -808,7 +814,7 @@ def main():
                         env_r_energy[i] = []
                         env_r_collision[i] = []
                         env_collision_penalty[i] = []
-                        env_success[i] = False
+                        env_ever_collided[i] = False
                         env_steps[i]   = 0
                 obs = result["obs"]  # auto-reset obs for done envs
 
