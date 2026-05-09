@@ -335,6 +335,9 @@ class ManipulatorEnv:
         else:
             collision = d_obs < 0.02
 
+        # Track cumulative collision flag for the entire episode
+        self._ever_collided = self._ever_collided or collision
+
         # Termination conditions
         if self.use_parametric_traj:
             path_complete = self.step_count >= self.episode_len
@@ -345,11 +348,11 @@ class ManipulatorEnv:
             done = done or collision
 
         # Sparse success bonus when reaching goal
-        SUCCESS_BONUS = 200.0
+        SUCCESS_BONUS = 2000.0
         if path_complete:
             reward += SUCCESS_BONUS
 
-        info = {"d_obs": d_obs, "w": w, "success": path_complete and not collision, "collision": collision,
+        info = {"d_obs": d_obs, "w": w, "success": path_complete and not self._ever_collided, "collision": collision,
                 "path_param": self.path_param, **reward_info}
 
         return self._get_obs(), reward, done, info
@@ -502,6 +505,7 @@ class ManipulatorEnv:
         """
         self.step_count = 0
         self._integral_err = np.zeros(3)
+        self._ever_collided = False
 
         # Initialize physics loss storage fields (set during step())
         self._last_J = np.zeros((3, self.n), dtype=np.float32)
