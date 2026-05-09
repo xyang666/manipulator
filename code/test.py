@@ -10,7 +10,7 @@ Usage:
     cd code/
     python test.py --method mpc --n_obstacles 3 --render
     python test.py --method kp  --steps 500
-    python test.py --method rl  --checkpoint ../checkpoints/sac_pirl.pt --render
+    python test.py --method sac --checkpoint ../checkpoints/sac_pirl.pt --render
 """
 
 import json
@@ -275,7 +275,7 @@ def run_rl(env, args, agent):
     from agent.sac_agent import SACAgent
     from env.dynamics import ManipulatorDynamics
 
-    print(f"[RL] Loading agent from {args.checkpoint}")
+    print(f"[SAC] Loading agent from {args.checkpoint}")
     dyn = ManipulatorDynamics(args.urdf)
     agent = SACAgent(
         state_dim=env.obs_dim, action_dim=env.act_dim, dynamics=dyn,
@@ -284,9 +284,31 @@ def run_rl(env, args, agent):
     meta = agent.load(args.checkpoint)
     agent.actor.eval()
 
-    print(f"[RL] Agent loaded. Metadata: {meta}")
-    print(f"[RL] Running policy rollouts...")
-    return _run_env(env, args, "RL",
+    print(f"[SAC] Agent loaded. Metadata: {meta}")
+    print(f"[SAC] Running policy rollouts...")
+    return _run_env(env, args, "SAC",
+                    get_action=lambda obs: agent.select_action(obs, deterministic=True))
+
+
+def run_ppo(env, args):
+    """
+    Trained PPO agent: actions come from the policy network.
+    """
+    from agent.ppo_agent import PPOAgent
+    from env.dynamics import ManipulatorDynamics
+
+    print(f"[PPO] Loading agent from {args.checkpoint}")
+    dyn = ManipulatorDynamics(args.urdf)
+    agent = PPOAgent(
+        state_dim=env.obs_dim, action_dim=env.act_dim, dynamics=dyn,
+        n_envs=1, device='cuda' if __import__('torch').cuda.is_available() else 'cpu',
+    )
+    meta = agent.load(args.checkpoint)
+    agent.actor.eval()
+
+    print(f"[PPO] Agent loaded. Metadata: {meta}")
+    print(f"[PPO] Running policy rollouts...")
+    return _run_env(env, args, "PPO",
                     get_action=lambda obs: agent.select_action(obs, deterministic=True))
 
 
@@ -672,7 +694,7 @@ def print_comparison(results_list):
 def parse_args():
     p = argparse.ArgumentParser(description="Unified manipulator test script")
     p.add_argument("--method", type=str, default="kp",
-                   choices=["kp", "mpc", "rl", "rrt_star"],
+                   choices=["kp", "mpc", "sac", "ppo", "rrt_star"],
                    help="Control method to test")
     p.add_argument("--render", action="store_true", help="Enable MuJoCo viewer")
     p.add_argument("--steps", type=int, default=1000, help="Max simulation steps")
@@ -720,7 +742,7 @@ def setup_env(args):
       3. Default:                     fixed trajectory with random obstacles
     """
     # Map method names to controller parameter
-    if args.method in ("kp", "rl", "rrt_star"):
+    if args.method in ("kp", "sac", "ppo", "rrt_star"):
         ctrl = "rl"
     else:
         ctrl = args.method
@@ -773,8 +795,10 @@ def run_single(args):
         results = run_kp(env, args)
     elif args.method == "mpc":
         results = run_mpc(env, args)
-    elif args.method == "rl":
+    elif args.method == "sac":
         results = run_rl(env, args, agent=None)
+    elif args.method == "ppo":
+        results = run_ppo(env, args)
     elif args.method == "rrt_star":
         results = run_rrt_star(env, args)
     else:
@@ -815,12 +839,12 @@ def run_comparison(args):
             except Exception:
                 pass
 
-    # Try RL if checkpoint exists
+    # Try SAC if checkpoint exists
     if os.path.exists(args.checkpoint):
         print(f"\n{'#' * 60}")
-        print(f"# Running RL (checkpoint: {args.checkpoint})")
+        print(f"# Running SAC (checkpoint: {args.checkpoint})")
         print(f"{'#' * 60}")
-        args.method = "rl"
+        args.method = "sac"
         env = setup_env(args)
         r = run_rl(env, args, agent=None)
         results_list.append(r)
