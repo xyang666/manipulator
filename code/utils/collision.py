@@ -195,10 +195,8 @@ class CollisionDetector:
         self_pen, n_self = self.detect_self_collisions()
 
         # Compute penalties (quadratic to heavily penalize penetration)
-        # penalty_obs = w_obstacle * (obs_pen ** 2)
-        # penalty_self = w_self * (self_pen ** 2)
-        penalty_obs = w_obstacle * n_obs
-        penalty_self = w_self * n_self
+        penalty_obs = w_obstacle * (obs_pen ** 2)
+        penalty_self = w_self * (self_pen ** 2)
 
         total_penalty = penalty_obs + penalty_self
 

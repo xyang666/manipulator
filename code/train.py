@@ -72,6 +72,22 @@ def parse_args():
                    help="Critical distance for primary task relaxation (m)")
     p.add_argument("--alpha_relax", type=float, default=0.1,
                    help="Minimum tracking weight factor when d_obs < d_critical")
+    p.add_argument("--w_obs", type=float, default=5.0,
+                   help="Obstacle proximity penalty weight")
+    p.add_argument("--w_obs_safe", type=float, default=0.1,
+                   help="Safe-zone positive reward weight")
+    p.add_argument("--w_collision", type=float, default=100.0,
+                   help="Collision contact penalty weight")
+    p.add_argument("--w_track", type=float, default=3.0,
+                   help="Tracking error penalty weight")
+    p.add_argument("--d_safe", type=float, default=0.06,
+                   help="Safe distance threshold for obstacle reward (m)")
+    p.add_argument("--success_bonus", type=float, default=50.0,
+                   help="Sparse success bonus upon reaching goal")
+    p.add_argument("--lr", type=float, default=3e-4,
+                   help="Learning rate for actor/critic/alpha optimizers")
+    p.add_argument("--alpha", type=float, default=0.1,
+                   help="Initial SAC entropy coefficient")
     p.add_argument("--critic_warmup", type=int, default=5000,
                    help="Number of critic-only updates before actor starts training")
     p.add_argument("--algo", type=str, default="sac", choices=["sac", "ppo"],
@@ -163,6 +179,9 @@ def main():
         use_trajectory_generator=_scene_data is None,
         d_critical=args.d_critical, alpha_relax=args.alpha_relax,
         collision_term=not args.no_collision_term,
+        w_obs=args.w_obs, w_obs_safe=args.w_obs_safe,
+        w_collision=args.w_collision, w_track=args.w_track,
+        d_safe=args.d_safe, success_bonus=args.success_bonus,
     )
 
     # Reference env for dimension / attribute access
@@ -265,8 +284,10 @@ def main():
             action_dim=action_dim,
             dynamics=dyn,
             lambda_dyn=args.lambda_dyn,
+            lr=args.lr,
+            alpha=args.alpha,
             device=_device,
-            critic_warmup=args.critic_warmup,
+            critic_warmup=max(1, args.critic_warmup // args.n_envs),
             total_steps=args.steps,
         )
         buffer = ReplayBuffer(args.buffer_size, state_dim, action_dim)
@@ -282,7 +303,8 @@ def main():
         "lambda_dyn":   args.lambda_dyn,
         "d_critical":   args.d_critical,
         "alpha_relax":  args.alpha_relax,
-        "lr":           1e-4,
+        "lr":           args.lr,
+        "alpha":        args.alpha,
         "gamma":        0.99,
         "tau":          0.005,
         "state_dim":    state_dim,
