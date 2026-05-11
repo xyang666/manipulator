@@ -40,7 +40,8 @@ class SACAgent:
                  hidden_dims:  tuple = (256, 256),
                  device:       str   = "cpu",
                  critic_warmup: int = 5000,
-                 total_steps:  int   = 0):
+                 total_steps:  int   = 0,
+                 n_critics:    int   = 2):
         self.gamma       = gamma
         self.tau         = tau
         self.alpha       = alpha
@@ -52,7 +53,8 @@ class SACAgent:
         # Networks
         self.actor   = PhysicsInformedActor(state_dim, action_dim,
                                             list(hidden_dims), action_scale).to(self.device)
-        self.critic  = SoftmaxCritic(state_dim, action_dim, list(hidden_dims)).to(self.device)
+        self.critic  = SoftmaxCritic(state_dim, action_dim, list(hidden_dims),
+                                     n_critics=n_critics).to(self.device)
         self.critic_target = copy.deepcopy(self.critic).to(self.device)
 
         self.actor_opt  = optim.Adam(self.actor.parameters(),  lr=lr)
@@ -65,7 +67,9 @@ class SACAgent:
 
         # Automatic entropy tuning
         self.target_entropy = -action_dim
-        self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
+        self.min_alpha = 0.02  # prevent entropy collapse
+        initial_log_alpha = max(np.log(alpha), np.log(self.min_alpha))
+        self.log_alpha = torch.tensor(initial_log_alpha, requires_grad=True, device=self.device)
         self.alpha_opt = optim.Adam([self.log_alpha], lr=lr)
 
         # Observation normalization
@@ -106,7 +110,10 @@ class SACAgent:
         """
         One gradient update step from a sampled batch.
 
-        Returns dict with loss values for logging.
+        Supports ensemble critic (N Q-networks) and prioritized replay weights.
+
+        Returns dict with loss values for logging. If batch contains PER indices,
+        caller should pass them to update_priorities().
         """
         # Normalize observations in batch
         s  = self.obs_normalizer.normalize(batch["state"])
@@ -116,21 +123,32 @@ class SACAgent:
         a  = torch.FloatTensor(batch["action"]).to(self.device)
         r  = torch.FloatTensor(batch["reward"]).to(self.device)
         d  = torch.FloatTensor(batch["done"]).to(self.device)
+        is_weights = torch.FloatTensor(batch.get("weights", np.ones(len(r)))).to(self.device)
 
-        # -------- Critic update --------
+        # -------- Critic update (ensemble of N Q-networks) --------
         with torch.no_grad():
             a_, log_pi_, _ = self.actor.sample(s_)
-            q1_t, q2_t = self.critic_target(s_, a_)
-            q_target = torch.min(q1_t, q2_t) - self.alpha * log_pi_
-            q_backup = r + self.gamma * (1 - d) * q_target
+            q_targets = self.critic_target(s_, a_)  # tuple of N
+            q_target = torch.min(torch.cat(q_targets, dim=-1), dim=-1, keepdim=True).values
+            q_backup = r + self.gamma * (1 - d) * (q_target - self.alpha * log_pi_)
 
-        q1, q2 = self.critic(s, a)
-        critic_loss = F.mse_loss(q1, q_backup) + F.mse_loss(q2, q_backup)
+        q_values = self.critic(s, a)  # tuple of N
+        critic_loss = 0.0
+        td_errors = []
+        for q in q_values:
+            per_sample_loss = F.mse_loss(q, q_backup, reduction='none')
+            critic_loss += (per_sample_loss * is_weights.unsqueeze(-1)).mean()
+            td_errors.append((q - q_backup).abs())
 
         self.critic_opt.zero_grad()
         critic_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
         self.critic_opt.step()
+        if self.critic_scheduler is not None:
+            self.critic_scheduler.step()
+
+        # Average TD-errors across N critics for PER priority update
+        td_error_avg = torch.stack(td_errors, dim=-1).mean(dim=-1).detach().cpu().numpy().flatten()
 
         self._update_count += 1
         doing_warmup = self._update_count < self.critic_warmup
@@ -143,7 +161,6 @@ class SACAgent:
             actor_rl_loss = (self.alpha * log_pi - q_min).mean()
 
             # Differentiable physics regularization (Plan B)
-            # Reconstruct dq_cmd from current-policy action analytically
             q_t  = torch.FloatTensor(batch["q"]).to(self.device)
             dq_t = torch.FloatTensor(batch["dq"]).to(self.device)
             J_t  = torch.FloatTensor(batch["J"]).to(self.device)
@@ -153,10 +170,9 @@ class SACAgent:
             physics_loss = self.physics.compute_loss_batch(
                 q_batch=q_t, dq_batch=dq_t,
                 J_batch=J_t, sigma_batch=sigma_t, dx_nom_batch=dx_nom_t,
-                action_batch=a_new,  # current-policy action — has gradients!
+                action_batch=a_new,
             )
 
-            # Safety check for NaN/Inf
             if torch.isnan(physics_loss) or torch.isinf(physics_loss):
                 physics_loss = torch.tensor(0.0, device=self.device)
 
@@ -166,24 +182,23 @@ class SACAgent:
             actor_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
             self.actor_opt.step()
+            if self.actor_scheduler is not None:
+                self.actor_scheduler.step()
 
             # -------- Alpha (entropy) update --------
             with torch.no_grad():
                 _, log_pi_new, _ = self.actor.sample(s)
-            alpha_loss = -(self.log_alpha * (log_pi_new + self.target_entropy)).mean()
+            alpha = self.log_alpha.exp()
+            alpha_loss = -(alpha * (log_pi_new + self.target_entropy).detach()).mean()
             self.alpha_opt.zero_grad()
             alpha_loss.backward()
             self.alpha_opt.step()
+            self.log_alpha.data.clamp_(min=np.log(self.min_alpha))
             self.alpha = self.log_alpha.exp().item()
 
         # -------- Soft update target critic --------
         for p, p_t in zip(self.critic.parameters(), self.critic_target.parameters()):
             p_t.data.copy_(self.tau * p.data + (1 - self.tau) * p_t.data)
-
-        # Step learning rate schedulers
-        if self.actor_scheduler is not None and not doing_warmup:
-            self.actor_scheduler.step()
-            self.critic_scheduler.step()
 
         return {
             "critic_loss":  critic_loss.item(),
@@ -191,10 +206,11 @@ class SACAgent:
             "physics_loss": physics_loss.item() if not doing_warmup else 0.0,
             "actor_loss":   actor_loss.item() if not doing_warmup else 0.0,
             "alpha":        self.alpha,
-        }
+            "td_error":     float(td_error_avg.mean()),
+        }, td_error_avg
 
     def save(self, path: str, metadata: dict = None):
-        torch.save({
+        state = {
             "actor":          self.actor.state_dict(),
             "critic":         self.critic.state_dict(),
             "actor_opt":      self.actor_opt.state_dict(),
@@ -203,16 +219,34 @@ class SACAgent:
             "log_alpha":      self.log_alpha.item(),
             "obs_normalizer": self.obs_normalizer.state_dict(),
             "metadata":       metadata or {},
-        }, path)
+        }
+        if self.actor_scheduler is not None:
+            state["actor_scheduler"] = self.actor_scheduler.state_dict()
+        if self.critic_scheduler is not None:
+            state["critic_scheduler"] = self.critic_scheduler.state_dict()
+        torch.save(state, path)
 
-    def load(self, path: str, load_optimizers: bool = True) -> dict:
+    def load(self, path: str, load_optimizers: bool = True, reset_alpha: bool = False,
+             reset_critic: bool = False, reset_actor: bool = False) -> dict:
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
-        self.actor.load_state_dict(ckpt["actor"])
-        self.critic.load_state_dict(ckpt["critic"])
+        if not reset_actor:
+            self.actor.load_state_dict(ckpt["actor"])
+        if reset_critic:
+            # Don't load critic weights — use fresh LayerNorm init
+            # (old checkpoint doesn't have LayerNorm params)
+            self.critic_opt = optim.Adam(self.critic.parameters(), lr=ckpt.get("metadata", {}).get("hyperparams", {}).get("lr", 3e-4))
+        else:
+            self.critic.load_state_dict(ckpt["critic"], strict=False)
         if load_optimizers:
-            if "actor_opt" in ckpt:
+            if "actor_opt" in ckpt and not reset_actor:
                 self.actor_opt.load_state_dict(ckpt["actor_opt"])
+                if self.actor_scheduler is not None and "actor_scheduler" in ckpt:
+                    self.actor_scheduler.load_state_dict(ckpt["actor_scheduler"])
+            if "critic_opt" in ckpt and not reset_critic:
                 self.critic_opt.load_state_dict(ckpt["critic_opt"])
+                if self.critic_scheduler is not None and "critic_scheduler" in ckpt:
+                    self.critic_scheduler.load_state_dict(ckpt["critic_scheduler"])
+            if not reset_alpha:
                 self.alpha_opt.load_state_dict(ckpt["alpha_opt"])
                 self.log_alpha.data.fill_(ckpt["log_alpha"])
                 self.alpha = self.log_alpha.exp().item()

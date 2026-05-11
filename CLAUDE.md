@@ -1,5 +1,17 @@
-# python运行版本
-- 使用code/.venv/bin中的python虚拟环境
+# 运行环境
+
+## 工作目录
+- 所有命令在项目根目录 `/root/manipulator/` 下执行，不要 cd 到子目录
+- 训练脚本：`code/.venv/bin/python -u code/train.py [参数]`
+- 测试脚本：`code/.venv/bin/python -u code/test.py [参数]`
+
+## 输出路径
+- checkpoint 保存在根目录：`checkpoints/{run_name}/`
+- 日志文件保存在根目录：`log/{run_name}.log`
+- 训练日志输出重定向：`> /root/manipulator/log/{run_name}.log 2>&1 &`
+
+## Python环境
+- 使用 `code/.venv/bin/python` 虚拟环境
 
 # 论文写作规范
 

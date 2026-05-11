@@ -75,10 +75,12 @@ class ManipulatorEnv:
                  use_trajectory_generator: bool = False,
                  manipulability_threshold: float = 0.01,
                  collision_term: bool = True,
+                 path_deadzone: float = 0.20,
                  w_obs: float = 5.0,
                  w_obs_safe: float = 0.1,
                  w_collision: float = 100.0,
                  w_track: float = 3.0,
+                 w_goal: float = 1.0,
                  d_safe: float = 0.06,
                  success_bonus: float = 50.0):
         """
@@ -100,6 +102,7 @@ class ManipulatorEnv:
         self.episode_len = episode_len
         self.use_trajectory_generator = use_trajectory_generator
         self.collision_term = collision_term
+        self.path_deadzone = path_deadzone
 
         # Observation: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), d_obs(1), w(1), obs_dir(3)] = 28
         self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1 + 3  # 28
@@ -143,7 +146,7 @@ class ManipulatorEnv:
         # Reward function with collision detection
         self.reward_fn = RewardFunction(
             dt=dt, w_obs=w_obs, w_obs_safe=w_obs_safe,
-            w_collision=w_collision, w_track=w_track,
+            w_collision=w_collision, w_track=w_track, w_goal=w_goal,
             d_safe=d_safe, d_critical=d_critical, alpha_relax=alpha_relax,
             collision_detector=self.collision_detector)
         self.success_bonus = success_bonus
@@ -301,7 +304,9 @@ class ManipulatorEnv:
         # Modulate by tracking error with dead zone and low-pass filter
         # Dead zone: errors < 2cm don't slow progression (prevents accumulating lag)
         err_deadzone = max(0.0, tracking_error - 0.02)
-        raw_advance = float(np.clip(1.0 - err_deadzone / 0.10, 0.0, 1.0))
+        # path_deadzone: configurable, larger values allow more deviation
+        # before path progression stalls (default 0.20 = 22cm total)
+        raw_advance = float(np.clip(1.0 - err_deadzone / self.path_deadzone, 0.0, 1.0))
         advance_rate = 0.5 * raw_advance + 0.5 * getattr(self, '_last_advance', raw_advance)
         self._last_advance = advance_rate
         self.path_param = min(1.0, self.path_param + (nominal_s - self.path_param) * advance_rate)
@@ -335,7 +340,7 @@ class ManipulatorEnv:
         reward, reward_info = self.reward_fn.compute(
             q=self.q, dq=self.dq, x_ee=x_ee,
             x_d=self.x_d, dx_d=self.dx_d,
-            d_obs=d_obs, w=w
+            d_obs=d_obs, w=w, x_goal=self.x_goal
         )
         # Collision detection: use MuJoCo collision detector from reward_info;
         # fall back to SDF distance when MuJoCo is unavailable
@@ -361,8 +366,9 @@ class ManipulatorEnv:
         if path_complete:
             reward += self.success_bonus
 
+        tracking_error = float(np.linalg.norm(x_ee - self.x_d))
         info = {"d_obs": d_obs, "w": w, "success": path_complete and not self._ever_collided, "collision": collision,
-                "path_param": self.path_param, **reward_info}
+                "path_param": self.path_param, "tracking_error": tracking_error, **reward_info}
 
         return self._get_obs(), reward, done, info
 
@@ -515,6 +521,7 @@ class ManipulatorEnv:
         self.step_count = 0
         self._integral_err = np.zeros(3)
         self._ever_collided = False
+        self.reward_fn._prev_dist_to_goal = None  # reset goal distance tracking
 
         # Initialize physics loss storage fields (set during step())
         self._last_J = np.zeros((3, self.n), dtype=np.float32)

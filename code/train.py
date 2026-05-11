@@ -84,6 +84,8 @@ def parse_args():
                    help="Safe distance threshold for obstacle reward (m)")
     p.add_argument("--success_bonus", type=float, default=50.0,
                    help="Sparse success bonus upon reaching goal")
+    p.add_argument("--w_goal", type=float, default=1.0,
+                   help="Dense goal-progress reward weight")
     p.add_argument("--lr", type=float, default=3e-4,
                    help="Learning rate for actor/critic/alpha optimizers")
     p.add_argument("--alpha", type=float, default=0.1,
@@ -125,10 +127,31 @@ def parse_args():
                    help="Scene ID (>=0 = fixed scene, -1 = random cycle through all scenes)")
     p.add_argument("--n_envs",      type=int,   default=16,
                    help="Number of parallel environment workers (>>1 = faster GPU utilization)")
+    p.add_argument("--n_critics",   type=int,   default=5,
+                   help="Number of Q-networks in ensemble critic (default 5, 2=standard SAC)")
+    p.add_argument("--hidden_dims", type=str,   default="256,256",
+                   help="Hidden layer sizes for actor/critic networks (comma-separated, e.g. '512,512,512')")
+    p.add_argument("--per",         action="store_true",
+                   help="Use Prioritized Experience Replay instead of uniform sampling")
+    p.add_argument("--episode_len", type=int,   default=400,
+                   help="Max steps per episode (default: 400; use more for obstacle avoidance)")
+    p.add_argument("--reward_scale", type=float, default=1.0,
+                   help="Reward scaling factor: rewards are divided by this before storing in buffer. "
+                        "Use >1 to compress Q-values for stable SAC training (e.g. 50).")
     p.add_argument("--render",      action="store_true",
                    help="Render the scene with MuJoCo viewer during training")
     p.add_argument("--resume",      type=str,   default=None,
                    help="Path to checkpoint to resume training from")
+    p.add_argument("--reset_alpha", action="store_true",
+                   help="When resuming, reset log_alpha to match --alpha (overrides checkpoint value)")
+    p.add_argument("--reset_critic", action="store_true",
+                   help="When resuming, reinitialize critic (for architecture changes like LayerNorm)")
+    p.add_argument("--reset_actor",  action="store_true",
+                   help="When resuming, reinitialize actor (for architecture changes like hidden_dims)")
+    p.add_argument("--load_sac_actor", action="store_true",
+                   help="PPO: load actor from SAC checkpoint (ignores critic/value weights)")
+    p.add_argument("--path_deadzone", type=float, default=0.20,
+                   help="Deadzone for path progression (m). Larger = more deviation allowed before stalling")
     p.add_argument("--no_collision_term", action="store_true",
                    help="Disable collision-based episode termination")
     return p.parse_args()
@@ -136,6 +159,12 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    # Parse hidden_dims from comma-separated string
+    if hasattr(args, 'hidden_dims') and args.hidden_dims:
+        args.hidden_dims = [int(x) for x in args.hidden_dims.replace(' ', '').split(',')]
+    else:
+        args.hidden_dims = [256, 256]
 
     # -------- Setup --------
     dyn = ManipulatorDynamics(args.urdf)
@@ -179,9 +208,12 @@ def main():
         use_trajectory_generator=_scene_data is None,
         d_critical=args.d_critical, alpha_relax=args.alpha_relax,
         collision_term=not args.no_collision_term,
+        path_deadzone=args.path_deadzone,
         w_obs=args.w_obs, w_obs_safe=args.w_obs_safe,
         w_collision=args.w_collision, w_track=args.w_track,
+        w_goal=args.w_goal,
         d_safe=args.d_safe, success_bonus=args.success_bonus,
+        episode_len=args.episode_len,
     )
 
     # Reference env for dimension / attribute access
@@ -226,9 +258,12 @@ def main():
                 _vs, _scenes = _scene_data
                 if args.scene_id >= 0:
                     _vs.apply_scene_to_env(e, _scenes)
-                    e.reset = lambda seed=None: (
-                        _vs.apply_scene_to_env(e, _scenes), e._get_obs()
-                    )[1]
+                    def _reset_fixed(seed=None):
+                        _vs.apply_scene_to_env(e, _scenes)
+                        e._reset_state()
+                        e.path_param = 0.0
+                        return e._get_obs()
+                    e.reset = _reset_fixed
                 else:
                     n_s = len(_scenes)
 
@@ -254,6 +289,8 @@ def main():
                         new_idx = _sample_idx()
                         _vs.apply_scene_to_env(e, _scenes[new_idx])
                         e._current_scene_id = new_idx
+                        e._reset_state()
+                        e.path_param = 0.0
                         return e._get_obs()
                     e.reset = _reset
             return e
@@ -283,14 +320,20 @@ def main():
             state_dim=state_dim,
             action_dim=action_dim,
             dynamics=dyn,
+            hidden_dims=args.hidden_dims,
             lambda_dyn=args.lambda_dyn,
             lr=args.lr,
             alpha=args.alpha,
             device=_device,
             critic_warmup=max(1, args.critic_warmup // args.n_envs),
             total_steps=args.steps,
+            n_critics=args.n_critics,
         )
-        buffer = ReplayBuffer(args.buffer_size, state_dim, action_dim)
+        if args.per:
+            from utils.replay_buffer import PrioritizedReplayBuffer
+            buffer = PrioritizedReplayBuffer(args.buffer_size, state_dim, action_dim)
+        else:
+            buffer = ReplayBuffer(args.buffer_size, state_dim, action_dim)
 
     run_name = args.run_name or f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     run_dir  = os.path.join(os.path.dirname(args.save_path), run_name)
@@ -344,14 +387,25 @@ def main():
         if not os.path.isabs(ckpt_path):
             ckpt_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ckpt_path)
         if os.path.exists(ckpt_path):
-            meta = agent.load(ckpt_path)
+            if args.load_sac_actor:
+                if args.algo != "ppo":
+                    print("[train] WARNING: --load_sac_actor only supported for PPO. Ignoring.")
+                    meta = agent.load(ckpt_path, reset_alpha=args.reset_alpha,
+                                      reset_critic=args.reset_critic, reset_actor=args.reset_actor)
+                else:
+                    meta = agent.load_actor_from_sac(ckpt_path)
+            else:
+                meta = agent.load(ckpt_path, reset_alpha=args.reset_alpha,
+                                  reset_critic=args.reset_critic, reset_actor=args.reset_actor)
             total_steps = meta.get("step", 0)
             episode     = meta.get("episode", 0)
             best_reward = meta.get("best_reward", -np.inf)
             logger.best_reward = best_reward
 
-            # Restore per-scene stats
-            if _scene_ema is not None and "scene_ema" in meta and meta["scene_ema"] is not None:
+            # Restore per-scene stats (skip if scene count mismatched — e.g. phase upgrade)
+            if (_scene_ema is not None and "scene_ema" in meta
+                    and meta["scene_ema"] is not None
+                    and len(meta["scene_ema"]) == len(_scene_ema)):
                 _scene_ema[:] = meta["scene_ema"]
                 _scene_counts[:] = meta["scene_counts"]
                 ema = _scene_ema.copy()
@@ -369,11 +423,18 @@ def main():
 
             print(f"[train] Resumed from {ckpt_path}: step={total_steps}, episode={episode}, "
                   f"best_reward={best_reward:.3f}")
+
+            if args.reset_alpha:
+                agent.log_alpha.data.fill_(np.log(args.alpha))
+                agent.alpha = args.alpha
+                # Reinitialize alpha optimizer to avoid stale state from checkpoint
+                agent.alpha_opt = torch.optim.Adam([agent.log_alpha], lr=args.lr)
+                print(f"[train] Reset alpha to {args.alpha} (log_alpha={np.log(args.alpha):.4f})")
         else:
             print(f"[train] WARNING: resume checkpoint not found: {ckpt_path}")
 
     # -------- Training loop --------
-    reward_scale = 1.0  # normalize reward magnitude for stable Q learning
+    reward_scale = args.reward_scale  # normalize reward magnitude for stable Q learning
 
     print(f"Run directory: {run_dir}")
     print(f"{'Episode':^8}  {'Steps':^8}  {'Reward':^10}  "
@@ -441,7 +502,9 @@ def main():
                         total_steps % args.update_every == 0):
                     for _ in range(args.grad_steps):
                         batch = buffer.sample(args.batch_size)
-                        losses = agent.update(batch)
+                        losses, td_errors = agent.update(batch)
+                        if args.per:
+                            buffer.update_priorities(batch["indices"], td_errors)
                         logger.log_update(losses)
                         ep_l_actor += losses["actor_rl_loss"]
                         ep_l_dyn   += losses["physics_loss"]
@@ -515,6 +578,7 @@ def main():
         env_ever_collided = [False for _ in range(n_envs)]
         env_steps   = np.zeros(n_envs, dtype=int)
         _log_success_count = 0
+        _last_val_ep = -1
         last_losses = {"actor_rl_loss": 0.0, "physics_loss": 0.0}
 
         if args.algo == "ppo":
@@ -659,6 +723,24 @@ def main():
                                     metadata=ckpt_meta
                                 )
 
+                            # Validation evaluation (only once per val_every boundary)
+                            if val_set is not None and episode > 0 and episode % args.val_every == 0 and episode != _last_val_ep:
+                                _last_val_ep = episode
+                                print(f"\n{'='*60}")
+                                print(f"Validation at episode {episode}")
+                                print(f"{'='*60}")
+                                val_results = evaluate_on_validation_set(
+                                    agent, ref_env, val_set,
+                                    num_scenes=args.val_scenes, max_steps=ref_env.episode_len
+                                )
+                                print(f"Success Rate:      {val_results['success_rate']*100:.1f}%")
+                                print(f"Avg Reward:        {val_results['avg_reward']:.3f}")
+                                print(f"Avg Track Error:   {val_results['avg_tracking_error']:.4f}m")
+                                print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
+                                print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
+                                print(f"{'='*60}\n")
+                                logger.log_validation(episode, val_results)
+
                             # Reset per-env tracking
                             env_rewards[i] = 0.0
                             env_d_obs[i]   = []
@@ -682,22 +764,7 @@ def main():
                     losses = agent.update()
                     last_losses = losses
 
-                # --- Validation ---
-                if val_set is not None and episode > 0 and episode % args.val_every == 0:
-                    print(f"\n{'='*60}")
-                    print(f"Validation at episode {episode}")
-                    print(f"{'='*60}")
-                    val_results = evaluate_on_validation_set(
-                        agent, ref_env, val_set,
-                        num_scenes=args.val_scenes, max_steps=ref_env.episode_len
-                    )
-                    print(f"Success Rate:      {val_results['success_rate']*100:.1f}%")
-                    print(f"Avg Reward:        {val_results['avg_reward']:.3f}")
-                    print(f"Avg Track Error:   {val_results['avg_tracking_error']:.4f}m")
-                    print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
-                    print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
-                    print(f"{'='*60}\n")
-                    logger.log_validation(episode, val_results)
+                # --- Validation (moved inside done block below) ---
 
         else:
             # ============================================================
@@ -836,6 +903,24 @@ def main():
                                 metadata=ckpt_meta
                             )
 
+                        # Validation evaluation (only once per val_every boundary)
+                        if val_set is not None and episode > 0 and episode % args.val_every == 0 and episode != _last_val_ep:
+                            _last_val_ep = episode
+                            print(f"\n{'='*60}")
+                            print(f"Validation at episode {episode}")
+                            print(f"{'='*60}")
+                            val_results = evaluate_on_validation_set(
+                                agent, ref_env, val_set,
+                                num_scenes=args.val_scenes, max_steps=ref_env.episode_len
+                            )
+                            print(f"Success Rate:      {val_results['success_rate']*100:.1f}%")
+                            print(f"Avg Reward:        {val_results['avg_reward']:.3f}")
+                            print(f"Avg Track Error:   {val_results['avg_tracking_error']:.4f}m")
+                            print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
+                            print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
+                            print(f"{'='*60}\n")
+                            logger.log_validation(episode, val_results)
+
                         # Reset per-env tracking
                         env_rewards[i] = 0.0
                         env_d_obs[i]   = []
@@ -854,25 +939,10 @@ def main():
                 if total_steps >= args.start_steps and len(buffer) >= args.batch_size:
                     for _ in range(args.grad_steps):
                         batch = buffer.sample(args.batch_size)
-                        losses = agent.update(batch)
+                        losses, td_errors = agent.update(batch)
+                        if args.per:
+                            buffer.update_priorities(batch["indices"], td_errors)
                         last_losses = losses
-
-                # Validation evaluation
-                if val_set is not None and episode > 0 and episode % args.val_every == 0:
-                    print(f"\n{'='*60}")
-                    print(f"Validation at episode {episode}")
-                    print(f"{'='*60}")
-                    val_results = evaluate_on_validation_set(
-                        agent, ref_env, val_set,
-                        num_scenes=args.val_scenes, max_steps=ref_env.episode_len
-                    )
-                    print(f"Success Rate:      {val_results['success_rate']*100:.1f}%")
-                    print(f"Avg Reward:        {val_results['avg_reward']:.3f}")
-                    print(f"Avg Track Error:   {val_results['avg_tracking_error']:.4f}m")
-                    print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
-                    print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
-                    print(f"{'='*60}\n")
-                    logger.log_validation(episode, val_results)
 
     # -------- Cleanup --------
     logger.close()

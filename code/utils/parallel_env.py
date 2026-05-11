@@ -29,7 +29,7 @@ class ParallelEnvPool:
         ctx = mp.get_context("fork")
         for i in range(n_envs):
             parent_conn, child_conn = ctx.Pipe()
-            p = ctx.Process(target=_worker_loop, args=(child_conn, env_creator))
+            p = ctx.Process(target=_worker_loop, args=(child_conn, env_creator, i))
             p.start()
             child_conn.close()
             self._pipes.append(parent_conn)
@@ -104,10 +104,15 @@ class ParallelEnvPool:
         return out
 
 
-def _worker_loop(pipe: Connection, env_creator: Callable):
+def _worker_loop(pipe: Connection, env_creator: Callable, worker_id: int = 0):
     """Worker process: owns one env, responds to parent commands."""
     import os
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+    # Seed RNG uniquely per worker to avoid synchronized scene sampling
+    # when using fork (all workers inherit the same parent RNG state).
+    import numpy as np
+    np.random.seed((worker_id * 9973 + 42) & 0xFFFFFFFF)
 
     env = env_creator()
 

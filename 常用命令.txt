@@ -15,6 +15,8 @@ python -u code/train.py --n_envs 64 --steps 1000000 --scene_json results/traject
 python -u code/train.py --algo sac --steps 300000 --n_envs 64 --scene_json results/trajectories_obs.json --no_collision_term --run_name phase1_explore 2>&1 | tee log/phase1_explore.log
 python -u code/train.py --steps 300000 --n_envs 64 --scene_json results/trajectories_obs.json --scene_id 0 --no_collision_term 2>&1 | tee log/phase1_explore_scene0.log
 
+python -u code/train.py --steps 300000 --lambda_dyn 0 --n_envs 64 --scene_json results/trajectories_obs.json --scene_id 0 --no_collision_term 2>&1 | tee log/phase1_explore_scene0.log
+
 
 # 单 env 可视化（与之前一样）
 python code/train.py --render --steps 50000

@@ -1,0 +1,533 @@
+"""
+train_vanilla_ppo.py
+--------------------
+Training entry point for Vanilla PPO baseline.
+Direct joint velocity control — on-policy with GAE.
+
+Usage:
+    code/.venv/bin/python -u code/train_vanilla_ppo.py --steps 500000 --n_envs 64
+
+Based on train.py (physics-informed version) with PPO-only, no physics.
+"""
+
+import json
+import torch
+import argparse
+import sys
+import os
+import numpy as np
+from datetime import datetime
+from multiprocessing import Array
+
+sys.path.insert(0, os.path.dirname(__file__))
+
+from env.vanilla_env import VanillaEnv
+from agent.vanilla_ppo_agent import VanillaPPOAgent
+from utils.logger import TrainingLogger
+from utils.validation import ValidationSet, evaluate_on_validation_set
+
+
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--steps", type=int, default=500_000)
+    p.add_argument("--batch_size", type=int, default=512)
+    p.add_argument("--buffer_size", type=int, default=500_000)  # unused, for compat
+
+    # PPO hyperparams
+    p.add_argument("--rollout_steps", type=int, default=400)
+    p.add_argument("--ppo_epochs", type=int, default=10)
+    p.add_argument("--clip_epsilon", type=float, default=0.2)
+    p.add_argument("--value_coef", type=float, default=0.5)
+    p.add_argument("--entropy_coef", type=float, default=0.01)
+    p.add_argument("--gae_lambda", type=float, default=0.95)
+
+    # Reward args
+    p.add_argument("--d_critical", type=float, default=0.05)
+    p.add_argument("--alpha_relax", type=float, default=0.1)
+    p.add_argument("--w_obs", type=float, default=5.0)
+    p.add_argument("--w_obs_safe", type=float, default=0.1)
+    p.add_argument("--w_collision", type=float, default=100.0)
+    p.add_argument("--w_track", type=float, default=3.0)
+    p.add_argument("--d_safe", type=float, default=0.06)
+    p.add_argument("--success_bonus", type=float, default=50.0)
+    p.add_argument("--w_goal", type=float, default=1.0)
+
+    # Optimizer
+    p.add_argument("--lr", type=float, default=3e-4)
+
+    # Eval
+    p.add_argument("--val_json", type=str, default=None)
+    p.add_argument("--val_every", type=int, default=50)
+    p.add_argument("--val_scenes", type=int, default=10)
+
+    # Paths
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _root = os.path.dirname(_here)
+    _venv_data = os.path.join(_here, ".venv/lib/python3.12/site-packages/cmeel.prefix"
+                              "/share/example-robot-data/robots/panda_description")
+    _default_urdf = os.path.join(_venv_data, "urdf/panda.urdf")
+    _default_xml = os.path.join(_root, "models/panda_scene.xml")
+
+    p.add_argument("--urdf", type=str, default=_default_urdf)
+    p.add_argument("--xml", type=str, default=_default_xml)
+    p.add_argument("--save_path", type=str, default="checkpoints/vanilla_ppo.pt")
+    p.add_argument("--log_every", type=int, default=10)
+    p.add_argument("--checkpoint_every", type=int, default=500)
+    p.add_argument("--run_name", type=str, default=None)
+    p.add_argument("--scene_json", type=str, default=None)
+    p.add_argument("--scene_id", type=int, default=-1)
+    p.add_argument("--n_envs", type=int, default=16)
+    p.add_argument("--episode_len", type=int, default=400)
+    p.add_argument("--reward_scale", type=float, default=20.0)
+    p.add_argument("--render", action="store_true")
+    p.add_argument("--resume", type=str, default=None)
+    p.add_argument("--path_deadzone", type=float, default=0.20)
+    p.add_argument("--no_collision_term", action="store_true")
+    return p.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    # -------- Scene loading --------
+    _scene_data = None
+    if args.scene_json is not None:
+        _vs = ValidationSet(args.scene_json)
+        if args.scene_id >= 0:
+            _scene_data = (_vs, _vs.get_scene(args.scene_id))
+            n_obs = len(_scene_data[1]["obstacles"])
+        else:
+            _scene_data = (_vs, _vs.scenes)
+            n_obs = len(_vs.scenes[0]["obstacles"])
+            print(f"[train] Scene cycle mode: {len(_vs.scenes)} scenes, obs/scene={n_obs}")
+
+        _scene_weights = None
+        _scene_ema = None
+        _scene_counts = None
+        if args.n_envs > 1 and _scene_data is not None and args.scene_id < 0:
+            n_scenes = len(_scene_data[1])
+            _scene_weights = Array('d', [1.0] * n_scenes)
+            _scene_ema = np.zeros(n_scenes, dtype=np.float64)
+            _scene_counts = np.zeros(n_scenes, dtype=np.int32)
+    else:
+        n_obs = 5
+        _scene_weights = None
+        _scene_ema = None
+        _scene_counts = None
+
+    # -------- Environment setup --------
+    _env_kwargs = dict(
+        urdf_path=args.urdf, xml_path=args.xml, obs_radius=0.03,
+        n_obstacles=n_obs,
+        use_trajectory_generator=_scene_data is None,
+        d_critical=args.d_critical, alpha_relax=args.alpha_relax,
+        collision_term=not args.no_collision_term,
+        path_deadzone=args.path_deadzone,
+        w_obs=args.w_obs, w_obs_safe=args.w_obs_safe,
+        w_collision=args.w_collision, w_track=args.w_track,
+        w_goal=args.w_goal,
+        d_safe=args.d_safe, success_bonus=args.success_bonus,
+        episode_len=args.episode_len,
+    )
+
+    ref_env = VanillaEnv(**_env_kwargs)
+    state_dim = ref_env.obs_dim
+    action_dim = ref_env.act_dim
+
+    # -------- Validation set --------
+    val_set = None
+    if args.val_json is not None:
+        val_json_path = args.val_json
+        if not os.path.isabs(val_json_path):
+            val_json_path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                         val_json_path)
+        if os.path.exists(val_json_path):
+            val_set = ValidationSet(val_json_path)
+            print(f"[train] Validation set: {len(val_set.scenes)} scenes")
+        else:
+            print(f"Warning: Validation file not found at {val_json_path}")
+
+    # -------- Env creation --------
+    if args.render:
+        env = VanillaEnv(**_env_kwargs)
+        if _scene_data is not None:
+            _vs, _scenes = _scene_data
+            if args.scene_id >= 0:
+                _vs.apply_scene_to_env(env, _scenes)
+                env.reset = lambda seed=None: (
+                    _vs.apply_scene_to_env(env, _scenes), env._get_obs())[1]
+            else:
+                _vs.apply_scene_to_env(env, _scenes[0])
+                env.reset = lambda seed=None: (
+                    _vs.apply_scene_to_env(env, _scenes[np.random.randint(len(_scenes))]),
+                    env._get_obs())[1]
+        pool = None
+        print(f"[train] Single-env mode (--render)")
+    else:
+        from utils.parallel_env import ParallelEnvPool
+
+        def _create_env():
+            e = VanillaEnv(**_env_kwargs)
+            if _scene_data is not None:
+                _vs, _scenes = _scene_data
+                if args.scene_id >= 0:
+                    _vs.apply_scene_to_env(e, _scenes)
+                    def _reset_fixed(seed=None):
+                        _vs.apply_scene_to_env(e, _scenes)
+                        e._reset_state()
+                        e.path_param = 0.0
+                        return e._get_obs()
+                    e.reset = _reset_fixed
+                else:
+                    n_s = len(_scenes)
+                    def _sample_idx() -> int:
+                        if _scene_weights is not None:
+                            raw = np.frombuffer(
+                                _scene_weights.get_obj(), dtype=np.float64
+                            ).copy()
+                            raw = np.maximum(raw, 0.0)
+                            total = raw.sum()
+                            if total > 0:
+                                probs = raw / total
+                            else:
+                                probs = np.ones(n_s, dtype=np.float64) / n_s
+                            return int(np.random.choice(n_s, p=probs))
+                        return int(np.random.randint(n_s))
+                    def _reset_cycle(seed=None):
+                        idx = _sample_idx()
+                        _vs.apply_scene_to_env(e, _scenes[idx])
+                        e._reset_state()
+                        e.path_param = 0.0
+                        return e._get_obs()
+                    e.reset = _reset_cycle
+            return e
+
+        pool = ParallelEnvPool(args.n_envs, _create_env)
+        env = None
+        print(f"[train] Parallel mode: {args.n_envs} env workers")
+
+    # -------- Agent, logger --------
+    _device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    agent = VanillaPPOAgent(
+        state_dim=state_dim,
+        action_dim=action_dim,
+        n_envs=args.n_envs,
+        rollout_steps=args.rollout_steps,
+        lr=args.lr,
+        device=_device,
+        ppo_epochs=args.ppo_epochs,
+        batch_size=args.batch_size,
+        clip_epsilon=args.clip_epsilon,
+        value_coef=args.value_coef,
+        entropy_coef=args.entropy_coef,
+        gae_lambda=args.gae_lambda,
+    )
+
+    run_name = args.run_name or f"vanilla_ppo_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_dir = os.path.join(os.path.dirname(args.save_path), run_name)
+    hyperparams = {
+        "steps": args.steps, "batch_size": args.batch_size,
+        "rollout_steps": args.rollout_steps,
+        "ppo_epochs": args.ppo_epochs,
+        "clip_epsilon": args.clip_epsilon,
+        "value_coef": args.value_coef,
+        "entropy_coef": args.entropy_coef,
+        "gae_lambda": args.gae_lambda,
+        "d_critical": args.d_critical, "alpha_relax": args.alpha_relax,
+        "lr": args.lr,
+        "gamma": 0.99,
+        "state_dim": state_dim, "action_dim": action_dim,
+    }
+    logger = TrainingLogger(run_dir=run_dir, hyperparams=hyperparams)
+    os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
+
+    # Save config
+    try:
+        from agent.reward import RewardFunction
+        import inspect
+        reward_defaults = {
+            k: v.default for k, v in inspect.signature(RewardFunction.__init__).parameters.items()
+            if v.default is not inspect.Parameter.empty and k not in ('self', 'collision_detector')
+        }
+    except Exception:
+        reward_defaults = {}
+    _config = {
+        "command": " ".join(sys.argv),
+        "cli_args": vars(args),
+        "hyperparams": hyperparams,
+        "reward_weights": reward_defaults,
+        "git_commit": os.popen("git rev-parse HEAD 2>/dev/null").read().strip(),
+    }
+    with open(os.path.join(run_dir, "config.json"), "w") as f:
+        json.dump(_config, f, indent=2, default=str)
+    print(f"[train] Config saved to {run_dir}/config.json")
+
+    # -------- Resume --------
+    total_steps = 0
+    episode = 0
+    best_reward = -np.inf
+    if args.resume is not None:
+        ckpt_path = args.resume
+        if not os.path.isabs(ckpt_path):
+            ckpt_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ckpt_path)
+        if os.path.exists(ckpt_path):
+            meta = agent.load(ckpt_path)
+            total_steps = meta.get("step", 0)
+            episode = meta.get("episode", 0)
+            best_reward = meta.get("best_reward", -np.inf)
+            logger.best_reward = best_reward
+            print(f"[train] Resumed from {ckpt_path}: step={total_steps}, episode={episode}")
+
+    # -------- Training loop --------
+    reward_scale = args.reward_scale
+
+    print(f"Run directory: {run_dir}")
+    print(f"{'Episode':^8}  {'Steps':^8}  {'Reward':^10}  "
+          f"{'r_trk':^9}  {'r_obs':^9}  {'r_manip':^8}  {'r_en':^7}  {'r_coll':^8}  "
+          f"{'L_actor':^10}  {'d_obs':^8}  {'suc':^5}")
+    print("-" * 130)
+
+    if args.render:
+        # Single-env mode
+        while total_steps < args.steps:
+            obs = env.reset()
+            agent.obs_normalizer.update(obs)
+            ep_reward = 0.0
+            ep_l_actor = 0.0
+            ep_d_obs = []
+            ep_r_track = []
+            ep_r_obs = []
+            ep_r_manip = []
+            ep_r_energy = []
+            ep_r_coll = []
+            ep_steps = 0
+            done = False
+            while not done:
+                action = agent.select_action(obs, deterministic=False)
+                next_obs, reward, done, info = env.step(action)
+                if args.render:
+                    env.render()
+                agent.obs_normalizer.update(next_obs)
+                obs = next_obs
+                ep_reward += reward
+                ep_d_obs.append(info["d_obs"])
+                ep_r_track.append(info.get("r_track", 0.0))
+                ep_r_obs.append(info.get("r_obs", 0.0))
+                ep_r_manip.append(info.get("r_manip", 0.0))
+                ep_r_energy.append(info.get("r_energy", 0.0))
+                ep_r_coll.append(info.get("r_collision", 0.0))
+                total_steps += 1
+                ep_steps += 1
+
+            episode += 1
+            avg_l_actor = ep_l_actor / max(ep_steps, 1)
+            min_d_obs = min(ep_d_obs) if ep_d_obs else 0.0
+
+            def _avg(lst): return sum(lst)/len(lst) if lst else 0.0
+            if episode % args.log_every == 0:
+                print(f"{episode:>8d}  {total_steps:>8d}  {ep_reward:>10.3f}  "
+                      f"{_avg(ep_r_track):>9.4f}  {_avg(ep_r_obs):>9.4f}  "
+                      f"{_avg(ep_r_manip):>8.4f}  {_avg(ep_r_energy):>7.4f}  "
+                      f"{_avg(ep_r_coll):>8.4f}  "
+                      f"{avg_l_actor:>10.4f}  {min_d_obs:>8.3f}")
+
+            # Simplified checkpoint/val for single-env mode (minimal support)
+            if episode % args.checkpoint_every == 0:
+                agent.save(logger.checkpoint_path(f"ep{episode:05d}"),
+                           metadata={"step": total_steps, "episode": episode})
+
+    else:
+        # Parallel training (PPO on-policy)
+        n_envs = args.n_envs
+        obs = pool.reset_all()
+        for o in obs:
+            agent.obs_normalizer.update(o)
+
+        env_rewards = np.zeros(n_envs)
+        env_d_obs = [[] for _ in range(n_envs)]
+        env_w = [[] for _ in range(n_envs)]
+        env_r_track = [[] for _ in range(n_envs)]
+        env_r_obs = [[] for _ in range(n_envs)]
+        env_r_manip = [[] for _ in range(n_envs)]
+        env_r_energy = [[] for _ in range(n_envs)]
+        env_r_collision = [[] for _ in range(n_envs)]
+        env_collision_penalty = [[] for _ in range(n_envs)]
+        env_ever_collided = [False for _ in range(n_envs)]
+        env_steps = np.zeros(n_envs, dtype=int)
+        _log_success_count = 0
+        _last_val_ep = -1
+        last_losses = {"actor_rl_loss": 0.0}
+
+        while total_steps < args.steps:
+            agent.buffer.clear()
+
+            # ---- Rollout collection ----
+            for step_in_rollout in range(args.rollout_steps):
+                if total_steps >= args.steps:
+                    break
+
+                # Get actions with log_probs and values from current policy
+                actions = np.zeros((n_envs, action_dim), dtype=np.float32)
+                log_probs = np.zeros(n_envs, dtype=np.float32)
+                values = np.zeros(n_envs, dtype=np.float32)
+                for i in range(n_envs):
+                    actions[i], log_probs[i], values[i] = agent.act(obs[i])
+
+                result = pool.step_all(actions)
+
+                # Push to rollout buffer (no physics fields needed)
+                agent.buffer.push(
+                    obs, actions, result["reward"] / reward_scale, result["done"],
+                    log_probs, values,
+                )
+
+                # Per-env tracking
+                for i in range(n_envs):
+                    total_steps += 1
+                    env_rewards[i] += result["reward"][i]
+                    info_i = result["info"][i]
+                    env_d_obs[i].append(info_i.get("d_obs", 0.0))
+                    env_w[i].append(info_i.get("w", 0.0))
+                    env_r_track[i].append(info_i.get("r_track", 0.0))
+                    env_r_obs[i].append(info_i.get("r_obs", 0.0))
+                    env_r_manip[i].append(info_i.get("r_manip", 0.0))
+                    env_r_energy[i].append(info_i.get("r_energy", 0.0))
+                    env_r_collision[i].append(info_i.get("r_collision", 0.0))
+                    env_collision_penalty[i].append(info_i.get("collision_penalty", 0.0))
+                    env_ever_collided[i] = env_ever_collided[i] or info_i.get("collision", False)
+                    env_steps[i] += 1
+                    agent.obs_normalizer.update(result["obs"][i])
+
+                    if result["done"][i]:
+                        episode += 1
+                        ep_success = info_i.get("success", False)
+                        scene_id = result["scene_id"][i]
+                        avg_l_actor = last_losses.get("actor_rl_loss", 0.0)
+                        last_critic = last_losses.get("critic_loss", None)
+                        last_actor_total = last_losses.get("actor_loss", None)
+                        min_d_obs = min(env_d_obs[i]) if env_d_obs[i] else 0.0
+                        avg_w = (sum(env_w[i]) / len(env_w[i])) if env_w[i] else None
+                        avg_r_track = (sum(env_r_track[i]) / len(env_r_track[i])) if env_r_track[i] else None
+                        avg_r_obs = (sum(env_r_obs[i]) / len(env_r_obs[i])) if env_r_obs[i] else None
+                        avg_r_manip = (sum(env_r_manip[i]) / len(env_r_manip[i])) if env_r_manip[i] else None
+                        avg_r_energy = (sum(env_r_energy[i]) / len(env_r_energy[i])) if env_r_energy[i] else None
+                        avg_r_collision = (sum(env_r_collision[i]) / len(env_r_collision[i])) if env_r_collision[i] else None
+                        avg_collision_penalty = (sum(env_collision_penalty[i]) / len(env_collision_penalty[i])) if env_collision_penalty[i] else None
+
+                        # Per-scene EMA
+                        if _scene_ema is not None:
+                            ema_alpha = 0.3
+                            _scene_ema[scene_id] = (ema_alpha * env_rewards[i]
+                                                    + (1 - ema_alpha) * _scene_ema[scene_id])
+                            _scene_counts[scene_id] += 1
+                            if _scene_counts.min() >= 1:
+                                ema = _scene_ema.copy()
+                                ema_min = ema.min()
+                                ema_max = ema.max()
+                                if ema_max > ema_min:
+                                    norm = (ema - ema_min) / (ema_max - ema_min + 1e-8)
+                                else:
+                                    norm = np.ones_like(ema) * 0.5
+                                weights = np.maximum(0.01, 1.0 - norm)
+                                weights = weights / weights.sum()
+                                for s in range(len(weights)):
+                                    _scene_weights[s] = weights[s]
+
+                        if ep_success:
+                            _log_success_count += 1
+
+                        if episode % args.log_every == 0:
+                            print(f"{episode:>8d}  {total_steps:>8d}  {env_rewards[i]:>10.3f}  "
+                                  f"{avg_r_track or 0:>9.4f}  {avg_r_obs or 0:>9.4f}  "
+                                  f"{avg_r_manip or 0:>8.4f}  {avg_r_energy or 0:>7.4f}  "
+                                  f"{avg_r_collision or 0:>8.4f}  "
+                                  f"{avg_l_actor:>10.4f}  {min_d_obs:>8.3f}  "
+                                  f"s={scene_id}  suc={_log_success_count}")
+                            _log_success_count = 0
+
+                        logger.log_episode_summary(
+                            step=total_steps, episode=episode,
+                            total_reward=env_rewards[i], min_d_obs=min_d_obs,
+                            avg_actor_loss=avg_l_actor, avg_physics_loss=0.0,
+                            ep_step=env_steps[i],
+                            avg_critic_loss=last_critic,
+                            avg_actor_total_loss=last_actor_total,
+                            avg_w=avg_w,
+                            avg_r_track=avg_r_track,
+                            avg_r_obs=avg_r_obs,
+                            avg_r_manip=avg_r_manip,
+                            avg_r_energy=avg_r_energy,
+                            avg_r_collision=avg_r_collision,
+                            avg_collision_penalty=avg_collision_penalty,
+                            success=int(ep_success),
+                            ever_collided=int(env_ever_collided[i]),
+                        )
+
+                        ckpt_meta = {
+                            "step": total_steps, "episode": episode,
+                            "best_reward": best_reward, "hyperparams": hyperparams,
+                            "csv_path": logger.csv_path,
+                            "scene_ema": _scene_ema.tolist() if _scene_ema is not None else None,
+                            "scene_counts": _scene_counts.tolist() if _scene_counts is not None else None,
+                        }
+
+                        if episode % args.checkpoint_every == 0:
+                            agent.save(logger.checkpoint_path(f"ep{episode:05d}"), metadata=ckpt_meta)
+                        if env_rewards[i] > best_reward:
+                            best_reward = env_rewards[i]
+                            ckpt_meta["best_reward"] = best_reward
+                            agent.save(logger.checkpoint_path("best"), metadata=ckpt_meta)
+
+                        if (val_set is not None and episode > 0
+                                and episode % args.val_every == 0
+                                and episode != _last_val_ep):
+                            _last_val_ep = episode
+                            print(f"\n{'='*60}")
+                            print(f"Validation at episode {episode}")
+                            print(f"{'='*60}")
+                            val_results = evaluate_on_validation_set(
+                                agent, ref_env, val_set,
+                                num_scenes=args.val_scenes, max_steps=ref_env.episode_len,
+                            )
+                            print(f"Success Rate:      {val_results['success_rate']*100:.1f}%")
+                            print(f"Avg Reward:        {val_results['avg_reward']:.3f}")
+                            print(f"Avg Track Error:   {val_results['avg_tracking_error']:.4f}m")
+                            print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
+                            print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
+                            print(f"{'='*60}\n")
+                            logger.log_validation(episode, val_results)
+
+                        # Reset per-env tracking
+                        env_rewards[i] = 0.0
+                        env_d_obs[i] = []
+                        env_w[i] = []
+                        env_r_track[i] = []
+                        env_r_obs[i] = []
+                        env_r_manip[i] = []
+                        env_r_energy[i] = []
+                        env_r_collision[i] = []
+                        env_collision_penalty[i] = []
+                        env_ever_collided[i] = False
+                        env_steps[i] = 0
+                obs = result["obs"]
+
+            # ---- PPO update (after full rollout) ----
+            if len(agent.buffer) > 0:
+                last_values = agent.get_value(obs)
+                agent.buffer.compute_advantages(last_values)
+                losses = agent.update()
+                last_losses = losses
+
+    logger.close()
+    if args.render and hasattr(env, '_viewer'):
+        env._viewer.close()
+    if not args.render:
+        pool.close()
+    print(f"\nTraining done. Best reward: {best_reward:.3f}")
+    print(f"Run directory: {run_dir}")
+    print(f"CSV log: {logger.csv_path}")
+
+
+if __name__ == "__main__":
+    main()

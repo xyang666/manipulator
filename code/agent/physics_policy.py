@@ -270,30 +270,38 @@ class PhysicsRegularizer:
 
 
 class SoftmaxCritic(nn.Module):
-    """Standard double-Q critic for SAC."""
+    """Ensemble-Q critic for SAC with LayerNorm.
+
+    Uses N Q-networks (default 5) and takes min-of-N for the actor.
+    Larger ensemble reduces Q-value overestimation in multi-scene training.
+    """
 
     def __init__(self, state_dim: int, action_dim: int,
-                 hidden_dims: list[int] = (256, 256)):
+                 hidden_dims: list[int] = (256, 256),
+                 n_critics: int = 5):
         super().__init__()
-        self.q1 = self._build(state_dim + action_dim, hidden_dims)
-        self.q2 = self._build(state_dim + action_dim, hidden_dims)
+        self.n_critics = n_critics
+        self.q_nets = nn.ModuleList([
+            self._build(state_dim + action_dim, hidden_dims)
+            for _ in range(n_critics)
+        ])
 
     @staticmethod
     def _build(in_dim, hidden_dims):
         layers = []
         for h in hidden_dims:
-            layers += [nn.Linear(in_dim, h), nn.ReLU()]
+            layers += [nn.Linear(in_dim, h), nn.LayerNorm(h), nn.ReLU()]
             in_dim = h
         layers.append(nn.Linear(in_dim, 1))
         return nn.Sequential(*layers)
 
     def forward(self, state, action):
         sa = torch.cat([state, action], dim=-1)
-        return self.q1(sa), self.q2(sa)
+        return tuple(q_net(sa) for q_net in self.q_nets)
 
     def q_min(self, state, action):
-        q1, q2 = self.forward(state, action)
-        return torch.min(q1, q2)
+        q_vals = self.forward(state, action)
+        return torch.min(torch.cat(q_vals, dim=-1), dim=-1, keepdim=True).values
 
 
 if __name__ == "__main__":

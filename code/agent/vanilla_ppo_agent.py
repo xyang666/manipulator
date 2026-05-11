@@ -1,17 +1,10 @@
 """
-ppo_agent.py
-------------
-Proximal Policy Optimization (PPO) agent with physics-informed policy regularization.
+vanilla_ppo_agent.py
+--------------------
+Vanilla PPO agent for direct joint velocity control.
+Simple MLP actor + value network — no physics-informed components.
 
-Shares the same PhysicsInformedActor and PhysicsRegularizer as SAC,
-enabling fair comparison in ablation studies.
-
-Key differences from SACAgent:
-  - On-policy: uses RolloutBuffer (not ReplayBuffer)
-  - Value network instead of double-Q critic
-  - GAE for advantage estimation
-  - Clipped surrogate objective for policy update
-  - Multi-epoch mini-batch updates per rollout
+This serves as a baseline comparison for the physics-informed PPO agent.
 
 Reference:
     Schulman et al., "Proximal Policy Optimization Algorithms", 2017
@@ -23,63 +16,69 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-from agent.physics_policy import PhysicsInformedActor, PhysicsRegularizer
-from agent.value_network import ValueNetwork
 from utils.normalizer import RunningMeanStd
 from utils.rollout_buffer import RolloutBuffer
+from agent.vanilla_sac_agent import VanillaActor
+
+LOG_STD_MIN = -5
+LOG_STD_MAX = 2
 
 
-class PPOAgent:
+class VanillaValueNetwork(nn.Module):
+    """V(s) -> scalar value estimate. Simple MLP."""
+
+    def __init__(self, state_dim: int, hidden_dims: list[int] = (256, 256)):
+        super().__init__()
+        layers = []
+        in_dim = state_dim
+        for h in hidden_dims:
+            layers += [nn.Linear(in_dim, h), nn.ReLU()]
+            in_dim = h
+        layers.append(nn.Linear(in_dim, 1))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        return self.net(state)
+
+
+class VanillaPPOAgent:
     """
-    PPO agent with physics-informed actor loss.
-
-    Interface compatible with SACAgent (select_action, update, save, load)
-    for drop-in use in the training pipeline.
+    Vanilla PPO agent for direct joint velocity control.
+    No physics-informed components — simple MLP actor + value network.
     """
 
-    def __init__(
-        self,
-        state_dim: int,
-        action_dim: int,
-        dynamics,
-        n_envs: int = 1,
-        rollout_steps: int = 200,
-        lr: float = 3e-4,
-        gamma: float = 0.99,
-        gae_lambda: float = 0.95,
-        clip_epsilon: float = 0.2,
-        value_coef: float = 0.5,
-        entropy_coef: float = 0.01,
-        ppo_epochs: int = 10,
-        batch_size: int = 64,
-        lambda_dyn: float = 0.1,
-        action_scale: float = 0.3,
-        hidden_dims: tuple = (256, 256),
-        device: str = "cpu",
-    ):
+    def __init__(self,
+                 state_dim: int,
+                 action_dim: int,
+                 n_envs: int = 1,
+                 rollout_steps: int = 400,
+                 lr: float = 3e-4,
+                 gamma: float = 0.99,
+                 gae_lambda: float = 0.95,
+                 clip_epsilon: float = 0.2,
+                 value_coef: float = 0.5,
+                 entropy_coef: float = 0.01,
+                 ppo_epochs: int = 10,
+                 batch_size: int = 512,
+                 action_scale: float = 2.175,
+                 hidden_dims: tuple = (256, 256),
+                 device: str = "cpu"):
         self.gamma = gamma
         self.clip_epsilon = clip_epsilon
         self.value_coef = value_coef
         self.entropy_coef = entropy_coef
         self.ppo_epochs = ppo_epochs
         self.batch_size = batch_size
-        self.lambda_dyn = lambda_dyn
+        self.action_scale = action_scale
         self.device = torch.device(device)
 
-        # Networks
-        self.actor = PhysicsInformedActor(
-            state_dim, action_dim, list(hidden_dims), action_scale
-        ).to(self.device)
-        self.value = ValueNetwork(state_dim, list(hidden_dims)).to(self.device)
+        # Simple MLP actor (same architecture as VanillaSACAgent)
+        self.actor = VanillaActor(state_dim, action_dim,
+                                  list(hidden_dims), action_scale).to(self.device)
+        self.value = VanillaValueNetwork(state_dim, list(hidden_dims)).to(self.device)
 
-        # Optimizers with separate learning rates if needed
         self.actor_opt = optim.Adam(self.actor.parameters(), lr=lr)
         self.value_opt = optim.Adam(self.value.parameters(), lr=lr)
-
-        # Differentiable physics regularizer (Plan B: pure torch, preserves grad)
-        self.physics = PhysicsRegularizer(
-            dynamics, lambda_dyn=lambda_dyn, dt=0.02, device=self.device
-        )
 
         # On-policy rollout buffer
         self.buffer = RolloutBuffer(
@@ -87,7 +86,7 @@ class PPOAgent:
             rollout_steps=rollout_steps,
             state_dim=state_dim,
             action_dim=action_dim,
-            joints=dynamics.n,
+            joints=action_dim,
             gae_lambda=gae_lambda,
             gamma=gamma,
         )
@@ -100,14 +99,10 @@ class PPOAgent:
     # ------------------------------------------------------------------
 
     @torch.no_grad()
-    def select_action(self, state: np.ndarray, deterministic: bool = True) -> np.ndarray:
+    def select_action(self, state: np.ndarray,
+                      deterministic: bool = True) -> np.ndarray:
         """
         Returns action only (for evaluation / validation).
-
-        Parameters
-        ----------
-        state       : raw observation
-        deterministic: if True, returns mean action without exploration noise
         """
         s = self.obs_normalizer.normalize(state)
         s_t = torch.FloatTensor(s).unsqueeze(0).to(self.device)
@@ -124,7 +119,7 @@ class PPOAgent:
     @torch.no_grad()
     def act(self, state: np.ndarray):
         """
-        Get action, log_prob, and value for a single state (training mode).
+        Get action, log_prob, and value for a single state (rollout collection).
 
         Returns
         -------
@@ -153,14 +148,15 @@ class PPOAgent:
         """
         Full PPO update: multi-epoch mini-batch from rollout buffer.
 
+        No physics regularization — standard PPO clipped surrogate
+        objective with value function loss and entropy bonus.
+
         Returns dict with average loss values for logging.
         """
         losses = {
             "actor_rl_loss": 0.0,
             "critic_loss": 0.0,
-            "physics_loss": 0.0,
             "actor_loss": 0.0,
-            "alpha": 0.0,
         }
         n_updates = 0
 
@@ -172,7 +168,6 @@ class PPOAgent:
                     continue
 
                 # --- Convert to tensors ---
-                # Normalize observations
                 s_np = self.obs_normalizer.normalize(batch["state"])
                 s_t = torch.FloatTensor(s_np).to(self.device)
                 actions = torch.FloatTensor(batch["action"]).to(self.device)
@@ -192,14 +187,11 @@ class PPOAgent:
                 dist = torch.distributions.Normal(mean, std)
 
                 # Log probability of stored actions (inverse tanh transform)
-                scale = torch.ones_like(mean)
-                scale[:, : self.actor.task_dim] = self.actor.task_scale
-                scale[:, self.actor.task_dim :] = self.actor.nullspace_scale
-                clamped = torch.clamp(actions / scale, -0.999, 0.999)
+                clamped = torch.clamp(actions / self.action_scale, -0.999, 0.999)
                 x = 0.5 * (torch.log(1 + clamped) - torch.log(1 - clamped))
 
                 log_prob = dist.log_prob(x) - torch.log(
-                    scale * (1 - clamped.pow(2)) + 1e-6
+                    self.action_scale * (1 - clamped.pow(2)) + 1e-6
                 )
                 log_prob = log_prob.sum(dim=-1, keepdim=True)
                 entropy = dist.entropy().sum(dim=-1, keepdim=True)
@@ -219,26 +211,8 @@ class PPOAgent:
                 values_pred = self.value(s_t)
                 value_loss = 0.5 * ((values_pred - ret) ** 2).mean()
 
-                # --- Physics regularization ---
-                # Use mean action for deterministic gradient flow
-                mean_action = torch.tanh(mean) * scale
-                physics_loss = self.physics.compute_loss_batch(
-                    q_batch=torch.FloatTensor(batch["q"]).to(self.device),
-                    dq_batch=torch.FloatTensor(batch["dq"]).to(self.device),
-                    J_batch=torch.FloatTensor(batch["J"]).to(self.device),
-                    sigma_batch=torch.FloatTensor(batch["sigma"]).to(self.device),
-                    dx_nom_batch=torch.FloatTensor(batch["dx_nom"]).to(self.device),
-                    action_batch=mean_action,
-                )
-                if torch.isnan(physics_loss) or torch.isinf(physics_loss):
-                    physics_loss = torch.tensor(0.0, device=self.device)
-
-                # --- Total loss ---
-                total_loss = (
-                    policy_loss
-                    + self.value_coef * value_loss
-                    + self.lambda_dyn * physics_loss
-                )
+                # --- Total loss (no physics regularization) ---
+                total_loss = policy_loss + self.value_coef * value_loss
 
                 # --- Gradient step ---
                 self.actor_opt.zero_grad()
@@ -249,14 +223,11 @@ class PPOAgent:
                 self.actor_opt.step()
                 self.value_opt.step()
 
-                # Accumulate logging stats
                 losses["actor_rl_loss"] += actor_rl_loss.item()
                 losses["critic_loss"] += value_loss.item()
-                losses["physics_loss"] += physics_loss.item()
                 losses["actor_loss"] += total_loss.item()
                 n_updates += 1
 
-        # Average across all updates
         if n_updates > 0:
             for k in losses:
                 losses[k] /= n_updates
@@ -268,17 +239,14 @@ class PPOAgent:
     # ------------------------------------------------------------------
 
     def save(self, path: str, metadata: dict = None):
-        torch.save(
-            {
-                "actor": self.actor.state_dict(),
-                "value": self.value.state_dict(),
-                "actor_opt": self.actor_opt.state_dict(),
-                "value_opt": self.value_opt.state_dict(),
-                "obs_normalizer": self.obs_normalizer.state_dict(),
-                "metadata": metadata or {},
-            },
-            path,
-        )
+        torch.save({
+            "actor": self.actor.state_dict(),
+            "value": self.value.state_dict(),
+            "actor_opt": self.actor_opt.state_dict(),
+            "value_opt": self.value_opt.state_dict(),
+            "obs_normalizer": self.obs_normalizer.state_dict(),
+            "metadata": metadata or {},
+        }, path)
 
     def load(self, path: str, load_optimizers: bool = True) -> dict:
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
@@ -292,36 +260,23 @@ class PPOAgent:
             self.obs_normalizer.load_state_dict(ckpt["obs_normalizer"])
         return ckpt.get("metadata", {})
 
-    def load_actor_from_sac(self, sac_path: str) -> dict:
-        """Load actor and obs_normalizer from a SAC checkpoint (PPO compatible)."""
-        ckpt = torch.load(sac_path, map_location=self.device, weights_only=False)
-        self.actor.load_state_dict(ckpt["actor"])
-        if "obs_normalizer" in ckpt:
-            self.obs_normalizer.load_state_dict(ckpt["obs_normalizer"])
-        print(f"[PPO] Loaded actor from SAC checkpoint: {sac_path}")
-        return ckpt.get("metadata", {})
-
 
 # ------------------------------------------------------------------
 # Unit tests
 # ------------------------------------------------------------------
 if __name__ == "__main__":
     import sys, os
-
     sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-    from env.dynamics import ManipulatorDynamics
 
     n_joints = 7
-    state_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1 + 3  # 28
-    action_dim = 3 + (n_joints - 3)  # 7 = task(3) + nullspace(4)
+    state_dim = 28
+    action_dim = 7
 
-    print("=== ppo_agent.py unit tests ===")
+    print("=== vanilla_ppo_agent.py unit tests ===")
 
-    dyn = ManipulatorDynamics()
-    agent = PPOAgent(
+    agent = VanillaPPOAgent(
         state_dim=state_dim,
         action_dim=action_dim,
-        dynamics=dyn,
         n_envs=2,
         rollout_steps=8,
         lr=3e-4,
@@ -348,31 +303,27 @@ if __name__ == "__main__":
         values_row = np.random.randn(2).astype(np.float32)
 
         agent.buffer.push(
-            states_row,
-            actions_row,
-            rewards_row,
-            dones_row,
-            log_probs_row,
-            values_row,
-            q=np.random.randn(2, n_joints).astype(np.float32),
-            dq=np.random.randn(2, n_joints).astype(np.float32),
-            dq_next=np.random.randn(2, n_joints).astype(np.float32),
-            J=np.random.randn(2, 3, n_joints).astype(np.float32),
-            sigma=np.random.rand(2, 1).astype(np.float32),
-            dx_nom=np.random.randn(2, 3).astype(np.float32),
+            states_row, actions_row, rewards_row, dones_row,
+            log_probs_row, values_row,
         )
 
     last_values = np.random.randn(2, 1).astype(np.float32)
     agent.buffer.compute_advantages(last_values)
-    print(
-        f"buffer size: {len(agent.buffer)}  (expected 16)"
-    )
+    print(f"buffer size: {len(agent.buffer)}  (expected 16)")
 
     losses = agent.update()
-    print(
-        f"update: actor_rl_loss={losses['actor_rl_loss']:.6f}, "
-        f"critic_loss={losses['critic_loss']:.6f}, "
-        f"physics_loss={losses['physics_loss']:.6f}"
-    )
+    print(f"update: actor_rl_loss={losses['actor_rl_loss']:.6f}, "
+          f"critic_loss={losses['critic_loss']:.6f}")
     assert losses["actor_rl_loss"] > 0, "actor_rl_loss should be > 0"
-    print("ppo_agent.py unit test PASSED")
+
+    # Test save/load
+    agent.save("/tmp/test_vanilla_ppo.pt")
+    agent2 = VanillaPPOAgent(
+        state_dim=state_dim, action_dim=action_dim,
+        n_envs=2, rollout_steps=8,
+    )
+    agent2.load("/tmp/test_vanilla_ppo.pt")
+    os.remove("/tmp/test_vanilla_ppo.pt")
+    print("save/load: OK")
+
+    print("vanilla_ppo_agent.py unit test PASSED")
