@@ -13,6 +13,55 @@
 ## Python环境
 - 使用 `code/.venv/bin/python` 虚拟环境
 
+# 碰撞检测与 d_obs 说明
+
+## 两种碰撞检测机制
+
+系统使用两套独立的碰撞检测，理解它们的区别至关重要：
+
+### 1. MuJoCo 物理碰撞（训练中使用的"真实"碰撞）
+- 文件：`code/utils/collision.py` — `CollisionDetector` 类
+- 使用 MuJoCo 原生碰撞引擎检测接触
+- `detect_collisions()` 返回 `n_contacts`（接触点数量）
+- `compute_collision_penalty()` 返回基于穿透深度的惩罚
+- **这是"真实"碰撞**，只有当 MuJoCo 几何体实际接触时才触发
+- 用在 `reward_fn.compute()` 中计算 r_collision
+- 用在 `env.step()` 中判定 `collision` flag（line 348-349）
+
+### 2. 胶囊体 SDF 距离（d_obs，保守近似）
+- 文件：`code/utils/sdf.py` — `ObstacleSDF` 类
+- 用胶囊体（capsule）近似机械臂连杆，计算到障碍物的有符号距离
+- `capsule_to_sphere_distance()` 返回 signed distance（负值=穿透胶囊体）
+- **d_obs < 0 不等于 MuJoCo 碰撞！** 胶囊体比 MuJoCo 碰撞模型大，是保守估计
+- 用在 sigma 门控（`env.step()` line 253-255）：`sigma = smoothstep(d_obs)`，决定 RL 策略何时接管
+- 用在奖励函数 `r_obs`：当 `d_obs < d_safe` 时给密集惩罚
+
+### 总结对比
+
+| 指标 | d_obs / 胶囊体 SDF | MuJoCo 碰撞检测 |
+|------|-------------------|-----------------|
+| 精度 | 保守（偏大） | 精确 |
+| d<0 含义 | 穿透胶囊体近似 | 实际物理接触 |
+| 用途 | sigma门控、r_obs奖励、验证集碰撞判定 | 训练碰撞终止、r_collision |
+| 响应距离 | 更早触发（胶囊体更大） | 更晚触发（实际接触才触发） |
+
+## 验证逻辑
+
+在 `code/utils/validation.py` 中：
+- **success** = `final_distance < 0.05 and min_obs_dist > 0.0`（到达目标且从未穿透胶囊体）
+- **collision** = `min_obs_dist < 0.0`（胶囊体穿透，保守判定）
+
+在 `code/env/manipulator_env.py` 中：
+- **训练时 collision** = MuJoCo 接触数量 > 0（line 348-349）
+- **success** = `path_complete and not self._ever_collided`（路径走完且从未MuJoCo碰撞）
+
+## 关键含义
+
+1. **验证集碰撞率高于训练集真实碰撞率**：验证用的 d_obs < 0 是保守判定
+2. **d_obs < 0 不意味着任务失败**：胶囊体穿透 ≠ MuJoCo 碰撞，模型可以容忍少量胶囊穿透
+3. **sigma 门控在 d_obs < d_safe=0.06 时开始激活**：在安全区外就开始给 RL 策略更多控制权
+4. **d_obs 负责"预警"，MuJoCo 负责"判罚"**：这种分离是"弃车保帅"机制的核心
+
 # 论文写作规范
 
 ## 整体结构要求

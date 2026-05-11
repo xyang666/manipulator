@@ -66,6 +66,8 @@ def parse_args():
     p.add_argument("--grad_steps",  type=int,   default=4,
                    help="Number of gradient updates per env step")
     p.add_argument("--buffer_size", type=int,   default=500_000)
+    p.add_argument("--action_scale", type=float, default=0.3,
+                   help="SAC action scale for exploration (default: 0.3)")
     p.add_argument("--lambda_dyn",  type=float, default=1.0,
                    help="Weight of physics regularization loss")
     p.add_argument("--d_critical",  type=float, default=0.05,
@@ -260,7 +262,10 @@ def main():
                     _vs.apply_scene_to_env(e, _scenes)
                     def _reset_fixed(seed=None):
                         _vs.apply_scene_to_env(e, _scenes)
-                        e._reset_state()
+                        e.step_count = 0
+                        e._integral_err = np.zeros(3)
+                        e._ever_collided = False
+                        e.reward_fn._prev_dist_to_goal = None
                         e.path_param = 0.0
                         return e._get_obs()
                     e.reset = _reset_fixed
@@ -289,7 +294,10 @@ def main():
                         new_idx = _sample_idx()
                         _vs.apply_scene_to_env(e, _scenes[new_idx])
                         e._current_scene_id = new_idx
-                        e._reset_state()
+                        e.step_count = 0
+                        e._integral_err = np.zeros(3)
+                        e._ever_collided = False
+                        e.reward_fn._prev_dist_to_goal = None
                         e.path_param = 0.0
                         return e._get_obs()
                     e.reset = _reset
@@ -322,6 +330,7 @@ def main():
             dynamics=dyn,
             hidden_dims=args.hidden_dims,
             lambda_dyn=args.lambda_dyn,
+            action_scale=args.action_scale,
             lr=args.lr,
             alpha=args.alpha,
             device=_device,
