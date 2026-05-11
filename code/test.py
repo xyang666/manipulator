@@ -276,9 +276,25 @@ def run_rl(env, args, agent):
     from env.dynamics import ManipulatorDynamics
 
     print(f"[SAC] Loading agent from {args.checkpoint}")
+
+    # Infer hidden_dims from checkpoint's config.json if available
+    ckpt_dir = os.path.dirname(args.checkpoint)
+    config_path = os.path.join(ckpt_dir, "config.json")
+    hidden_dims = (256, 256)  # default fallback
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            cfg = json.load(f)
+        cli_hidden = cfg.get("cli_args", {}).get("hidden_dims", None)
+        if cli_hidden is not None:
+            hidden_dims = tuple(cli_hidden) if isinstance(cli_hidden, list) else (cli_hidden,)
+            print(f"[SAC] Using hidden_dims={hidden_dims} from config.json")
+        else:
+            print(f"[SAC] Using default hidden_dims={hidden_dims}")
+
     dyn = ManipulatorDynamics(args.urdf)
     agent = SACAgent(
         state_dim=env.obs_dim, action_dim=env.act_dim, dynamics=dyn,
+        hidden_dims=hidden_dims,
         device='cuda' if __import__('torch').cuda.is_available() else 'cpu',
     )
     meta = agent.load(args.checkpoint)

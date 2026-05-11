@@ -756,19 +756,6 @@ class ManipulatorEnv:
         dx_cmd = np.zeros(3)
         dx_cmd[:] = self.dx_d[:3] + Kp * pos_err + Ki * self._integral_err
 
-        # Repulsive velocity from nearest obstacle (artificial potential field)
-        if self.sdf.n_obs > 0:
-            dists = np.linalg.norm(self.sdf.centers - x_ee, axis=1) - self.sdf.radii
-            i_nearest = np.argmin(dists)
-            d_obs = float(dists[i_nearest])
-            d_safe = self.reward_fn.d_safe
-            if d_obs < d_safe:
-                direction = x_ee - self.sdf.centers[i_nearest]
-                dist_raw = np.linalg.norm(direction)
-                if dist_raw > 1e-6:
-                    v_rep = 0.5 * (d_safe - d_obs) * (direction / dist_raw)
-                    dx_cmd += v_rep
-
         return dx_cmd
 
     def _mujoco_step(self, dq_cmd):
