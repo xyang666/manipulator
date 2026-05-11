@@ -320,10 +320,6 @@ def run_rl(env, args, agent):
         print(f"[SAC] Synced env params from training config")
     else:
         print(f"[SAC] Using default hidden_dims={hidden_dims}")
-            if key in cli and cli[key] is not None:
-                env_kwargs[key] = cli[key]
-    else:
-        print(f"[SAC] Using default hidden_dims={hidden_dims}")
 
     dyn = ManipulatorDynamics(args.urdf)
     agent = SACAgent(
