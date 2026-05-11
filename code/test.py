@@ -109,6 +109,9 @@ def apply_scene(env, scene: dict) -> bool:
     env.step_count = 0
     env.path_param = 0.0
     env.ee_trajectory.clear()
+    env._last_sigma = 0.0
+    env._filtered_dx_rl = np.zeros(3, dtype=np.float32)
+    env._filtered_z = np.zeros(4, dtype=np.float32)
 
     # Set desired velocity toward goal
     direction = goal_pos - start_pos
@@ -290,6 +293,37 @@ def run_rl(env, args, agent):
             print(f"[SAC] Using hidden_dims={hidden_dims} from config.json")
         else:
             print(f"[SAC] Using default hidden_dims={hidden_dims}")
+        # Sync env params with training config for consistent behavior
+        cli = cfg.get("cli_args", {})
+        for key, attr in [("sigma_d_safe", "sigma_d_safe"),
+                           ("sigma_d_critical", "sigma_d_critical"),
+                           ("action_smooth", "action_smooth"),
+                           ("d_safe", "d_safe"),
+                           ("d_critical", "d_critical")]:
+            if key in cli and cli[key] is not None:
+                setattr(env, attr, cli[key])
+        # Also sync reward function params
+        for key, attr in [("w_manip", "w_manip"),
+                           ("w_track", "w_track"),
+                           ("w_goal", "w_goal"),
+                           ("w_obs", "w_obs"),
+                           ("w_obs_safe", "w_obs_safe"),
+                           ("w_collision", "w_collision"),
+                           ("d_safe", "d_safe"),
+                           ("d_critical", "d_critical")]:
+            if key in cli and cli[key] is not None:
+                setattr(env.reward_fn, attr, cli[key])
+        # Reset sigma filter
+        env._last_sigma = 0.0
+        env._filtered_dx_rl = np.zeros(3, dtype=np.float32)
+        env._filtered_z = np.zeros(4, dtype=np.float32)
+        print(f"[SAC] Synced env params from training config")
+    else:
+        print(f"[SAC] Using default hidden_dims={hidden_dims}")
+            if key in cli and cli[key] is not None:
+                env_kwargs[key] = cli[key]
+    else:
+        print(f"[SAC] Using default hidden_dims={hidden_dims}")
 
     dyn = ManipulatorDynamics(args.urdf)
     agent = SACAgent(

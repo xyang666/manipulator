@@ -88,6 +88,8 @@ def parse_args():
                    help="Sigma gate activation start (defaults to d_safe)")
     p.add_argument("--sigma_d_critical", type=float, default=None,
                    help="Sigma gate fully activated (defaults to d_critical)")
+    p.add_argument("--action_smooth", type=float, default=0.0,
+                   help="Action low-pass filter coefficient (0=off, 0.7=moderate)")
     p.add_argument("--success_bonus", type=float, default=50.0,
                    help="Sparse success bonus upon reaching goal")
     p.add_argument("--w_goal", type=float, default=1.0,
@@ -222,6 +224,7 @@ def main():
         w_goal=args.w_goal, w_manip=args.w_manip,
         d_safe=args.d_safe, success_bonus=args.success_bonus,
         sigma_d_safe=args.sigma_d_safe, sigma_d_critical=args.sigma_d_critical,
+        action_smooth=args.action_smooth,
         episode_len=args.episode_len,
     )
 

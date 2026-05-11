@@ -86,7 +86,8 @@ class ManipulatorEnv:
                  success_bonus: float = 50.0,
                  sigma_d_safe: Optional[float] = None,
                  sigma_d_critical: Optional[float] = None,
-                 sigma_smooth: float = 0.9):
+                 sigma_smooth: float = 0.9,
+                 action_smooth: float = 0.0):
         """
         Parameters
         ----------
@@ -162,6 +163,11 @@ class ManipulatorEnv:
         self.sigma_d_critical = sigma_d_critical if sigma_d_critical is not None else d_critical
         self.sigma_smooth = sigma_smooth
         self._last_sigma = 0.0
+
+        # Action low-pass filter (0 = no filtering, >0 smooths step-to-step jitter)
+        self.action_smooth = action_smooth
+        self._filtered_dx_rl = np.zeros(3, dtype=np.float32)
+        self._filtered_z = np.zeros(4, dtype=np.float32)
 
         # Controllers
         self.controller = controller
@@ -252,6 +258,18 @@ class ManipulatorEnv:
             delta_x_rl = action[:3]   # Δẋ_RL ∈ R^3 (position-space relaxation)
             z          = action[3:]   # z ∈ R^4 (nullspace coefficients, via SVD basis)
 
+            # Action low-pass filter: smooth step-to-step jitter
+            if self.action_smooth > 0.0:
+                self._filtered_dx_rl = (self.action_smooth * self._filtered_dx_rl
+                                        + (1.0 - self.action_smooth) * delta_x_rl)
+                self._filtered_z = (self.action_smooth * self._filtered_z
+                                    + (1.0 - self.action_smooth) * z)
+                delta_x_rl = self._filtered_dx_rl.copy()
+                z = self._filtered_z.copy()
+            else:
+                self._filtered_dx_rl[:] = delta_x_rl
+                self._filtered_z[:] = z
+
             # Compute nominal task-space velocity (PID tracking)
             dx_nom = self._compute_task_velocity()  # ẋ_d + Kp(x_d - x) + Ki*∫(x_d - x)dt
 
@@ -281,9 +299,6 @@ class ManipulatorEnv:
             self._last_J = self.kin.jacobian_position(self.q).copy()
             self._last_sigma = sigma
             self._last_dx_nom = dx_nom.copy()
-
-        # Clamp joint velocities to actuator limits
-        dq_cmd = np.clip(dq_cmd, -self._dq_max, self._dq_max)
 
         # Integrate (kinematics-only mode)
         q_new = self.q + dq_cmd * self.dt
@@ -540,6 +555,8 @@ class ManipulatorEnv:
         self._last_J = np.zeros((3, self.n), dtype=np.float32)
         self._last_sigma = np.float32(0.0)
         self._last_dx_nom = np.zeros(3, dtype=np.float32)
+        self._filtered_dx_rl = np.zeros(3, dtype=np.float32)
+        self._filtered_z = np.zeros(4, dtype=np.float32)
 
         if self.use_trajectory_generator and self.traj_gen is not None:
             # Generate new scene using TrajectoryGenerator
