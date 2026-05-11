@@ -84,6 +84,10 @@ def parse_args():
                    help="Tracking error penalty weight")
     p.add_argument("--d_safe", type=float, default=0.06,
                    help="Safe distance threshold for obstacle reward (m)")
+    p.add_argument("--sigma_d_safe", type=float, default=None,
+                   help="Sigma gate activation start (defaults to d_safe)")
+    p.add_argument("--sigma_d_critical", type=float, default=None,
+                   help="Sigma gate fully activated (defaults to d_critical)")
     p.add_argument("--success_bonus", type=float, default=50.0,
                    help="Sparse success bonus upon reaching goal")
     p.add_argument("--w_goal", type=float, default=1.0,
@@ -129,6 +133,8 @@ def parse_args():
                    help="Scene ID (>=0 = fixed scene, -1 = random cycle through all scenes)")
     p.add_argument("--n_envs",      type=int,   default=16,
                    help="Number of parallel environment workers (>>1 = faster GPU utilization)")
+    p.add_argument("--w_manip",     type=float, default=0.05,
+                   help="Manipulability reward weight")
     p.add_argument("--n_critics",   type=int,   default=5,
                    help="Number of Q-networks in ensemble critic (default 5, 2=standard SAC)")
     p.add_argument("--hidden_dims", type=str,   default="256,256",
@@ -213,8 +219,9 @@ def main():
         path_deadzone=args.path_deadzone,
         w_obs=args.w_obs, w_obs_safe=args.w_obs_safe,
         w_collision=args.w_collision, w_track=args.w_track,
-        w_goal=args.w_goal,
+        w_goal=args.w_goal, w_manip=args.w_manip,
         d_safe=args.d_safe, success_bonus=args.success_bonus,
+        sigma_d_safe=args.sigma_d_safe, sigma_d_critical=args.sigma_d_critical,
         episode_len=args.episode_len,
     )
 
@@ -267,6 +274,7 @@ def main():
                         e._ever_collided = False
                         e.reward_fn._prev_dist_to_goal = None
                         e.path_param = 0.0
+                        e._last_sigma = 0.0
                         return e._get_obs()
                     e.reset = _reset_fixed
                 else:
@@ -299,6 +307,7 @@ def main():
                         e._ever_collided = False
                         e.reward_fn._prev_dist_to_goal = None
                         e.path_param = 0.0
+                        e._last_sigma = 0.0
                         return e._get_obs()
                     e.reset = _reset
             return e

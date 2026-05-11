@@ -81,8 +81,12 @@ class ManipulatorEnv:
                  w_collision: float = 100.0,
                  w_track: float = 3.0,
                  w_goal: float = 1.0,
+                 w_manip: float = 0.05,
                  d_safe: float = 0.06,
-                 success_bonus: float = 50.0):
+                 success_bonus: float = 50.0,
+                 sigma_d_safe: Optional[float] = None,
+                 sigma_d_critical: Optional[float] = None,
+                 sigma_smooth: float = 0.9):
         """
         Parameters
         ----------
@@ -147,10 +151,17 @@ class ManipulatorEnv:
         self.reward_fn = RewardFunction(
             dt=dt, w_obs=w_obs, w_obs_safe=w_obs_safe,
             w_collision=w_collision, w_track=w_track, w_goal=w_goal,
+            w_manip=w_manip,
             d_safe=d_safe, d_critical=d_critical, alpha_relax=alpha_relax,
             collision_detector=self.collision_detector)
         self.success_bonus = success_bonus
         self.sdf = ObstacleSDF(n_obstacles, obs_radius)
+
+        # Sigma gate parameters (default to reward d_safe/d_critical if not specified)
+        self.sigma_d_safe = sigma_d_safe if sigma_d_safe is not None else d_safe
+        self.sigma_d_critical = sigma_d_critical if sigma_d_critical is not None else d_critical
+        self.sigma_smooth = sigma_smooth
+        self._last_sigma = 0.0
 
         # Controllers
         self.controller = controller
@@ -245,14 +256,16 @@ class ManipulatorEnv:
             dx_nom = self._compute_task_velocity()  # ẋ_d + Kp(x_d - x) + Ki*∫(x_d - x)dt
 
             # Gate operator σ: scales task relaxation based on obstacle distance
-            # σ → 0 when safe (d_obs >= d_safe), σ → 1 when dangerous
+            # σ → 0 when safe (d_obs >= sigma_d_safe), σ → 1 when dangerous
             x_ee_cur, _ = self.kin.forward_kinematics(self.q)
             d_obs_cur = self.sdf.min_distance(x_ee_cur, self.q, kinematics=self.kin)
-            d_safe = self.reward_fn.d_safe
-            d_critical = self.reward_fn.d_critical
-            raw_sigma = float(np.clip((d_safe - d_obs_cur) / (d_safe - d_critical + 1e-6), 0.0, 1.0))
+            band = max(self.sigma_d_safe - self.sigma_d_critical, 1e-6)
+            raw_sigma = float(np.clip((self.sigma_d_safe - d_obs_cur) / band, 0.0, 1.0))
             # Smoothstep: C1 continuity at 0 and 1 for smoother gate transitions
-            sigma = raw_sigma * raw_sigma * (3.0 - 2.0 * raw_sigma)
+            sigma_smooth = raw_sigma * raw_sigma * (3.0 - 2.0 * raw_sigma)
+            # Low-pass filter: prevent rapid sigma flickering from causing jitter
+            sigma = self.sigma_smooth * self._last_sigma + (1.0 - self.sigma_smooth) * sigma_smooth
+            self._last_sigma = sigma
             delta_x_gated = sigma * delta_x_rl  # diag(σ) · Δẋ_RL
 
             # Reconstruct 7D nullspace velocity from 4D coefficients via SVD basis
