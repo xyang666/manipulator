@@ -78,10 +78,11 @@ class RewardFunction:
         total_reward : float
         info         : dict with individual components
         """
-        # Tracking reward: squared position error with dynamic weight (paper Eq. 12)
+        # Tracking reward: linear position error with dynamic weight
+        # Linear (not squared) so moderate deviations still incur meaningful cost
         pos_err = np.linalg.norm(x_ee - x_d)
         w_eff = self._effective_track_weight(d_obs)
-        r_track = -w_eff * pos_err ** 2
+        r_track = -w_eff * pos_err
 
         # Obstacle reward: positive bonus when safe, dense penalty when close
         if d_obs >= self.d_safe:

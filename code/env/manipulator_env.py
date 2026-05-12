@@ -87,7 +87,9 @@ class ManipulatorEnv:
                  sigma_d_safe: Optional[float] = None,
                  sigma_d_critical: Optional[float] = None,
                  sigma_smooth: float = 0.9,
-                 action_smooth: float = 0.0):
+                 action_smooth: float = 0.0,
+                 obs_k: int = 0,
+                 obs_waypoint_steps: list | None = None):
         """
         Parameters
         ----------
@@ -109,15 +111,22 @@ class ManipulatorEnv:
         self.collision_term = collision_term
         self.path_deadzone = path_deadzone
 
-        # Observation: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), d_obs(1), w(1), obs_dir(3)] = 28
-        self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1 + 3  # 28
+        # Observation dimensions
+        self.obs_k = obs_k
+        self.obs_waypoint_steps = obs_waypoint_steps or []
+        self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1 + 3  # placeholder, updated after self.n
         self.act_dim = n_joints  # 7D: 3 (task relaxation) + 4 (nullspace, = n-3)
 
         self.kin = ManipulatorKinematics(urdf_path, n_joints,
                                           q_min=Q_MIN, q_max=Q_MAX)
         # Sync env DOF with actual model loaded by Pinocchio (may differ from n_joints)
         self.n = self.kin.n
-        self.obs_dim = self.n * 2 + 3 + 3 + 3 + 1 + 1 + 3
+        if self.obs_k > 0:
+            self.obs_dim = (self.n * 2 + 3 + 3 + 3
+                            + self.obs_k * 4 + self.obs_k
+                            + len(self.obs_waypoint_steps) * 3)
+        else:
+            self.obs_dim = self.n * 2 + 3 + 3 + 3 + 1 + 1 + 3  # legacy 28-dim
         self.act_dim = self.n  # 7D: 3 (task) + 4 (nullspace, via nullspace basis)
 
         # Truncate DQ_MAX to match actual DOF
@@ -814,25 +823,53 @@ class ManipulatorEnv:
 
     def _get_obs(self) -> np.ndarray:
         x_ee, _ = self.kin.forward_kinematics(self.q)
-        d_obs = self.sdf.min_distance(x_ee, self.q, kinematics=self.kin)
-        d_obs = float(np.clip(d_obs, -0.5, 0.5))  # cap inf for numerical stability
         w = self._manipulability()
 
-        # Direction to nearest obstacle center (from EE)
-        obs_dir = np.zeros(3, dtype=np.float32)
-        if self.sdf.n_obs > 0:
-            dists = np.linalg.norm(self.sdf.centers - x_ee, axis=1)
-            nearest = self.sdf.centers[np.argmin(dists)]
-            delta = nearest - x_ee  # vector from EE to obstacle
-            norm = np.linalg.norm(delta)
-            if norm > 1e-6:
-                obs_dir = delta / norm
+        if self.obs_k > 0:
+            # Top-K obstacle distances, directions, and validity mask
+            obs_dists, obs_dirs, obs_mask = self.sdf.top_k(x_ee, self.obs_k)
 
-        # State: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), d_obs(1), w(1), obs_dir(3)] = 28
-        obs = np.concatenate([
-            self.q, self.dq, x_ee, self.x_d, self.dx_d[:3],
-            [d_obs], [w], obs_dir
-        ])
+            # Future waypoints along the planned path
+            waypoints = []
+            for s in self.obs_waypoint_steps:
+                if self.use_parametric_traj and self._parametric_pos_func is not None:
+                    t = (self.step_count + s) * self.dt
+                    wp = self._parametric_pos_func(t)
+                else:
+                    future_param = min(1.0, self.path_param + s / self.episode_len)
+                    wp = (1.0 - future_param) * self.x_start + future_param * self.x_goal
+                waypoints.append(wp)
+
+            # State: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), w(1),
+            #         wp_1(3), ..., wp_N(3),
+            #         obs1_dist(1), obs1_dir(3), ..., obsK_dir(3), mask(K)]
+            obs = np.concatenate([
+                self.q, self.dq, x_ee, self.x_d, self.dx_d[:3],
+                *waypoints,
+                obs_dists,
+                obs_dirs.reshape(-1),
+                obs_mask
+            ])
+        else:
+            # Legacy observation
+            d_obs = self.sdf.min_distance(x_ee, self.q, kinematics=self.kin)
+            d_obs = float(np.clip(d_obs, -0.5, 0.5))
+
+            # Direction to nearest obstacle center (from EE)
+            obs_dir = np.zeros(3, dtype=np.float32)
+            if self.sdf.n_obs > 0:
+                dists = np.linalg.norm(self.sdf.centers - x_ee, axis=1)
+                nearest = self.sdf.centers[np.argmin(dists)]
+                delta = nearest - x_ee
+                norm = np.linalg.norm(delta)
+                if norm > 1e-6:
+                    obs_dir = delta / norm
+
+            # State: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), d_obs(1), w(1), obs_dir(3)] = 28
+            obs = np.concatenate([
+                self.q, self.dq, x_ee, self.x_d, self.dx_d[:3],
+                [d_obs], [w], obs_dir
+            ])
 
         return obs.astype(np.float32)
 

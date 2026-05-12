@@ -113,6 +113,51 @@ class ObstacleSDF:
         # Signed distance accounting for both radii
         return center_dist - capsule_radius - sphere_radius
 
+    def top_k(self, point: np.ndarray, K: int = 5) -> tuple:
+        """
+        Return top-K nearest obstacle distances, directions, and mask from a point.
+
+        Parameters
+        ----------
+        point : 3D query position
+        K     : number of nearest obstacles to return
+
+        Returns
+        -------
+        dists : (K,) signed distances from point to obstacle surface (inf for padding)
+        dirs  : (K, 3) unit direction vectors from point to obstacle center (zero for padding)
+        mask  : (K,) 1.0 for real obstacles, 0.0 for padding
+        """
+        if self.n_obs == 0:
+            return (np.full(K, 0.5, dtype=np.float32),
+                    np.zeros((K, 3), dtype=np.float32),
+                    np.zeros(K, dtype=np.float32))
+
+        # Vector from point to each obstacle center
+        vecs = self.centers - point  # (N, 3)
+        center_dists = np.linalg.norm(vecs, axis=1)  # (N,)
+        signed_dists = center_dists - self.radii  # (N,) signed to surface
+
+        # Sort by signed distance (closest first)
+        idx = np.argsort(signed_dists)
+        n = min(K, self.n_obs)
+
+        # Use large finite value instead of np.inf for padded entries,
+        # since inf flowing through the neural network produces NaN.
+        # The mask tells the network to ignore padded entries.
+        result_dists = np.full(K, 0.5, dtype=np.float32)
+        result_dirs = np.zeros((K, 3), dtype=np.float32)
+        result_mask = np.zeros(K, dtype=np.float32)
+
+        for i in range(n):
+            j = idx[i]
+            result_dists[i] = float(np.clip(signed_dists[j], -0.5, 0.5))
+            if center_dists[j] > 1e-6:
+                result_dirs[i] = vecs[j] / center_dists[j]
+            result_mask[i] = 1.0
+
+        return result_dists, result_dirs, result_mask
+
     def min_distance(self, x_ee: np.ndarray, q: np.ndarray | None = None,
                      kinematics=None) -> float:
         """

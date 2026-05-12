@@ -90,6 +90,10 @@ def parse_args():
                    help="Sigma gate fully activated (defaults to d_critical)")
     p.add_argument("--action_smooth", type=float, default=0.0,
                    help="Action low-pass filter coefficient (0=off, 0.7=moderate)")
+    p.add_argument("--obs_k", type=int, default=0,
+                   help="Number of top-K nearest obstacles in observation (0=legacy 28-dim)")
+    p.add_argument("--obs_waypoint_steps", type=str, default=None,
+                   help="Comma-separated future step offsets for waypoints, e.g. '10,20'")
     p.add_argument("--success_bonus", type=float, default=50.0,
                    help="Sparse success bonus upon reaching goal")
     p.add_argument("--w_goal", type=float, default=1.0,
@@ -211,6 +215,12 @@ def main():
         _scene_ema = None
         _scene_counts = None
 
+    # Parse observation waypoint steps
+    if args.obs_waypoint_steps is not None:
+        obs_waypoint_steps = [int(s.strip()) for s in args.obs_waypoint_steps.split(",")]
+    else:
+        obs_waypoint_steps = None
+
     # -------- Environment setup --------
     _env_kwargs = dict(
         urdf_path=args.urdf, xml_path=args.xml, obs_radius=0.03,
@@ -225,6 +235,8 @@ def main():
         d_safe=args.d_safe, success_bonus=args.success_bonus,
         sigma_d_safe=args.sigma_d_safe, sigma_d_critical=args.sigma_d_critical,
         action_smooth=args.action_smooth,
+        obs_k=args.obs_k,
+        obs_waypoint_steps=obs_waypoint_steps,
         episode_len=args.episode_len,
     )
 
