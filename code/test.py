@@ -341,7 +341,7 @@ def run_rl(env, args, agent):
         hidden_dims=hidden_dims,
         device='cuda' if __import__('torch').cuda.is_available() else 'cpu',
     )
-    meta = agent.load(args.checkpoint)
+    meta = agent.load(args.checkpoint, load_optimizers=False)
     agent.actor.eval()
 
     print(f"[SAC] Agent loaded. Metadata: {meta}")
@@ -948,6 +948,12 @@ def main():
     print(f"Render:    {args.render}")
     print(f"URDF:      {args.urdf}")
     print(f"XML:       {args.xml}")
+
+    # Resolve relative paths relative to project root (_ROOT)
+    if args.checkpoint and not os.path.isabs(args.checkpoint):
+        args.checkpoint = os.path.join(_ROOT, args.checkpoint)
+    if args.scene_json and not os.path.isabs(args.scene_json):
+        args.scene_json = os.path.join(_ROOT, args.scene_json)
     if args.scene_json is not None:
         print(f"Scene:     {args.scene_json} (id={args.scene_id})")
     elif args.use_trajectory_generator:
