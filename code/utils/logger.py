@@ -16,7 +16,7 @@ from datetime import datetime
 CSV_COLUMNS = [
     "global_step", "episode", "ep_step",
     "reward", "d_obs", "w",
-    "r_track", "r_obs", "r_manip", "r_energy", "r_collision", "collision_penalty",
+    "r_track", "r_obs", "r_manip", "r_energy", "r_collision", "r_action", "collision_penalty",
     "critic_loss", "actor_rl_loss", "physics_loss", "actor_loss", "alpha",
     "success", "ever_collided",
 ]
@@ -90,6 +90,7 @@ class TrainingLogger:
             "r_manip":          info.get("r_manip", ""),
             "r_energy":         info.get("r_energy", ""),
             "r_collision":      info.get("r_collision", ""),
+            "r_action":         info.get("r_action", ""),
             "collision_penalty": info.get("collision_penalty", ""),
         }
 
@@ -180,6 +181,7 @@ class TrainingLogger:
                              avg_r_manip: float = None,
                              avg_r_energy: float = None,
                              avg_r_collision: float = None,
+                             avg_r_action: float = None,
                              avg_collision_penalty: float = None,
                              success: bool = None,
                              ever_collided: bool = None) -> None:
@@ -215,6 +217,8 @@ class TrainingLogger:
             row["r_energy"] = avg_r_energy
         if avg_r_collision is not None:
             row["r_collision"] = avg_r_collision
+        if avg_r_action is not None:
+            row["r_action"] = avg_r_action
         if avg_collision_penalty is not None:
             row["collision_penalty"] = avg_collision_penalty
         if success is not None:

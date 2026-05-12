@@ -153,6 +153,7 @@ def evaluate_on_validation_set(agent, env, val_set: ValidationSet,
         ep_reward = 0.0
         ep_tracking_errors = []
         ep_min_distances = []
+        ep_ever_collided_mj = False  # MuJoCo collision flag
         done = False
         steps = 0
 
@@ -163,17 +164,18 @@ def evaluate_on_validation_set(agent, env, val_set: ValidationSet,
             ep_reward += reward
             ep_tracking_errors.append(info.get("tracking_error", 0.0))
             ep_min_distances.append(info.get("d_obs", 0.0))
+            ep_ever_collided_mj = ep_ever_collided_mj or info.get("collision", False)
 
             steps += 1
 
-        # Check success (reached goal with no collision)
+        # Check success: reached goal with no MuJoCo collision
         final_distance = np.linalg.norm(env.x_d - env.x_goal)
         min_obs_dist = min(ep_min_distances) if ep_min_distances else 0.0
-        success = final_distance < 0.05 and min_obs_dist > 0.0
+        success = final_distance < 0.05 and not ep_ever_collided_mj
 
         if success:
             successes += 1
-        if min_obs_dist < 0.0:
+        if ep_ever_collided_mj:
             collisions += 1
 
         total_reward += ep_reward

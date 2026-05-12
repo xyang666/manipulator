@@ -82,6 +82,7 @@ class ManipulatorEnv:
                  w_track: float = 3.0,
                  w_goal: float = 1.0,
                  w_manip: float = 0.05,
+                 w_action: float = 0.0,
                  d_safe: float = 0.06,
                  success_bonus: float = 50.0,
                  sigma_d_safe: Optional[float] = None,
@@ -164,7 +165,7 @@ class ManipulatorEnv:
         self.reward_fn = RewardFunction(
             dt=dt, w_obs=w_obs, w_obs_safe=w_obs_safe,
             w_collision=w_collision, w_track=w_track, w_goal=w_goal,
-            w_manip=w_manip,
+            w_manip=w_manip, w_action=w_action,
             d_safe=d_safe, d_critical=d_critical, alpha_relax=alpha_relax,
             collision_detector=self.collision_detector)
         self.success_bonus = success_bonus
@@ -380,7 +381,8 @@ class ManipulatorEnv:
         reward, reward_info = self.reward_fn.compute(
             q=self.q, dq=self.dq, x_ee=x_ee,
             x_d=self.x_d, dx_d=self.dx_d,
-            d_obs=d_obs, w=w, x_goal=self.x_goal
+            d_obs=d_obs, w=w, x_goal=self.x_goal,
+            action=action,
         )
         # Collision detection: use MuJoCo collision detector from reward_info;
         # fall back to SDF distance when MuJoCo is unavailable

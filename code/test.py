@@ -309,6 +309,7 @@ def run_rl(env, args, agent):
                            ("w_obs", "w_obs"),
                            ("w_obs_safe", "w_obs_safe"),
                            ("w_collision", "w_collision"),
+                           ("w_action", "w_action"),
                            ("d_safe", "d_safe"),
                            ("d_critical", "d_critical")]:
             if key in cli and cli[key] is not None:

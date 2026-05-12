@@ -100,6 +100,8 @@ def parse_args():
                    help="Sparse success bonus upon reaching goal")
     p.add_argument("--w_goal", type=float, default=1.0,
                    help="Dense goal-progress reward weight")
+    p.add_argument("--w_action", type=float, default=0.0,
+                   help="Action smoothness penalty weight (penalizes ||Δẋ_RL||² + ||z||²)")
     p.add_argument("--lr", type=float, default=3e-4,
                    help="Learning rate for actor/critic/alpha optimizers")
     p.add_argument("--alpha", type=float, default=0.1,
@@ -233,7 +235,7 @@ def main():
         path_deadzone=args.path_deadzone,
         w_obs=args.w_obs, w_obs_safe=args.w_obs_safe,
         w_collision=args.w_collision, w_track=args.w_track,
-        w_goal=args.w_goal, w_manip=args.w_manip,
+        w_goal=args.w_goal, w_manip=args.w_manip, w_action=args.w_action,
         d_safe=args.d_safe, success_bonus=args.success_bonus,
         sigma_d_safe=args.sigma_d_safe, sigma_d_critical=args.sigma_d_critical,
         action_smooth=args.action_smooth,
@@ -474,7 +476,7 @@ def main():
 
     print(f"Run directory: {run_dir}")
     print(f"{'Episode':^8}  {'Steps':^8}  {'Reward':^10}  "
-          f"{'r_trk':^9}  {'r_obs':^9}  {'r_manip':^8}  {'r_en':^7}  {'r_coll':^8}  "
+          f"{'r_trk':^9}  {'r_obs':^9}  {'r_manip':^8}  {'r_en':^7}  {'r_coll':^8}  {'r_act':^8}  "
           f"{'L_actor':^10}  {'L_dyn':^9}  {'d_obs':^8}  {'suc':^5}")
     print("-" * 140)
 
@@ -494,6 +496,7 @@ def main():
             ep_r_manip  = []
             ep_r_energy = []
             ep_r_coll   = []
+            ep_r_action = []
             ep_steps    = 0
             done        = False
             while not done:
@@ -530,6 +533,7 @@ def main():
                 ep_r_manip.append(info.get("r_manip", 0.0))
                 ep_r_energy.append(info.get("r_energy", 0.0))
                 ep_r_coll.append(info.get("r_collision", 0.0))
+                ep_r_action.append(info.get("r_action", 0.0))
                 total_steps += 1
                 ep_steps    += 1
 
@@ -556,7 +560,7 @@ def main():
                 print(f"{episode:>8d}  {total_steps:>8d}  {ep_reward:>10.3f}  "
                       f"{_avg(ep_r_track):>9.4f}  {_avg(ep_r_obs):>9.4f}  "
                       f"{_avg(ep_r_manip):>8.4f}  {_avg(ep_r_energy):>7.4f}  "
-                      f"{_avg(ep_r_coll):>8.4f}  "
+                      f"{_avg(ep_r_coll):>8.4f}  {_avg(ep_r_action):>8.4f}  "
                       f"{avg_l_actor:>10.4f}  {avg_l_dyn:>9.4f}  {min_d_obs:>8.3f}")
 
             ckpt_meta = {
@@ -610,6 +614,7 @@ def main():
         env_r_manip = [[] for _ in range(n_envs)]
         env_r_energy = [[] for _ in range(n_envs)]
         env_r_collision = [[] for _ in range(n_envs)]
+        env_r_action = [[] for _ in range(n_envs)]
         env_collision_penalty = [[] for _ in range(n_envs)]
         env_ever_collided = [False for _ in range(n_envs)]
         env_steps   = np.zeros(n_envs, dtype=int)
@@ -660,6 +665,7 @@ def main():
                         env_r_manip[i].append(info_i.get("r_manip", 0.0))
                         env_r_energy[i].append(info_i.get("r_energy", 0.0))
                         env_r_collision[i].append(info_i.get("r_collision", 0.0))
+                        env_r_action[i].append(info_i.get("r_action", 0.0))
                         env_collision_penalty[i].append(info_i.get("collision_penalty", 0.0))
                         env_ever_collided[i] = env_ever_collided[i] or info_i.get("collision", False)
                         env_steps[i] += 1
@@ -682,6 +688,7 @@ def main():
                             avg_r_manip = (sum(env_r_manip[i]) / len(env_r_manip[i])) if env_r_manip[i] else None
                             avg_r_energy = (sum(env_r_energy[i]) / len(env_r_energy[i])) if env_r_energy[i] else None
                             avg_r_collision = (sum(env_r_collision[i]) / len(env_r_collision[i])) if env_r_collision[i] else None
+                            avg_r_action = (sum(env_r_action[i]) / len(env_r_action[i])) if env_r_action[i] else None
                             avg_collision_penalty = (sum(env_collision_penalty[i]) / len(env_collision_penalty[i])) if env_collision_penalty[i] else None
 
                             # Per-scene performance tracking
@@ -711,7 +718,7 @@ def main():
                                 print(f"{episode:>8d}  {total_steps:>8d}  {env_rewards[i]:>10.3f}  "
                                       f"{avg_r_track or 0:>9.4f}  {avg_r_obs or 0:>9.4f}  "
                                       f"{avg_r_manip or 0:>8.4f}  {avg_r_energy or 0:>7.4f}  "
-                                      f"{avg_r_collision or 0:>8.4f}  "
+                                      f"{avg_r_collision or 0:>8.4f}  {avg_r_action or 0:>8.4f}  "
                                       f"{avg_l_actor:>10.4f}  {avg_l_dyn:>9.4f}  {min_d_obs:>8.3f}  "
                                       f"s={scene_id}  suc={_log_success_count}")
                                 _log_success_count = 0
@@ -730,6 +737,7 @@ def main():
                                 avg_r_manip=avg_r_manip,
                                 avg_r_energy=avg_r_energy,
                                 avg_r_collision=avg_r_collision,
+                                avg_r_action=avg_r_action,
                                 avg_collision_penalty=avg_collision_penalty,
                                 success=int(ep_success),
                                 ever_collided=int(env_ever_collided[i]),
@@ -786,6 +794,7 @@ def main():
                             env_r_manip[i] = []
                             env_r_energy[i] = []
                             env_r_collision[i] = []
+                            env_r_action[i] = []
                             env_collision_penalty[i] = []
                             env_ever_collided[i] = False
                             env_steps[i]   = 0
@@ -840,6 +849,7 @@ def main():
                     env_r_manip[i].append(result["info"][i].get("r_manip", 0.0))
                     env_r_energy[i].append(result["info"][i].get("r_energy", 0.0))
                     env_r_collision[i].append(result["info"][i].get("r_collision", 0.0))
+                    env_r_action[i].append(result["info"][i].get("r_action", 0.0))
                     env_collision_penalty[i].append(result["info"][i].get("collision_penalty", 0.0))
                     env_ever_collided[i] = env_ever_collided[i] or result["info"][i].get("collision", False)
                     env_steps[i] += 1
@@ -862,6 +872,7 @@ def main():
                         avg_r_manip = (sum(env_r_manip[i]) / len(env_r_manip[i])) if env_r_manip[i] else None
                         avg_r_energy = (sum(env_r_energy[i]) / len(env_r_energy[i])) if env_r_energy[i] else None
                         avg_r_collision = (sum(env_r_collision[i]) / len(env_r_collision[i])) if env_r_collision[i] else None
+                        avg_r_action = (sum(env_r_action[i]) / len(env_r_action[i])) if env_r_action[i] else None
                         avg_collision_penalty = (sum(env_collision_penalty[i]) / len(env_collision_penalty[i])) if env_collision_penalty[i] else None
 
                         # Per-scene performance tracking
@@ -891,7 +902,7 @@ def main():
                             print(f"{episode:>8d}  {total_steps:>8d}  {env_rewards[i]:>10.3f}  "
                                   f"{avg_r_track or 0:>9.4f}  {avg_r_obs or 0:>9.4f}  "
                                   f"{avg_r_manip or 0:>8.4f}  {avg_r_energy or 0:>7.4f}  "
-                                  f"{avg_r_collision or 0:>8.4f}  "
+                                  f"{avg_r_collision or 0:>8.4f}  {avg_r_action or 0:>8.4f}  "
                                   f"{avg_l_actor:>10.4f}  {avg_l_dyn:>9.4f}  {min_d_obs:>8.3f}  "
                                   f"s={scene_id}  suc={_log_success_count}")
                             _log_success_count = 0
@@ -910,6 +921,7 @@ def main():
                             avg_r_manip=avg_r_manip,
                             avg_r_energy=avg_r_energy,
                             avg_r_collision=avg_r_collision,
+                            avg_r_action=avg_r_action,
                             avg_collision_penalty=avg_collision_penalty,
                             success=int(ep_success),
                             ever_collided=int(env_ever_collided[i]),
