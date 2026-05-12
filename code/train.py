@@ -92,6 +92,8 @@ def parse_args():
                    help="Action low-pass filter coefficient (0=off, 0.7=moderate)")
     p.add_argument("--obs_k", type=int, default=0,
                    help="Number of top-K nearest obstacles in observation (0=legacy 28-dim)")
+    p.add_argument("--obs_scene_embed", type=int, default=0,
+                   help="Number of obstacles to embed full (pos+radius) in observation, 0=disable")
     p.add_argument("--obs_waypoint_steps", type=str, default=None,
                    help="Comma-separated future step offsets for waypoints, e.g. '10,20'")
     p.add_argument("--success_bonus", type=float, default=50.0,
@@ -236,6 +238,7 @@ def main():
         sigma_d_safe=args.sigma_d_safe, sigma_d_critical=args.sigma_d_critical,
         action_smooth=args.action_smooth,
         obs_k=args.obs_k,
+        obs_scene_embed=args.obs_scene_embed,
         obs_waypoint_steps=obs_waypoint_steps,
         episode_len=args.episode_len,
     )

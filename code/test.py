@@ -317,9 +317,10 @@ def run_rl(env, args, agent):
         env._last_sigma = 0.0
         env._filtered_dx_rl = np.zeros(3, dtype=np.float32)
         env._filtered_z = np.zeros(4, dtype=np.float32)
-        # Sync observation format params (obs_k, waypoints)
+        # Sync observation format params (obs_k, waypoints, scene_embed)
         if "obs_k" in cli and cli["obs_k"] is not None and cli["obs_k"] > 0:
             env.obs_k = cli["obs_k"]
+            env.obs_scene_embed = cli.get("obs_scene_embed", 0) or 0
             env.obs_waypoint_steps = cli.get("obs_waypoint_steps", None)
             if env.obs_waypoint_steps is not None:
                 env.obs_waypoint_steps = [int(s.strip()) for s in env.obs_waypoint_steps.split(",")]
@@ -327,9 +328,11 @@ def run_rl(env, args, agent):
                 env.obs_waypoint_steps = []
             # Recompute observation dimension
             env.obs_dim = (env.n * 2 + 3 + 3 + 3
+                           + env.obs_scene_embed * 4
                            + env.obs_k * 4 + env.obs_k
                            + len(env.obs_waypoint_steps) * 3)
             print(f"[SAC] Using extended observation: obs_k={env.obs_k}, "
+                  f"scene_embed={env.obs_scene_embed}, "
                   f"waypoints={env.obs_waypoint_steps}, dim={env.obs_dim}")
         print(f"[SAC] Synced env params from training config")
     else:

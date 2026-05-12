@@ -89,7 +89,8 @@ class ManipulatorEnv:
                  sigma_smooth: float = 0.9,
                  action_smooth: float = 0.0,
                  obs_k: int = 0,
-                 obs_waypoint_steps: list | None = None):
+                 obs_waypoint_steps: list | None = None,
+                 obs_scene_embed: int = 0):
         """
         Parameters
         ----------
@@ -114,6 +115,7 @@ class ManipulatorEnv:
         # Observation dimensions
         self.obs_k = obs_k
         self.obs_waypoint_steps = obs_waypoint_steps or []
+        self.obs_scene_embed = obs_scene_embed
         self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1 + 3  # placeholder, updated after self.n
         self.act_dim = n_joints  # 7D: 3 (task relaxation) + 4 (nullspace, = n-3)
 
@@ -123,6 +125,7 @@ class ManipulatorEnv:
         self.n = self.kin.n
         if self.obs_k > 0:
             self.obs_dim = (self.n * 2 + 3 + 3 + 3
+                            + self.obs_scene_embed * 4
                             + self.obs_k * 4 + self.obs_k
                             + len(self.obs_waypoint_steps) * 3)
         else:
@@ -840,12 +843,23 @@ class ManipulatorEnv:
                     wp = (1.0 - future_param) * self.x_start + future_param * self.x_goal
                 waypoints.append(wp)
 
+            # Scene embedding: all obstacle positions (relative to EE) and radii
+            # Provides full global layout unlike top-K which only has nearest
+            scene_embed = np.zeros(self.obs_scene_embed * 4, dtype=np.float32)
+            n_embed = min(self.obs_scene_embed, self.sdf.n_obs)
+            for i in range(n_embed):
+                rel_pos = self.sdf.centers[i] - x_ee
+                scene_embed[i*4:i*4+3] = rel_pos
+                scene_embed[i*4+3] = self.sdf.radii[i]
+
             # State: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), w(1),
             #         wp_1(3), ..., wp_N(3),
+            #         scene_embed(N_obs * 4),
             #         obs1_dist(1), obs1_dir(3), ..., obsK_dir(3), mask(K)]
             obs = np.concatenate([
                 self.q, self.dq, x_ee, self.x_d, self.dx_d[:3],
                 *waypoints,
+                scene_embed,
                 obs_dists,
                 obs_dirs.reshape(-1),
                 obs_mask
