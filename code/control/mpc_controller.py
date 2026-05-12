@@ -177,9 +177,11 @@ class MPCController:
                 continue
             d_signed = dist - self.obs_radii[i]  # signed distance to surface
 
-            if 0 < d_signed < self.d_safe:
-                # Khatib repulsive gradient
-                magnitude = self.rep_gain * (1.0 / d_signed - 1.0 / self.d_safe) / (d_signed * d_signed)
+            if d_signed < self.d_safe:
+                # Khatib repulsive gradient — also handle penetration (d_signed <= 0)
+                # by clamping effective distance to avoid singularity
+                d_eff = max(d_signed, 0.005)
+                magnitude = self.rep_gain * (1.0 / d_eff - 1.0 / self.d_safe) / (d_eff * d_eff)
                 F += magnitude * diff / dist
 
         # Clip force magnitude to avoid instability
@@ -187,6 +189,39 @@ class MPCController:
         if F_norm > 2.0:
             F = F / F_norm * 2.0
         return F
+
+    def _capsule_sphere_distance(self, p1: np.ndarray, p2: np.ndarray,
+                                  cap_r: float, sphere_c: np.ndarray,
+                                  sphere_r: float) -> float:
+        """Signed distance from capsule to sphere (negative = overlap)."""
+        # Closest point on capsule segment to sphere center
+        seg = p2 - p1
+        seg_len_sq = np.dot(seg, seg)
+        if seg_len_sq < 1e-10:
+            closest = p1
+        else:
+            t = np.dot(sphere_c - p1, seg) / seg_len_sq
+            t = max(0.0, min(1.0, t))
+            closest = p1 + t * seg
+        dist = np.linalg.norm(sphere_c - closest)
+        return dist - (cap_r + sphere_r)
+
+    def _arm_min_distance(self, q: np.ndarray, kinematics) -> float:
+        """
+        Minimum signed distance from any arm capsule to any obstacle.
+        Unlike _min_obstacle_distance which only checks EE, this checks the
+        full arm using capsule representation.
+        """
+        if self.n_obs == 0:
+            return float('inf')
+        capsules = kinematics.get_link_capsules(q)
+        min_d = float('inf')
+        for p1, p2, cap_r in capsules:
+            for i in range(self.n_obs):
+                d = self._capsule_sphere_distance(p1, p2, cap_r,
+                                                   self.obs_centers[i], self.obs_radii[i])
+                min_d = min(min_d, d)
+        return float(min_d)
 
     def _multi_point_repulsive_force(self, q: np.ndarray,
                                      kinematics) -> np.ndarray:
@@ -368,6 +403,75 @@ class MPCController:
             print(f"[MPC] Solver error: {e}")
             return np.zeros(self.n_controls)
 
+    def _min_obstacle_distance(self, point: np.ndarray) -> float:
+        """Minimum signed distance from point to any obstacle surface."""
+        if self.n_obs == 0:
+            return float('inf')
+        dists = np.linalg.norm(self.obs_centers - point, axis=1) - self.obs_radii
+        return float(np.min(dists))
+
+    def _task_repulsive_velocity(self, point: np.ndarray) -> np.ndarray:
+        """
+        Compute repulsive task-space velocity for end-effector obstacle avoidance.
+
+        Unlike _null_space_repulsion which only affects arm configuration,
+        this directly modifies the EE velocity command, actively pushing the
+        end-effector away from nearby obstacles.
+
+        Uses a smooth potential that activates at d_safe and peaks at d_critical:
+            v_rep = sum_i w_i * (d_safe - d_i) / d_safe * n_i
+        where d_i is signed distance to obstacle surface, n_i is away direction.
+
+        Parameters
+        ----------
+        point : [3] end-effector position
+
+        Returns
+        -------
+        dx_avoid : [3] repulsive task-space velocity
+        """
+        if self.n_obs == 0:
+            return np.zeros(3)
+
+        dx_avoid = np.zeros(3)
+        for i in range(self.n_obs):
+            diff = point - self.obs_centers[i]
+            dist = np.linalg.norm(diff)
+            if dist < 1e-6:
+                continue
+            d_signed = dist - self.obs_radii[i]
+
+            # Activate at 2× d_safe for earlier response
+            activation_dist = self.d_safe * 2.0
+            if d_signed < activation_dist:
+                # Strength: 1.0 when penetrating, 0.0 at activation_dist
+                strength = max(0.0, 1.0 - d_signed / activation_dist)
+                direction = diff / dist  # points away from obstacle
+                # Weber's Law style: stronger when closer (quadratic scaling)
+                dx_avoid += (strength ** 2) * direction * 0.2  # 20 cm/s peak per obstacle
+
+        # Clip total repulsive velocity to a meaningful max
+        avoid_norm = np.linalg.norm(dx_avoid)
+        max_rep = 0.5  # 50 cm/s max total repulsion
+        if avoid_norm > max_rep:
+            dx_avoid = dx_avoid / avoid_norm * max_rep
+        return dx_avoid
+
+    def _adaptive_kp(self, d_obs: float, Kp_base: float = 4.0, Kp_min: float = 0.5) -> float:
+        """
+        Adaptive proportional gain modulated by obstacle distance.
+
+        Full tracking gain (Kp_base) when far from obstacles.
+        Reduced gain near obstacles to prevent aggressive tracking into them.
+        Smooth quadratic interpolation:
+            Kp = Kp_min + (Kp_base - Kp_min) * (d_obs / d_mod)^2
+        """
+        d_mod = self.d_safe * 2.0  # modulation starts at 2× d_safe
+        if d_obs >= d_mod:
+            return Kp_base
+        t = max(0.0, d_obs / d_mod)
+        return Kp_min + (Kp_base - Kp_min) * (t * t)
+
     def compute_control_task_space(self,
                                    q: np.ndarray,
                                    dq: np.ndarray,
@@ -377,10 +481,15 @@ class MPCController:
                                    obs_centers: np.ndarray | None = None,
                                    obs_radii: np.ndarray | None = None) -> np.ndarray:
         """
-        Compute MPC control directly in task space with obstacle avoidance.
+        Improved task-space MPC with adaptive tracking and obstacle-aware control.
 
-        Extends the task-space QP with a Khatib-style repulsive potential field
-        that pushes the arm away from obstacles while tracking the trajectory.
+        Key improvements over v1:
+          1. Adaptive Kp — reduces tracking gain near obstacles so the EE
+             naturally "slows down" and avoids aggressive tracking into clutter.
+          2. Task-space repulsive velocity — directly modifies the EE velocity
+             command to push away from obstacles (not just nullspace self-motion).
+          3. Proximity-scaled nullspace avoidance — strengthens multi-link
+             avoidance as obstacles get closer.
 
         Parameters
         ----------
@@ -400,49 +509,54 @@ class MPCController:
         if obs_centers is not None:
             self.set_obstacles(obs_centers, obs_radii)
 
-        # Get current end-effector position
+        # Get current end-effector position and min obstacle distance
+        # NOTE: use full-arm SDF distance (not just EE) so the MPC is aware
+        # of arm-link proximity to obstacles — critical for scene 0 where
+        # links start close to obstacles.
         x_ee, _ = kinematics.forward_kinematics(q)
+        d_obs = self._arm_min_distance(q, kinematics)
 
-        # Compute tracking error
+        # --- 1. Adaptive proportional gain ---
+        # Reduce Kp aggressively near obstacles so tracking doesn't fight repulsion
+        Kp = self._adaptive_kp(d_obs, Kp_base=4.0, Kp_min=0.15)
+
+        # --- 2. Task velocity with tracking + obstacle repulsion ---
         e_pos = x_d - x_ee
+        dx_cmd = dx_d[:3] + Kp * e_pos  # tracking
 
-        # Desired velocity with feedback (position only — orientation is free)
-        Kp = 4.0
-        dx_cmd = dx_d[:3] + Kp * e_pos  # [3] position only
+        # Add repulsive velocity directly in task space so the EE actively
+        # avoids obstacles (not just nullspace self-motion).
+        # Activation at 2× d_safe so repulsion kicks in before Kp is fully reduced.
+        if self.n_obs > 0 and d_obs < self.d_safe * 2.0:
+            dx_cmd += self._task_repulsive_velocity(x_ee)
 
-        # Position Jacobian [3×7] — orientation is not tracked, giving
-        # 4-DOF null space (7-3) for obstacle avoidance self-motion.
+        # Position Jacobian [3×7]
         J_pos = kinematics.jacobian(q)[:3, :]
         Jpinv = kinematics.pseudo_inverse(J_pos)
 
-        # Primary task: position tracking
+        # --- 3. Primary task: position tracking ---
         dq_track = Jpinv @ dx_cmd
 
-        # Secondary task: obstacle avoidance in null space
+        # --- 4. Secondary task: obstacle avoidance in null space ---
         dq_avoid = np.zeros(self.n_controls)
         if self.n_obs > 0:
             dq_avoid = self._null_space_repulsion(q, kinematics)
+            # Scale nullspace avoidance by proximity for stronger effect near obstacles
+            if d_obs < self.d_safe * 2.0:
+                # Scale from 1x at 2*d_safe to 5x at d_obs=0 (penetration)
+                scale = 1.0 + 4.0 * max(0.0, 1.0 - d_obs / (self.d_safe * 2.0))
+                dq_avoid *= scale
 
         # Combined command: tracking + null-space avoidance
         dq_desired = dq_track + dq_avoid
 
-        # Formulate QP: minimize deviation from desired velocity + control effort
-        # min ||dq - dq_desired||² + λ||dq||²
-        # s.t. dq_min ≤ dq ≤ dq_max
-
+        # --- 5. QP: smooth command with velocity limits ---
         dq_var = cp.Variable(self.n_controls)
-
-        # Cost: track desired velocity + regularization
         cost = cp.sum_squares(dq_var - dq_desired) + 0.01 * cp.sum_squares(dq_var)
 
-        # Constraints
         dq_max = np.array([2.175, 2.175, 2.175, 2.175, 2.610, 2.610, 2.610])
-        constraints = [
-            dq_var >= -dq_max,
-            dq_var <= dq_max
-        ]
+        constraints = [dq_var >= -dq_max, dq_var <= dq_max]
 
-        # Solve
         problem = cp.Problem(cp.Minimize(cost), constraints)
         try:
             problem.solve(solver=cp.OSQP, warm_start=True, verbose=False)
@@ -452,6 +566,152 @@ class MPCController:
                 return dq_desired
         except Exception as e:
             print(f"[MPC] Task-space solver error: {e}")
+            return dq_desired
+    def _predict_trajectory(self, x_start: np.ndarray,
+                             dx_start: np.ndarray,
+                             steps: int) -> tuple:
+        """
+        Predict EE trajectory over N steps assuming current velocity continues.
+
+        Returns predicted positions and the min obstacle distance along the path.
+        """
+        if self.n_obs == 0:
+            return np.tile(x_start, (steps, 1)), float('inf')
+
+        path_min_d = float('inf')
+        predicted_positions = np.zeros((steps, 3))
+        x_k = x_start.copy()
+
+        for k in range(steps):
+            x_k = x_k + dx_start * self.dt
+            predicted_positions[k] = x_k
+            # Min distance along predicted path
+            for i in range(self.n_obs):
+                d = np.linalg.norm(x_k - self.obs_centers[i]) - self.obs_radii[i]
+                path_min_d = min(path_min_d, d)
+
+        return predicted_positions, path_min_d
+
+    def _lookahead_repulsive_force(self, x_ee: np.ndarray,
+                                    dx_nom: np.ndarray,
+                                    kinematics,
+                                    q: np.ndarray) -> np.ndarray:
+        """
+        Lookahead repulsive force that anticipates future obstacle proximity.
+
+        Simulates the EE trajectory `horizon` steps ahead and computes a
+        preemptive repulsive velocity that activates based on future (not
+        current) obstacle proximity.  This gives the controller predictive
+        capability similar to a true receding-horizon MPC.
+
+        Returns
+        -------
+        dx_lookahead : [3] task-space velocity correction
+        """
+        if self.n_obs == 0:
+            return np.zeros(3)
+
+        dx_lookahead = np.zeros(3)
+        x_k = x_ee.copy()
+        dx_k = dx_nom.copy()
+        lookahead_steps = min(self.horizon, 8)
+
+        for k in range(1, lookahead_steps + 1):
+            x_k = x_k + dx_k * self.dt
+            # Closest obstacle at this predicted position
+            for i in range(self.n_obs):
+                diff = x_k - self.obs_centers[i]
+                dist = np.linalg.norm(diff)
+                if dist < 1e-6:
+                    continue
+                d_signed = dist - self.obs_radii[i]
+                # Lookahead activation: respond to obstacles ahead
+                if d_signed < self.d_safe * 2.0:
+                    strength = max(0.0, 1.0 - d_signed / (self.d_safe * 2.0))
+                    direction = diff / dist  # away from obstacle
+                    # Temporal discount: earlier obstacles matter more
+                    weight = 1.0 / k
+                    dx_lookahead += strength * weight * direction * 0.3
+
+        return dx_lookahead
+
+    def compute_control_task_space_horizon(self,
+                                            q: np.ndarray,
+                                            dq: np.ndarray,
+                                            x_d: np.ndarray,
+                                            dx_d: np.ndarray,
+                                            kinematics,
+                                            obs_centers: np.ndarray | None = None,
+                                            obs_radii: np.ndarray | None = None) -> np.ndarray:
+        """
+        Task-space MPC with receding-horizon obstacle lookahead.
+
+        Combines:
+          1. Full-arm d_obs awareness (adaptive Kp, nullspace scaling)
+          2. Immediate repulsive velocity (task-space push from nearby obstacles)
+          3. Horizon-based lookahead (preemptive push from predicted proximity)
+          4. Nullspace self-motion avoidance
+
+        The lookahead simulates the nominal trajectory `horizon` steps forward
+        and adds a preemptive repulsive velocity based on future obstacle
+        proximity — giving predictive capability without full trajectory
+        optimization.
+        """
+        # Update obstacles if provided
+        if obs_centers is not None:
+            self.set_obstacles(obs_centers, obs_radii)
+
+        # Current state and full-arm obstacle distance
+        x_ee, _ = kinematics.forward_kinematics(q)
+        d_obs = self._arm_min_distance(q, kinematics)
+
+        # --- 1. Adaptive proportional gain ---
+        Kp = self._adaptive_kp(d_obs, Kp_base=4.0, Kp_min=0.15)
+
+        # --- 2. Task velocity: tracking + immediate repulsion + lookahead ---
+        e_pos = x_d - x_ee
+        dx_cmd = dx_d[:3] + Kp * e_pos
+
+        # Immediate repulsive velocity (current proximity)
+        if self.n_obs > 0 and d_obs < self.d_safe * 2.0:
+            dx_cmd += self._task_repulsive_velocity(x_ee)
+
+        # Horizon lookahead (predicted proximity)
+        if self.n_obs > 0 and d_obs < self.d_safe * 3.0:
+            dx_cmd += self._lookahead_repulsive_force(x_ee, dx_cmd, kinematics, q)
+
+        # --- 3. Position Jacobian and primary tracking ---
+        J_pos = kinematics.jacobian(q)[:3, :]
+        Jpinv = kinematics.pseudo_inverse(J_pos)
+        dq_track = Jpinv @ dx_cmd
+
+        # --- 4. Nullspace obstacle avoidance ---
+        dq_avoid = np.zeros(self.n_controls)
+        if self.n_obs > 0:
+            dq_avoid = self._null_space_repulsion(q, kinematics)
+            if d_obs < self.d_safe * 2.0:
+                scale = 1.0 + 4.0 * max(0.0, 1.0 - d_obs / (self.d_safe * 2.0))
+                dq_avoid *= scale
+
+        # Combined command
+        dq_desired = dq_track + dq_avoid
+
+        # --- 5. QP: smooth command within velocity limits ---
+        dq_var = cp.Variable(self.n_controls)
+        cost = cp.sum_squares(dq_var - dq_desired) + 0.01 * cp.sum_squares(dq_var)
+
+        dq_max = np.array([2.175, 2.175, 2.175, 2.175, 2.610, 2.610, 2.610])
+        constraints = [dq_var >= -dq_max, dq_var <= dq_max]
+
+        problem = cp.Problem(cp.Minimize(cost), constraints)
+        try:
+            problem.solve(solver=cp.OSQP, warm_start=True, verbose=False)
+            if problem.status in [cp.OPTIMAL, cp.OPTIMAL_INACCURATE]:
+                return dq_var.value
+            else:
+                return dq_desired
+        except Exception as e:
+            print(f"[MPC] Horizon solver error: {e}")
             return dq_desired
 
 
