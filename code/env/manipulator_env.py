@@ -254,7 +254,7 @@ class ManipulatorEnv:
         obs, reward, done, info
         """
         if self.controller == "mpc" and self.mpc is not None:
-            # MPC mode: task-space tracking with adaptive obstacle avoidance
+            # MPC mode: directly optimize task-space tracking with obstacle avoidance
             dq_cmd = self.mpc.compute_control_task_space(
                 self.q, self.dq, self.x_d, self.dx_d, self.kin,
                 obs_centers=self.sdf.centers if self.sdf.n_obs > 0 else None,
