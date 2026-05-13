@@ -672,6 +672,12 @@ def main():
                        help='Minimum average manipulability')
     parser.add_argument('--output', type=str, default='trajectories.json',
                        help='Output JSON file path')
+    parser.add_argument('--obs_radius_min', type=float, default=0.05,
+                       help='Minimum obstacle radius (m)')
+    parser.add_argument('--obs_radius_max', type=float, default=0.15,
+                       help='Maximum obstacle radius (m)')
+    parser.add_argument('--ahead_mode', action='store_true',
+                       help='Generate Y-parallel trajectories in front of robot')
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed')
 
@@ -689,6 +695,7 @@ def main():
     generator = TrajectoryGenerator(
         urdf_path=str(urdf_path),
         manipulability_threshold=args.manip_threshold,
+        obstacle_radius_range=(args.obs_radius_min, args.obs_radius_max),
     )
 
     # Set up MuJoCo collision detector if xml path provided
@@ -711,6 +718,7 @@ def main():
         n_obstacles=args.num_obstacles,
         output_path=args.output,
         seed=args.seed,
+        ahead_mode=args.ahead_mode,
     )
 
 if __name__ == "__main__":
