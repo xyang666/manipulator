@@ -48,19 +48,20 @@
 ## 验证逻辑
 
 在 `code/utils/validation.py` 中：
-- **success** = `final_distance < 0.05 and min_obs_dist > 0.0`（到达目标且从未穿透胶囊体）
-- **collision** = `min_obs_dist < 0.0`（胶囊体穿透，保守判定）
+- **success** = `final_distance < 0.05 and not ep_ever_collided_mj`（到达目标且无MuJoCo碰撞）
+- **collision** = `ep_ever_collided_mj`（MuJoCo接触数量 > 0）
 
 在 `code/env/manipulator_env.py` 中：
-- **训练时 collision** = MuJoCo 接触数量 > 0（line 348-349）
+- **collision** = MuJoCo 接触数量 > 0（line 384-385）
 - **success** = `path_complete and not self._ever_collided`（路径走完且从未MuJoCo碰撞）
+
+训练和验证使用**统一的 success/collision 判据**（均为 MuJoCo 真实碰撞检测）。
 
 ## 关键含义
 
-1. **验证集碰撞率高于训练集真实碰撞率**：验证用的 d_obs < 0 是保守判定
-2. **d_obs < 0 不意味着任务失败**：胶囊体穿透 ≠ MuJoCo 碰撞，模型可以容忍少量胶囊穿透
-3. **sigma 门控在 d_obs < d_safe=0.06 时开始激活**：在安全区外就开始给 RL 策略更多控制权
-4. **d_obs 负责"预警"，MuJoCo 负责"判罚"**：这种分离是"弃车保帅"机制的核心
+1. **d_obs < 0 不意味着任务失败**：胶囊体穿透 ≠ MuJoCo 碰撞，模型可以容忍少量胶囊穿透
+2. **sigma 门控在 d_obs < d_safe=0.06 时开始激活**：在安全区外就开始给 RL 策略更多控制权
+3. **d_obs 负责"预警"，MuJoCo 负责"判罚"**：这种分离是"弃车保帅"机制的核心
 
 # 论文写作规范
 
