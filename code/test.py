@@ -322,8 +322,13 @@ def run_rl(env, args, agent):
                 env.obs_waypoint_steps = [int(s.strip()) for s in env.obs_waypoint_steps.split(",")]
             else:
                 env.obs_waypoint_steps = []
-            # Recompute observation dimension
-            # _capsule_dists_dim is already set from env init (URDF-based)
+            # Recompute capsule dimension (env was initialized with obs_scene_embed=0)
+            if env.obs_scene_embed > 0 and env._capsule_dists_dim == 0:
+                try:
+                    zero_q = np.zeros(env.n)
+                    env._capsule_dists_dim = len(env.kin.get_link_capsules(zero_q))
+                except Exception:
+                    env._capsule_dists_dim = 12  # fallback: 12 capsules for Panda
             env.obs_dim = (env.n * 2 + 3 + 3 + 3
                            + env._capsule_dists_dim
                            + env.obs_scene_embed * 4
