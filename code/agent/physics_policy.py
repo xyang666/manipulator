@@ -133,7 +133,8 @@ class PhysicsRegularizer:
     sigma gate, and nominal task velocity — all in pure torch with full
     gradient flow back to the actor.
 
-    τ = M·ddq + C·dq + g  (simplified dynamics, matches dynamics.py)
+    Uses real Pinocchio dynamics: τ = M(q)·ddq + h(q,dq)
+    h = C(q,dq)·dq + g(q)
     L_dyn = || relu(|τ| - τ_max) ||²
     """
 
@@ -143,15 +144,9 @@ class PhysicsRegularizer:
                  device: str = "cpu"):
         self.dt = dt
         self.lambda_dyn = lambda_dyn
+        self.dynamics = dynamics
         self.n = dynamics.n
         self.device = torch.device(device)
-
-        # Simplified dynamics params (matches dynamics.py _compute_simplified)
-        inertias = torch.tensor(
-            [1.0, 2.0, 1.5, 1.0, 0.8, 0.6, 0.4],
-            dtype=torch.float32
-        )[:self.n]
-        self._M_diag = inertias.to(self.device)
 
         # Per-joint torque limits (Franka Panda defaults)
         # Joints 1-4: 87 Nm, Joints 5-7: 12 Nm
@@ -163,32 +158,33 @@ class PhysicsRegularizer:
             tau_tensor = torch.full((self.n,), tau_max, dtype=torch.float32)
         self._tau_max_t = tau_tensor[:self.n].to(self.device)
 
-    def _compute_simplified_torch(self, q: torch.Tensor,
-                                   dq: torch.Tensor,
-                                   ddq: torch.Tensor) -> torch.Tensor:
+    def _compute_dynamics_batch(self, q: torch.Tensor,
+                                 dq: torch.Tensor) -> tuple:
         """
-        Simplified inverse dynamics entirely in torch.
-        τ = M·ddq + C·dq  (g = 0 in simplified model)
-          M = diag([1, 2, 1.5, 1, 0.8, 0.6, 0.4]) — constant inertia
-          C = diag(0.1 * dq) — viscous friction approximation
+        Compute M(q) and h(q,dq) = C(q,dq)·dq + g(q) using Pinocchio (CPU).
 
-        All tensors preserve gradient tracking.
+        Returns (M, h) as torch tensors WITHOUT gradient tracking — the
+        real dynamics quantities are evaluated at the (detached) state, so
+        only the ddq → dq_cmd → action path carries gradients.
+
+        Falls back to simplified diagonal inertia if Pinocchio is unavailable.
         """
         B = q.shape[0]
         n = q.shape[1]
-        device = q.device
+        dev = q.device
         dtype = q.dtype
+        q_np = q.detach().cpu().numpy()
+        dq_np = dq.detach().cpu().numpy()
 
-        # Mass matrix (constant diagonal)
-        inertias = self._M_diag.to(device=device, dtype=dtype)
-        M = torch.diag(inertias).unsqueeze(0).expand(B, -1, -1)  # (B, n, n)
+        M_list, h_list = [], []
+        for i in range(B):
+            M, C, g = self.dynamics.compute(q_np[i], dq_np[i])
+            M_list.append(M)
+            h_list.append(C @ dq_np[i] + g)
 
-        # Coriolis (viscous friction)
-        C = torch.diag_embed(0.1 * dq)  # (B, n, n)
-
-        # τ = M·ddq + C·dq  (g = 0)
-        tau = M @ ddq.unsqueeze(-1) + C @ dq.unsqueeze(-1)  # (B, n, 1)
-        return tau.squeeze(-1)  # (B, n)
+        M_t = torch.from_numpy(np.stack(M_list)).to(device=dev, dtype=dtype)
+        h_t = torch.from_numpy(np.stack(h_list)).to(device=dev, dtype=dtype)
+        return M_t, h_t
 
     def compute_loss_batch(self, q_batch: torch.Tensor,
                             dq_batch: torch.Tensor,
@@ -255,12 +251,15 @@ class PhysicsRegularizer:
 
         # ---- Torque computation (differentiable) ----
 
-        # Acceleration via finite difference
+        # Acceleration via finite difference with soft clamp
         ddq = (dq_cmd - dq_batch) / self.dt
-        ddq = torch.clamp(ddq, -100.0, 100.0)
+        ddq = 100.0 * torch.tanh(ddq / 100.0)  # preserve grad direction vs hard clamp
 
-        # Simplified dynamics in pure torch
-        torques = self._compute_simplified_torch(q_batch, dq_batch, ddq)
+        # Real dynamics: τ = M(q)·ddq + C(q,dq)·dq + g(q)
+        # M and h are computed via Pinocchio at the (detached) state,
+        # so gradient flows only through ddq → dq_cmd → action.
+        M_batch, h_batch = self._compute_dynamics_batch(q_batch, dq_batch)
+        torques = (M_batch @ ddq.unsqueeze(-1)).squeeze(-1) + h_batch
 
         # ---- Torque limit violation loss ----
         violation = F.relu(torques.abs() - self._tau_max_t)

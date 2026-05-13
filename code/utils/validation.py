@@ -169,7 +169,8 @@ def evaluate_on_validation_set(agent, env, val_set: ValidationSet,
             steps += 1
 
         # Check success: reached goal with no MuJoCo collision
-        final_distance = np.linalg.norm(env.x_d - env.x_goal)
+        x_ee, _ = env.kin.forward_kinematics(env.q)
+        final_distance = np.linalg.norm(x_ee - env.x_goal)
         min_obs_dist = min(ep_min_distances) if ep_min_distances else 0.0
         success = final_distance < 0.05 and not ep_ever_collided_mj
 

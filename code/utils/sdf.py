@@ -158,6 +158,35 @@ class ObstacleSDF:
 
         return result_dists, result_dirs, result_mask
 
+    def per_capsule_distances(self, q: np.ndarray, kinematics) -> np.ndarray:
+        """
+        Per-capsule minimum signed distances to the nearest obstacle.
+
+        Returns
+        -------
+        distances : (n_capsules,) array of signed distances.
+            One scalar per capsule: min over all obstacles.
+        """
+        if self.n_obs == 0:
+            capsules = kinematics.get_link_capsules(q)
+            return np.full(len(capsules), 0.5, dtype=np.float32)
+
+        capsules = kinematics.get_link_capsules(q)
+        n_caps = len(capsules)
+        min_dists = np.full(n_caps, 0.5, dtype=np.float32)
+
+        for j, (p1, p2, cap_radius) in enumerate(capsules):
+            d_min = np.inf
+            for i, obs_center in enumerate(self.centers):
+                dist = self.capsule_to_sphere_distance(
+                    p1, p2, cap_radius, obs_center, self.radii[i]
+                )
+                if dist < d_min:
+                    d_min = dist
+            min_dists[j] = float(np.clip(d_min, -0.5, 0.5))
+
+        return min_dists
+
     def min_distance(self, x_ee: np.ndarray, q: np.ndarray | None = None,
                      kinematics=None) -> float:
         """

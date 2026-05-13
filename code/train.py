@@ -41,7 +41,7 @@ import sys
 import os
 import numpy as np
 from datetime import datetime
-from multiprocessing import Array
+from multiprocessing import Array, Lock
 
 # Allow imports from code/ root
 sys.path.insert(0, os.path.dirname(__file__))
@@ -80,7 +80,7 @@ def parse_args():
                    help="Safe-zone positive reward weight")
     p.add_argument("--w_collision", type=float, default=100.0,
                    help="Collision contact penalty weight")
-    p.add_argument("--w_track", type=float, default=3.0,
+    p.add_argument("--w_track", type=float, default=12.0,
                    help="Tracking error penalty weight")
     p.add_argument("--d_safe", type=float, default=0.06,
                    help="Safe distance threshold for obstacle reward (m)")
@@ -88,8 +88,6 @@ def parse_args():
                    help="Sigma gate activation start (defaults to d_safe)")
     p.add_argument("--sigma_d_critical", type=float, default=None,
                    help="Sigma gate fully activated (defaults to d_critical)")
-    p.add_argument("--action_smooth", type=float, default=0.0,
-                   help="Action low-pass filter coefficient (0=off, 0.7=moderate)")
     p.add_argument("--obs_k", type=int, default=0,
                    help="Number of top-K nearest obstacles in observation (0=legacy 28-dim)")
     p.add_argument("--obs_scene_embed", type=int, default=0,
@@ -100,12 +98,14 @@ def parse_args():
                    help="Sparse success bonus upon reaching goal")
     p.add_argument("--w_goal", type=float, default=1.0,
                    help="Dense goal-progress reward weight")
-    p.add_argument("--w_action", type=float, default=0.0,
+    p.add_argument("--w_action", type=float, default=0.5,
                    help="Action smoothness penalty weight (penalizes ||Δẋ_RL||² + ||z||²)")
     p.add_argument("--lr", type=float, default=3e-4,
                    help="Learning rate for actor/critic/alpha optimizers")
     p.add_argument("--alpha", type=float, default=0.1,
                    help="Initial SAC entropy coefficient")
+    p.add_argument("--target_entropy", type=float, default=None,
+                   help="SAC target entropy (default: -action_dim)")
     p.add_argument("--critic_warmup", type=int, default=5000,
                    help="Number of critic-only updates before actor starts training")
     p.add_argument("--algo", type=str, default="sac", choices=["sac", "ppo"],
@@ -208,9 +208,11 @@ def main():
         _scene_weights = None
         _scene_ema = None
         _scene_counts = None
+        _scene_lock = None
         if args.n_envs > 1 and _scene_data is not None and args.scene_id < 0:
             n_scenes = len(_scene_data[1])
             _scene_weights = Array('d', [1.0] * n_scenes)
+            _scene_lock = Lock()
             _scene_ema = np.zeros(n_scenes, dtype=np.float64)
             _scene_counts = np.zeros(n_scenes, dtype=np.int32)
     else:
@@ -238,7 +240,6 @@ def main():
         w_goal=args.w_goal, w_manip=args.w_manip, w_action=args.w_action,
         d_safe=args.d_safe, success_bonus=args.success_bonus,
         sigma_d_safe=args.sigma_d_safe, sigma_d_critical=args.sigma_d_critical,
-        action_smooth=args.action_smooth,
         obs_k=args.obs_k,
         obs_scene_embed=args.obs_scene_embed,
         obs_waypoint_steps=obs_waypoint_steps,
@@ -302,9 +303,13 @@ def main():
 
                     def _sample_idx() -> int:
                         if _scene_weights is not None:
+                            if _scene_lock is not None:
+                                _scene_lock.acquire()
                             raw = np.frombuffer(
                                 _scene_weights.get_obj(), dtype=np.float64
                             ).copy()
+                            if _scene_lock is not None:
+                                _scene_lock.release()
                             raw = np.maximum(raw, 0.0)
                             total = raw.sum()
                             if total > 0:
@@ -362,6 +367,7 @@ def main():
             action_scale=args.action_scale,
             lr=args.lr,
             alpha=args.alpha,
+            target_entropy=args.target_entropy,
             device=_device,
             critic_warmup=max(1, args.critic_warmup // args.n_envs),
             total_steps=args.steps,
@@ -429,12 +435,14 @@ def main():
                 if args.algo != "ppo":
                     print("[train] WARNING: --load_sac_actor only supported for PPO. Ignoring.")
                     meta = agent.load(ckpt_path, reset_alpha=args.reset_alpha,
-                                      reset_critic=args.reset_critic, reset_actor=args.reset_actor)
+                                      reset_critic=args.reset_critic, reset_actor=args.reset_actor,
+                                      lr=args.lr)
                 else:
                     meta = agent.load_actor_from_sac(ckpt_path)
             else:
                 meta = agent.load(ckpt_path, reset_alpha=args.reset_alpha,
-                                  reset_critic=args.reset_critic, reset_actor=args.reset_actor)
+                                  reset_critic=args.reset_critic, reset_actor=args.reset_actor,
+                                  lr=args.lr)
             total_steps = meta.get("step", 0)
             episode     = meta.get("episode", 0)
             best_reward = meta.get("best_reward", -np.inf)
@@ -891,8 +899,12 @@ def main():
                                     norm = np.ones_like(ema) * 0.5
                                 weights = np.maximum(0.01, 1.0 - norm)
                                 weights = weights / weights.sum()
+                                if _scene_lock is not None:
+                                    _scene_lock.acquire()
                                 for s in range(len(weights)):
                                     _scene_weights[s] = weights[s]
+                                if _scene_lock is not None:
+                                    _scene_lock.release()
 
                         # Track success for logging window (every episode)
                         if ep_success:

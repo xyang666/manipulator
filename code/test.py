@@ -110,8 +110,6 @@ def apply_scene(env, scene: dict) -> bool:
     env.path_param = 0.0
     env.ee_trajectory.clear()
     env._last_sigma = 0.0
-    env._filtered_dx_rl = np.zeros(3, dtype=np.float32)
-    env._filtered_z = np.zeros(4, dtype=np.float32)
 
     # Set desired velocity toward goal
     direction = goal_pos - start_pos
@@ -297,7 +295,6 @@ def run_rl(env, args, agent):
         cli = cfg.get("cli_args", {})
         for key, attr in [("sigma_d_safe", "sigma_d_safe"),
                            ("sigma_d_critical", "sigma_d_critical"),
-                           ("action_smooth", "action_smooth"),
                            ("d_safe", "d_safe"),
                            ("d_critical", "d_critical")]:
             if key in cli and cli[key] is not None:
@@ -316,8 +313,6 @@ def run_rl(env, args, agent):
                 setattr(env.reward_fn, attr, cli[key])
         # Reset sigma filter
         env._last_sigma = 0.0
-        env._filtered_dx_rl = np.zeros(3, dtype=np.float32)
-        env._filtered_z = np.zeros(4, dtype=np.float32)
         # Sync observation format params (obs_k, waypoints, scene_embed)
         if "obs_k" in cli and cli["obs_k"] is not None and cli["obs_k"] > 0:
             env.obs_k = cli["obs_k"]
@@ -328,9 +323,10 @@ def run_rl(env, args, agent):
             else:
                 env.obs_waypoint_steps = []
             # Recompute observation dimension
+            # _capsule_dists_dim is already set from env init (URDF-based)
             env.obs_dim = (env.n * 2 + 3 + 3 + 3
+                           + env._capsule_dists_dim
                            + env.obs_scene_embed * 4
-                           + env.obs_k * 4 + env.obs_k
                            + len(env.obs_waypoint_steps) * 3)
             print(f"[SAC] Using extended observation: obs_k={env.obs_k}, "
                   f"scene_embed={env.obs_scene_embed}, "

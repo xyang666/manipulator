@@ -20,14 +20,14 @@ from typing import Optional
 class RewardFunction:
 
     def __init__(self,
-                 w_track:       float = 3.0,
+                 w_track:       float = 12.0,
                  w_obs:         float = 5.0,
                  w_obs_safe:    float = 0.1,
                  w_manip:       float = 0.05,
                  w_energy:      float = 0.001,
                  w_collision:   float = 100.0,
                  w_goal:        float = 1.0,
-                 w_action:      float = 0.0,
+                 w_action:      float = 0.5,
                  d_safe:        float = 0.06,
                  d_critical:    float = 0.02,
                  alpha_relax:   float = 0.1,
@@ -87,9 +87,11 @@ class RewardFunction:
         w_eff = self._effective_track_weight(d_obs)
         r_track = -w_eff * pos_err
 
-        # Obstacle reward: positive bonus when safe, dense penalty when close
+        # Obstacle reward: 0 at d_safe boundary (continuous), ramps positive when safe,
+        # dense penalty when close (below d_safe)
         if d_obs >= self.d_safe:
-            r_obs = self.w_obs_safe * min(d_obs / self.d_safe, 2.0)  # positive for staying safe
+            # Linear ramp from 0 at d_safe to w_obs_safe at 2*d_safe
+            r_obs = self.w_obs_safe * max(0.0, (d_obs - self.d_safe) / self.d_safe)
         else:
             obs_depth = min(self.d_safe - d_obs, self.d_safe * 2.0)  # cap at 2x d_safe
             r_obs = -self.w_obs * obs_depth / self.d_safe

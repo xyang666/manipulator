@@ -79,16 +79,15 @@ class ManipulatorEnv:
                  w_obs: float = 5.0,
                  w_obs_safe: float = 0.1,
                  w_collision: float = 100.0,
-                 w_track: float = 3.0,
+                 w_track: float = 12.0,
                  w_goal: float = 1.0,
                  w_manip: float = 0.05,
-                 w_action: float = 0.0,
+                 w_action: float = 0.5,
                  d_safe: float = 0.06,
                  success_bonus: float = 50.0,
                  sigma_d_safe: Optional[float] = None,
                  sigma_d_critical: Optional[float] = None,
                  sigma_smooth: float = 0.9,
-                 action_smooth: float = 0.0,
                  obs_k: int = 0,
                  obs_waypoint_steps: list | None = None,
                  obs_scene_embed: int = 0):
@@ -124,10 +123,22 @@ class ManipulatorEnv:
                                           q_min=Q_MIN, q_max=Q_MAX)
         # Sync env DOF with actual model loaded by Pinocchio (may differ from n_joints)
         self.n = self.kin.n
-        if self.obs_k > 0:
+
+        # Per-capsule obstacle distances for observations (n_capsules scalars)
+        if urdf_path is not None and self.obs_scene_embed > 0:
+            zero_q = np.zeros(self.n)
+            try:
+                self._capsule_dists_dim = len(self.kin.get_link_capsules(zero_q))
+            except Exception:
+                self._capsule_dists_dim = 0
+        else:
+            self._capsule_dists_dim = 0
+
+        if self.obs_scene_embed > 0:
+            # Scene-embed observation: no top-K (redundant with scene_embed)
             self.obs_dim = (self.n * 2 + 3 + 3 + 3
+                            + self._capsule_dists_dim
                             + self.obs_scene_embed * 4
-                            + self.obs_k * 4 + self.obs_k
                             + len(self.obs_waypoint_steps) * 3)
         else:
             self.obs_dim = self.n * 2 + 3 + 3 + 3 + 1 + 1 + 3  # legacy 28-dim
@@ -176,11 +187,6 @@ class ManipulatorEnv:
         self.sigma_d_critical = sigma_d_critical if sigma_d_critical is not None else d_critical
         self.sigma_smooth = sigma_smooth
         self._last_sigma = 0.0
-
-        # Action low-pass filter (0 = no filtering, >0 smooths step-to-step jitter)
-        self.action_smooth = action_smooth
-        self._filtered_dx_rl = np.zeros(3, dtype=np.float32)
-        self._filtered_z = np.zeros(4, dtype=np.float32)
 
         # Controllers
         self.controller = controller
@@ -270,18 +276,6 @@ class ManipulatorEnv:
             # Decompose 7D action into task relaxation + null-space coefficients
             delta_x_rl = action[:3]   # Δẋ_RL ∈ R^3 (position-space relaxation)
             z          = action[3:]   # z ∈ R^4 (nullspace coefficients, via SVD basis)
-
-            # Action low-pass filter: smooth step-to-step jitter
-            if self.action_smooth > 0.0:
-                self._filtered_dx_rl = (self.action_smooth * self._filtered_dx_rl
-                                        + (1.0 - self.action_smooth) * delta_x_rl)
-                self._filtered_z = (self.action_smooth * self._filtered_z
-                                    + (1.0 - self.action_smooth) * z)
-                delta_x_rl = self._filtered_dx_rl.copy()
-                z = self._filtered_z.copy()
-            else:
-                self._filtered_dx_rl[:] = delta_x_rl
-                self._filtered_z[:] = z
 
             # Compute nominal task-space velocity (PID tracking)
             dx_nom = self._compute_task_velocity()  # ẋ_d + Kp(x_d - x) + Ki*∫(x_d - x)dt
@@ -404,8 +398,8 @@ class ManipulatorEnv:
         if self.collision_term:
             done = done or collision
 
-        # Sparse success bonus when reaching goal
-        if path_complete:
+        # Sparse success bonus when reaching goal (only if no collision)
+        if path_complete and not self._ever_collided:
             reward += self.success_bonus
 
         tracking_error = float(np.linalg.norm(x_ee - self.x_d))
@@ -569,8 +563,6 @@ class ManipulatorEnv:
         self._last_J = np.zeros((3, self.n), dtype=np.float32)
         self._last_sigma = np.float32(0.0)
         self._last_dx_nom = np.zeros(3, dtype=np.float32)
-        self._filtered_dx_rl = np.zeros(3, dtype=np.float32)
-        self._filtered_z = np.zeros(4, dtype=np.float32)
 
         if self.use_trajectory_generator and self.traj_gen is not None:
             # Generate new scene using TrajectoryGenerator
@@ -830,10 +822,7 @@ class ManipulatorEnv:
         x_ee, _ = self.kin.forward_kinematics(self.q)
         w = self._manipulability()
 
-        if self.obs_k > 0:
-            # Top-K obstacle distances, directions, and validity mask
-            obs_dists, obs_dirs, obs_mask = self.sdf.top_k(x_ee, self.obs_k)
-
+        if self.obs_scene_embed > 0:
             # Future waypoints along the planned path
             waypoints = []
             for s in self.obs_waypoint_steps:
@@ -846,7 +835,7 @@ class ManipulatorEnv:
                 waypoints.append(wp)
 
             # Scene embedding: all obstacle positions (relative to EE) and radii
-            # Provides full global layout unlike top-K which only has nearest
+            # Provides full global layout — no top-K (redundant with full scene)
             scene_embed = np.zeros(self.obs_scene_embed * 4, dtype=np.float32)
             n_embed = min(self.obs_scene_embed, self.sdf.n_obs)
             for i in range(n_embed):
@@ -854,17 +843,19 @@ class ManipulatorEnv:
                 scene_embed[i*4:i*4+3] = rel_pos
                 scene_embed[i*4+3] = self.sdf.radii[i]
 
-            # State: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), w(1),
+            # Per-capsule minimum distances to nearest obstacle
+            # (n_capsules scalars — direct collision signal for each link)
+            capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
+
+            # State: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3),
             #         wp_1(3), ..., wp_N(3),
-            #         scene_embed(N_obs * 4),
-            #         obs1_dist(1), obs1_dir(3), ..., obsK_dir(3), mask(K)]
+            #         capsule_dists(n_caps),
+            #         scene_embed(N_obs * 4)]
             obs = np.concatenate([
                 self.q, self.dq, x_ee, self.x_d, self.dx_d[:3],
                 *waypoints,
+                capsule_dists,
                 scene_embed,
-                obs_dists,
-                obs_dirs.reshape(-1),
-                obs_mask
             ])
         else:
             # Legacy observation

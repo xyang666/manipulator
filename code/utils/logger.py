@@ -70,6 +70,7 @@ class TrainingLogger:
         self._ep_rewards: list[float] = []
         self._ep_d_obs: list[float] = []
         self._ep_w: list[float] = []
+        self._ep_success: list[bool] = []
 
     def log_step(self, step: int, episode: int, ep_step: int,
                  reward: float, info: dict) -> None:
@@ -77,6 +78,7 @@ class TrainingLogger:
         self._ep_rewards.append(reward)
         self._ep_d_obs.append(info.get("d_obs", float("nan")))
         self._ep_w.append(info.get("w", float("nan")))
+        self._ep_success.append(info.get("success", False))
 
         row: dict = {
             "global_step":      step,
@@ -92,6 +94,7 @@ class TrainingLogger:
             "r_collision":      info.get("r_collision", ""),
             "r_action":         info.get("r_action", ""),
             "collision_penalty": info.get("collision_penalty", ""),
+            "success":          int(info.get("success", False)),
         }
 
         if self._last_losses is not None:
@@ -140,7 +143,7 @@ class TrainingLogger:
             "min_d_obs":         min_d_obs,
             "avg_manipulability": (sum(self._ep_w) / len(self._ep_w)
                                    if self._ep_w else float("nan")),
-            "success":           min_d_obs >= 0.02,
+            "success":           any(self._ep_success),
         }
 
         self._csv_file.flush()
@@ -149,6 +152,7 @@ class TrainingLogger:
         self._ep_rewards.clear()
         self._ep_d_obs.clear()
         self._ep_w.clear()
+        self._ep_success.clear()
 
         return summary
 

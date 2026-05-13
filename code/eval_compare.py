@@ -37,7 +37,6 @@ def eval_ckpt(name, ckpt_path):
         obs_waypoint_steps=[int(s) for s in cli.get("obs_waypoint_steps", "10,20,50").split(",")],
         sigma_d_safe=cli.get("sigma_d_safe", 0.12),
         sigma_d_critical=cli.get("sigma_d_critical", 0.03),
-        action_smooth=cli.get("action_smooth", 0.0),
         d_safe=cli.get("d_safe", 0.03),
         d_critical=cli.get("d_critical", 0.05),
     )

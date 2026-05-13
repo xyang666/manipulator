@@ -35,6 +35,7 @@ class SACAgent:
                  gamma:        float = 0.99,
                  tau:          float = 0.005,
                  alpha:        float = 0.2,
+                 target_entropy: float | None = None,
                  lambda_dyn:   float = 0.1,
                  action_scale: float = 0.3,
                  hidden_dims:  tuple = (256, 256),
@@ -66,7 +67,7 @@ class SACAgent:
                                           device=self.device)
 
         # Automatic entropy tuning
-        self.target_entropy = -action_dim
+        self.target_entropy = target_entropy if target_entropy is not None else -action_dim
         self.min_alpha = 0.02  # prevent entropy collapse
         initial_log_alpha = max(np.log(alpha), np.log(self.min_alpha))
         self.log_alpha = torch.tensor(initial_log_alpha, requires_grad=True, device=self.device)
@@ -95,7 +96,7 @@ class SACAgent:
 
     @torch.no_grad()
     def select_action(self, state: np.ndarray, deterministic: bool = False) -> np.ndarray:
-        s = self.obs_normalizer.normalize(state)
+        s = self.obs_normalizer(state)  # updates running stats + normalizes
         s = torch.FloatTensor(s).unsqueeze(0).to(self.device)
         action, _, mean = self.actor.sample(s)
         if deterministic:
@@ -227,14 +228,17 @@ class SACAgent:
         torch.save(state, path)
 
     def load(self, path: str, load_optimizers: bool = True, reset_alpha: bool = False,
-             reset_critic: bool = False, reset_actor: bool = False) -> dict:
+             reset_critic: bool = False, reset_actor: bool = False,
+             lr: float | None = None) -> dict:
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
         if not reset_actor:
             self.actor.load_state_dict(ckpt["actor"])
         if reset_critic:
             # Don't load critic weights — use fresh LayerNorm init
             # (old checkpoint doesn't have LayerNorm params)
-            self.critic_opt = optim.Adam(self.critic.parameters(), lr=ckpt.get("metadata", {}).get("hyperparams", {}).get("lr", 3e-4))
+            # Use provided lr, fall back to actor_opt's current lr, last resort 3e-4
+            _lr = lr if lr is not None else self.actor_opt.param_groups[0]['lr']
+            self.critic_opt = optim.Adam(self.critic.parameters(), lr=_lr)
         else:
             self.critic.load_state_dict(ckpt["critic"], strict=False)
         if load_optimizers:
