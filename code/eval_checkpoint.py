@@ -49,7 +49,6 @@ env = ManipulatorEnv(
     episode_len=400,
     n_obstacles=5,
     controller="rl",
-    obs_k=cli.get("obs_k", 5),
     obs_scene_embed=cli.get("obs_scene_embed", 5),
     obs_waypoint_steps=[int(s) for s in cli.get("obs_waypoint_steps", "10,20,50").split(",")],
     sigma_d_safe=cli.get("sigma_d_safe", 0.12),

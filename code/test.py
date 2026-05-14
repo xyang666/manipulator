@@ -313,9 +313,8 @@ def run_rl(env, args, agent):
                 setattr(env.reward_fn, attr, cli[key])
         # Reset sigma filter
         env._last_sigma = 0.0
-        # Sync observation format params (obs_k, waypoints, scene_embed)
-        if "obs_k" in cli and cli["obs_k"] is not None and cli["obs_k"] > 0:
-            env.obs_k = cli["obs_k"]
+        # Sync observation format params (scene_embed, waypoints)
+        if "obs_scene_embed" in cli and cli.get("obs_scene_embed", 0) or 0 > 0:
             env.obs_scene_embed = cli.get("obs_scene_embed", 0) or 0
             env.obs_waypoint_steps = cli.get("obs_waypoint_steps", None)
             if env.obs_waypoint_steps is not None:
@@ -333,7 +332,7 @@ def run_rl(env, args, agent):
                            + env._capsule_dists_dim
                            + env.obs_scene_embed * 4
                            + len(env.obs_waypoint_steps) * 3)
-            print(f"[SAC] Using extended observation: obs_k={env.obs_k}, "
+            print(f"[SAC] Using extended observation: "
                   f"scene_embed={env.obs_scene_embed}, "
                   f"waypoints={env.obs_waypoint_steps}, dim={env.obs_dim}")
         print(f"[SAC] Synced env params from training config")

@@ -67,6 +67,13 @@ class ParallelEnvPool:
         results = [pipe.recv() for pipe in _send]
         return self._combine(results, self.n_envs)
 
+    def broadcast_setattr(self, attr: str, value):
+        """Set an attribute on every environment worker (e.g. sigma_override)."""
+        for pipe in self._pipes:
+            pipe.send(("setattr", attr, value))
+        for pipe in self._pipes:
+            pipe.recv()  # ack
+
     def close(self):
         """Shut down all worker processes."""
         for pipe in self._pipes:
@@ -127,6 +134,10 @@ def _worker_loop(pipe: Connection, env_creator: Callable, worker_id: int = 0):
 
         elif msg == "close":
             break
+
+        elif isinstance(msg, tuple) and msg[0] == "setattr":
+            setattr(env, msg[1], msg[2])  # noqa: B010 (required for dynamic attr)
+            pipe.send("ok")
 
         elif isinstance(msg, tuple) and msg[0] == "step":
             action = msg[1]

@@ -220,7 +220,8 @@ class TrajectoryGenerator:
         return (0 <= t1 <= 1) or (0 <= t2 <= 1) or (t1 < 0 and t2 > 1)
 
     def generate_obstacles(self, start_pos: np.ndarray, goal_pos: np.ndarray,
-                          n_obstacles: int, max_attempts: int = 1000) -> Optional[List[np.ndarray]]:
+                          n_obstacles: int, max_attempts: int = 1000,
+                          max_obstacle_distance: float = 0.3) -> Optional[List[np.ndarray]]:
         """
         Generate random spherical obstacles near the trajectory that do NOT intersect it.
 
@@ -257,7 +258,7 @@ class TrajectoryGenerator:
                 # Distance from trajectory: between (min_clearance + radius) and 0.3m
                 radius = np.random.uniform(*self.obs_radius_range)
                 min_dist = self.min_clearance + radius + 0.02  # Extra 2cm safety
-                max_dist = 0.3  # Maximum 30cm from trajectory
+                max_dist = max_obstacle_distance
 
                 offset_distance = np.random.uniform(min_dist, max_dist)
 
@@ -372,7 +373,8 @@ class TrajectoryGenerator:
     def generate_scene(self, scene_id: int, n_obstacles: int,
                        max_attempts: int = 100,
                        ahead_mode: bool = False,
-                       collision_detector: CollisionDetector = None) -> Optional[dict]:
+                       collision_detector: CollisionDetector = None,
+                       max_obstacle_distance: float = 0.3) -> Optional[dict]:
         """
         Generate a single collision-free scene with manipulability constraint.
 
@@ -386,6 +388,7 @@ class TrajectoryGenerator:
         n_obstacles  : number of obstacles
         max_attempts : max attempts to generate valid scene
         ahead_mode   : if True, trajectory is a Y-parallel line in front of robot
+        max_obstacle_distance: max center-to-line distance for obstacle placement
 
         Returns
         -------
@@ -447,7 +450,8 @@ class TrajectoryGenerator:
 
             # Generate obstacles (or empty list if n_obstacles=0)
             if n_obstacles > 0:
-                obstacles = self.generate_obstacles(start_pos, goal_pos, n_obstacles)
+                obstacles = self.generate_obstacles(start_pos, goal_pos, n_obstacles,
+                                                         max_obstacle_distance=max_obstacle_distance)
                 if obstacles is None:
                     continue
             else:

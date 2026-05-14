@@ -21,14 +21,14 @@ class RewardFunction:
 
     def __init__(self,
                  w_track:       float = 12.0,
-                 w_obs:         float = 5.0,
+                 w_obs:         float = 1.0,
                  w_obs_safe:    float = 0.1,
                  w_manip:       float = 0.05,
                  w_energy:      float = 0.001,
                  w_collision:   float = 100.0,
                  w_goal:        float = 1.0,
                  w_action:      float = 0.5,
-                 d_safe:        float = 0.06,
+                 d_safe:        float = 0.02,
                  d_critical:    float = 0.02,
                  alpha_relax:   float = 0.1,
                  dt:            float = 0.02,
@@ -62,7 +62,7 @@ class RewardFunction:
         ratio = max(d_obs / self.d_critical, 0.0)  # clamp for d_obs < 0 (inside obstacle)
         return self.w_track * (self.alpha_relax + (1.0 - self.alpha_relax) * ratio)
 
-    def compute(self, q, dq, x_ee, x_d, dx_d, d_obs, w, x_goal=None, action=None):
+    def compute(self, q, dq, x_ee, x_d, dx_d, d_obs, w, x_goal=None, action=None, prev_dq=None):
         """
         Parameters
         ----------
@@ -74,7 +74,8 @@ class RewardFunction:
         d_obs   : minimum distance to any obstacle (scalar)
         w       : manipulability measure (scalar)
         x_goal  : goal position [3] (optional, for dense goal-progress reward)
-        action  : RL action [7] = [Δẋ_RL(3), z(4)] (optional, for action penalty)
+        action  : RL action [7] = [Δẋ_RL(3), z(4)] (deprecated, use prev_dq instead)
+        prev_dq : previous step joint velocities [n] (for smoothness penalty)
 
         Returns
         -------
@@ -124,13 +125,11 @@ class RewardFunction:
             )
             r_collision = -collision_penalty
 
-        # Action penalty: penalize large Δẋ_RL (task relaxation) and z (nullspace)
-        # Discourages jittery / excessive actions that cause shaking
+        # Action smoothness penalty: penalize joint velocity change between steps
+        # ‖dq_t - dq_{t-1}‖² — model learns to avoid jittery motion naturally
         r_action = 0.0
-        if action is not None and self.w_action > 0.0:
-            delta_x = action[:3]   # Δẋ_RL
-            z       = action[3:]   # nullspace coefficients
-            r_action = -self.w_action * (np.sum(delta_x ** 2) + np.sum(z ** 2))
+        if prev_dq is not None and self.w_action > 0.0:
+            r_action = -self.w_action * np.sum((dq - prev_dq) ** 2)
 
         total = r_track + r_obs + r_goal + r_manip + r_energy + r_collision + r_action
 

@@ -76,19 +76,18 @@ class ManipulatorEnv:
                  manipulability_threshold: float = 0.01,
                  collision_term: bool = True,
                  path_deadzone: float = 0.20,
-                 w_obs: float = 5.0,
+                 w_obs: float = 1.0,
                  w_obs_safe: float = 0.1,
                  w_collision: float = 100.0,
                  w_track: float = 12.0,
                  w_goal: float = 1.0,
                  w_manip: float = 0.05,
                  w_action: float = 0.5,
-                 d_safe: float = 0.06,
+                 d_safe: float = 0.02,
                  success_bonus: float = 50.0,
                  sigma_d_safe: Optional[float] = None,
                  sigma_d_critical: Optional[float] = None,
                  sigma_smooth: float = 0.9,
-                 obs_k: int = 0,
                  obs_waypoint_steps: list | None = None,
                  obs_scene_embed: int = 0):
         """
@@ -113,7 +112,6 @@ class ManipulatorEnv:
         self.path_deadzone = path_deadzone
 
         # Observation dimensions
-        self.obs_k = obs_k
         self.obs_waypoint_steps = obs_waypoint_steps or []
         self.obs_scene_embed = obs_scene_embed
         self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1 + 3  # placeholder, updated after self.n
@@ -282,14 +280,19 @@ class ManipulatorEnv:
 
             # Gate operator σ: scales task relaxation based on obstacle distance
             # σ → 0 when safe (d_obs >= sigma_d_safe), σ → 1 when dangerous
-            x_ee_cur, _ = self.kin.forward_kinematics(self.q)
-            d_obs_cur = self.sdf.min_distance(x_ee_cur, self.q, kinematics=self.kin)
-            band = max(self.sigma_d_safe - self.sigma_d_critical, 1e-6)
-            raw_sigma = float(np.clip((self.sigma_d_safe - d_obs_cur) / band, 0.0, 1.0))
-            # Smoothstep: C1 continuity at 0 and 1 for smoother gate transitions
-            sigma_smooth = raw_sigma * raw_sigma * (3.0 - 2.0 * raw_sigma)
-            # Low-pass filter: prevent rapid sigma flickering from causing jitter
-            sigma = self.sigma_smooth * self._last_sigma + (1.0 - self.sigma_smooth) * sigma_smooth
+            # sigma_override bypasses the gate (used for random exploration in start_steps)
+            sigma_ov = getattr(self, 'sigma_override', None)
+            if sigma_ov is not None:
+                sigma = float(sigma_ov)
+            else:
+                x_ee_cur, _ = self.kin.forward_kinematics(self.q)
+                d_obs_cur = self.sdf.min_distance(x_ee_cur, self.q, kinematics=self.kin)
+                band = max(self.sigma_d_safe - self.sigma_d_critical, 1e-6)
+                raw_sigma = float(np.clip((self.sigma_d_safe - d_obs_cur) / band, 0.0, 1.0))
+                # Smoothstep: C1 continuity at 0 and 1 for smoother gate transitions
+                sigma_smooth = raw_sigma * raw_sigma * (3.0 - 2.0 * raw_sigma)
+                # Low-pass filter: prevent rapid sigma flickering from causing jitter
+                sigma = self.sigma_smooth * self._last_sigma + (1.0 - self.sigma_smooth) * sigma_smooth
             self._last_sigma = sigma
             delta_x_gated = sigma * delta_x_rl  # diag(σ) · Δẋ_RL
 
@@ -306,6 +309,9 @@ class ManipulatorEnv:
             self._last_J = self.kin.jacobian_position(self.q).copy()
             self._last_sigma = sigma
             self._last_dx_nom = dx_nom.copy()
+
+        # Save previous joint velocity for smoothness penalty
+        prev_dq = self.dq.copy()
 
         # Integrate (kinematics-only mode)
         q_new = self.q + dq_cmd * self.dt
@@ -376,7 +382,7 @@ class ManipulatorEnv:
             q=self.q, dq=self.dq, x_ee=x_ee,
             x_d=self.x_d, dx_d=self.dx_d,
             d_obs=d_obs, w=w, x_goal=self.x_goal,
-            action=action,
+            action=action, prev_dq=prev_dq,
         )
         # Collision detection: use MuJoCo collision detector from reward_info;
         # fall back to SDF distance when MuJoCo is unavailable
