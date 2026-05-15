@@ -41,7 +41,6 @@ def env_kwargs_from_config(config: dict) -> dict:
         w_manip=rw.get("w_manip", 0.05),
         w_energy=rw.get("w_energy", 0.001),
         w_collision=rw.get("w_collision", 100.0),
-        w_goal=rw.get("w_goal", 1.0),
         reward_scale=20.0,
         success_bonus=rw.get("success_bonus", 50.0),
         use_collision_term=True,

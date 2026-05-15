@@ -7,8 +7,8 @@ MuJoCo-based 7-DOF manipulator environment with:
   - Signed distance field (simplified sphere model) for obstacle detection
   - Tracking-error-driven path progression (parameterized by s ∈ [0,1])
 
-Observation space (paper Eq. state):
-    s = [q (7), dq (7), x_ee (3), x_d (3), dx_d (3), d_obs (1), w(q) (1)]  dim=25
+Observation space:
+    s = [q (7), dq (7), x_ee (3), x_d (3), capsule_dists (12), path_progress (1), dq_rep (7)]  dim=40
 
 Action space (paper, Route A — position-only):
     a = [Δẋ_RL ∈ R^3, dq0 ∈ R^7]  dim=10
@@ -80,7 +80,6 @@ class ManipulatorEnv:
                  w_obs_safe: float = 0.1,
                  w_collision: float = 100.0,
                  w_track: float = 12.0,
-                 w_goal: float = 1.0,
                  w_manip: float = 0.05,
                  w_action: float = 0.5,
                  w_apf: float = 0.0,
@@ -115,7 +114,8 @@ class ManipulatorEnv:
         # Observation dimensions
         self.obs_waypoint_steps = obs_waypoint_steps or []
         self.obs_scene_embed = obs_scene_embed
-        self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1 + 3  # placeholder, updated after self.n
+        # + n_joints for dq_rep (APF recommended joint velocity)
+        self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1 + 3 + n_joints  # +n_joints for dq_rep
         self.act_dim = n_joints  # 7D: 3 (task relaxation) + 4 (nullspace, = n-3)
 
         self.kin = ManipulatorKinematics(urdf_path, n_joints,
@@ -124,23 +124,22 @@ class ManipulatorEnv:
         self.n = self.kin.n
 
         # Per-capsule obstacle distances for observations (n_capsules scalars)
-        if urdf_path is not None and self.obs_scene_embed > 0:
-            zero_q = np.zeros(self.n)
-            try:
-                self._capsule_dists_dim = len(self.kin.get_link_capsules(zero_q))
-            except Exception:
-                self._capsule_dists_dim = 0
-        else:
+        zero_q = np.zeros(self.n)
+        try:
+            self._capsule_dists_dim = len(self.kin.get_link_capsules(zero_q))
+        except Exception:
             self._capsule_dists_dim = 0
 
         if self.obs_scene_embed > 0:
             # Scene-embed observation: no top-K (redundant with scene_embed)
-            self.obs_dim = (self.n * 2 + 3 + 3 + 3
+            self.obs_dim = (self.n * 2 + 3 + 3    # q, dq, x_ee, x_d
                             + self._capsule_dists_dim
                             + self.obs_scene_embed * 4
-                            + len(self.obs_waypoint_steps) * 3)
+                            + len(self.obs_waypoint_steps) * 3
+                            + 1                   # path_progress s
+                            + self.n)      # dq_rep
         else:
-            self.obs_dim = self.n * 2 + 3 + 3 + 3 + 1 + 1 + 3  # legacy 28-dim
+            self.obs_dim = self.n * 2 + 3 + 3 + self._capsule_dists_dim + 1 + self.n  # 40-dim
         self.act_dim = self.n  # 7D: 3 (task) + 4 (nullspace, via nullspace basis)
 
         # Truncate DQ_MAX to match actual DOF
@@ -174,7 +173,7 @@ class ManipulatorEnv:
         # Reward function with collision detection
         self.reward_fn = RewardFunction(
             dt=dt, w_obs=w_obs, w_obs_safe=w_obs_safe,
-            w_collision=w_collision, w_track=w_track, w_goal=w_goal,
+            w_collision=w_collision, w_track=w_track,
             w_manip=w_manip, w_action=w_action,
             d_safe=d_safe, d_critical=d_critical, alpha_relax=alpha_relax,
             collision_detector=self.collision_detector)
@@ -186,6 +185,10 @@ class ManipulatorEnv:
         # Sigma gate parameters (default to reward d_safe/d_critical if not specified)
         self.sigma_d_safe = sigma_d_safe if sigma_d_safe is not None else d_safe
         self.sigma_d_critical = sigma_d_critical if sigma_d_critical is not None else d_critical
+        # Sync: w_track relaxation threshold = sigma gate open threshold
+        # When sigma opens (policy gains control), tracking weight drops accordingly
+        if sigma_d_safe is not None:
+            self.reward_fn.d_critical = self.sigma_d_safe
         self.sigma_smooth = sigma_smooth
         self._last_sigma = 0.0
 
@@ -212,6 +215,9 @@ class ManipulatorEnv:
         self.use_parametric_traj = False
         self._parametric_pos_func = None   # callable(t) → position (3,)
         self._parametric_vel_func = None   # callable(t) → velocity (3,)
+
+        # APF recommended joint velocity (obs feature, updated every step)
+        self._dq_rep = np.zeros(self.n)
 
         self._reset_state()
 
@@ -381,10 +387,14 @@ class ManipulatorEnv:
             self.ee_trajectory.pop(0)
         self.ee_trajectory.append(x_ee.copy())
 
-        # APF reward: per-link repulsive force mapped through link Jacobians
-        # (MPC-style Khatib potential field — Khatib 1986)
+        # Unified obstacle potential reward (Khatib 1986)
+        # r_apf = -w_apf * total_repulsion where total_repulsion sums
+        # rep_gain * max(0, 1/d - 1/apf_d_safe) over all capsule points and obstacles.
+        # This replaces both the piecewise r_obs and the action-based r_apf.
+        # dq_rep is retained for the observation as a directional cue.
         r_apf = 0.0
-        if self.w_apf > 0.0 and self.sdf.n_obs > 0:
+        dq_rep = np.zeros(self.n)
+        if self.sdf.n_obs > 0:
             capsules = self.kin.get_link_capsules(self.q)
             link_names = [
                 "panda_link0", "panda_link1", "panda_link2", "panda_link3",
@@ -398,6 +408,7 @@ class ManipulatorEnv:
             apf_d_safe = max(self.d_safe * 5, 0.15)  # repulsive field range
             rep_gain = 0.5
             n_active = 0
+            total_repulsion = 0.0
 
             for ci, (p1, p2, cap_r) in enumerate(capsules):
                 link_name = link_names[ci] if ci < len(link_names) else None
@@ -414,11 +425,15 @@ class ManipulatorEnv:
                             continue
                         d_signed = dist - self.sdf.radii[i]
                         if 0 < d_signed < apf_d_safe:
-                            magnitude = rep_gain * (1.0 / d_signed - 1.0 / apf_d_safe) / (d_signed * d_signed)
+                            inv_d = 1.0 / d_signed
+                            inv_d0 = 1.0 / apf_d_safe
+                            magnitude = rep_gain * (inv_d - inv_d0) / (d_signed * d_signed)
                             F += magnitude * diff / dist
+                            total_repulsion += rep_gain * (inv_d - inv_d0)
 
                     F_norm = np.linalg.norm(F)
                     if F_norm < 1e-6:
+
                         continue
                     # Clip per-point force for stability
                     if F_norm > 2.0:
@@ -429,17 +444,16 @@ class ManipulatorEnv:
                     n_active += 1
 
             if n_active > 0:
-                dq_rep /= n_active  # average over active points
-                rep_norm = np.linalg.norm(dq_rep)
-                if rep_norm > 1e-6:
-                    # Scalar projection of actual dq onto APF direction (m/s in joint space)
-                    proj = float(np.dot(self.dq, dq_rep)) / rep_norm
-                    r_apf = self.w_apf * max(0.0, proj)
+                dq_rep /= n_active  # average over active points for observation
+
+            r_apf = -self.w_apf * total_repulsion
+
+        self._dq_rep = dq_rep.copy()  # store for observation
 
         reward, reward_info = self.reward_fn.compute(
             q=self.q, dq=self.dq, x_ee=x_ee,
             x_d=self.x_d, dx_d=self.dx_d,
-            d_obs=d_obs, w=w, x_goal=self.x_goal,
+            d_obs=d_obs, w=w,
             action=action, prev_dq=prev_dq,
         )
         reward += r_apf
@@ -913,35 +927,28 @@ class ManipulatorEnv:
             # (n_capsules scalars — direct collision signal for each link)
             capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
 
-            # State: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3),
+            # State: [q(7), dq(7), x_ee(3), x_d(3),
             #         wp_1(3), ..., wp_N(3),
             #         capsule_dists(n_caps),
-            #         scene_embed(N_obs * 4)]
+            #         scene_embed(N_obs * 4),
+            #         path_progress(1),
+            #         dq_rep(7)]
             obs = np.concatenate([
-                self.q, self.dq, x_ee, self.x_d, self.dx_d[:3],
+                self.q, self.dq, x_ee, self.x_d,
                 *waypoints,
                 capsule_dists,
                 scene_embed,
+                [self.path_param],
+                self._dq_rep,
             ])
         else:
             # Legacy observation
-            d_obs = self.sdf.min_distance(x_ee, self.q, kinematics=self.kin)
-            d_obs = float(np.clip(d_obs, -0.5, 0.5))
+            capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
 
-            # Direction to nearest obstacle center (from EE)
-            obs_dir = np.zeros(3, dtype=np.float32)
-            if self.sdf.n_obs > 0:
-                dists = np.linalg.norm(self.sdf.centers - x_ee, axis=1)
-                nearest = self.sdf.centers[np.argmin(dists)]
-                delta = nearest - x_ee
-                norm = np.linalg.norm(delta)
-                if norm > 1e-6:
-                    obs_dir = delta / norm
-
-            # State: [q(7), dq(7), x_ee(3), x_d(3), dx_d(3), d_obs(1), w(1), obs_dir(3)] = 28
+            # State: [q(7), dq(7), x_ee(3), x_d(3), capsule_dists(12), path_progress(1), dq_rep(7)] = 40
             obs = np.concatenate([
-                self.q, self.dq, x_ee, self.x_d, self.dx_d[:3],
-                [d_obs], [w], obs_dir
+                self.q, self.dq, x_ee, self.x_d,
+                capsule_dists, [self.path_param], self._dq_rep,
             ])
 
         return obs.astype(np.float32)

@@ -16,7 +16,7 @@ from datetime import datetime
 CSV_COLUMNS = [
     "global_step", "episode", "ep_step",
     "reward", "d_obs", "w",
-    "r_track", "r_obs", "r_goal", "r_apf", "r_manip", "r_energy", "r_collision", "r_action", "collision_penalty",
+    "r_track", "r_obs", "r_apf", "r_manip", "r_energy", "r_collision", "r_action", "collision_penalty",
     "critic_loss", "actor_rl_loss", "physics_loss", "actor_loss", "alpha",
     "success", "ever_collided",
 ]
@@ -90,7 +90,6 @@ class TrainingLogger:
             "r_track":          info.get("r_track", ""),
             "r_obs":            info.get("r_obs", ""),
             "r_apf":            info.get("r_apf", ""),
-            "r_goal":           info.get("r_goal", ""),
             "r_manip":          info.get("r_manip", ""),
             "r_energy":         info.get("r_energy", ""),
             "r_collision":      info.get("r_collision", ""),
@@ -185,7 +184,6 @@ class TrainingLogger:
                              avg_r_track: float = None,
                              avg_r_obs: float = None,
                              avg_r_apf: float = None,
-                             avg_r_goal: float = None,
                              avg_r_manip: float = None,
                              avg_r_energy: float = None,
                              avg_r_collision: float = None,
@@ -221,8 +219,6 @@ class TrainingLogger:
             row["r_obs"] = avg_r_obs
         if avg_r_apf is not None:
             row["r_apf"] = avg_r_apf
-        if avg_r_goal is not None:
-            row["r_goal"] = avg_r_goal
         if avg_r_manip is not None:
             row["r_manip"] = avg_r_manip
         if avg_r_energy is not None:

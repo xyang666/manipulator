@@ -2,7 +2,7 @@
 reward.py
 ---------
 Multi-component reward function (paper Section 3.3):
-    r = r_track + r_obs + r_manip + r_energy + r_collision
+    r = r_track + r_obs + r_manip + r_energy + r_collision + r_action
 
   r_track     : end-effector tracking error with dynamic weight (paper Eq. 12)
                 r_track = -w_track_eff * ||x_ee - x_d||²
@@ -26,7 +26,6 @@ class RewardFunction:
                  w_manip:       float = 0.05,
                  w_energy:      float = 0.001,
                  w_collision:   float = 100.0,
-                 w_goal:        float = 1.0,
                  w_action:      float = 0.5,
                  d_safe:        float = 0.02,
                  d_critical:    float = 0.02,
@@ -39,7 +38,6 @@ class RewardFunction:
         self.w_manip       = w_manip
         self.w_energy      = w_energy
         self.w_collision   = w_collision
-        self.w_goal        = w_goal
         self.w_action      = w_action
         self.d_safe        = d_safe
         self.d_critical    = d_critical
@@ -62,7 +60,7 @@ class RewardFunction:
         ratio = max(d_obs / self.d_critical, 0.0)  # clamp for d_obs < 0 (inside obstacle)
         return self.w_track * (self.alpha_relax + (1.0 - self.alpha_relax) * ratio)
 
-    def compute(self, q, dq, x_ee, x_d, dx_d, d_obs, w, x_goal=None, action=None, prev_dq=None):
+    def compute(self, q, dq, x_ee, x_d, dx_d, d_obs, w, action=None, prev_dq=None):
         """
         Parameters
         ----------
@@ -73,7 +71,6 @@ class RewardFunction:
         dx_d    : desired EE velocity [6] (unused here, for extension)
         d_obs   : minimum distance to any obstacle (scalar)
         w       : manipulability measure (scalar)
-        x_goal  : goal position [3] (optional, for dense goal-progress reward)
         action  : RL action [7] = [Δẋ_RL(3), z(4)] (deprecated, use prev_dq instead)
         prev_dq : previous step joint velocities [n] (for smoothness penalty)
 
@@ -96,17 +93,6 @@ class RewardFunction:
         else:
             obs_depth = min(self.d_safe - d_obs, self.d_safe * 2.0)  # cap at 2x d_safe
             r_obs = -self.w_obs * obs_depth / self.d_safe
-
-        # Goal progress reward: dense signal for moving toward the goal
-        r_goal = 0.0
-        if x_goal is not None:
-            dist_to_goal = np.linalg.norm(x_ee - x_goal)
-            prev_dist = getattr(self, '_prev_dist_to_goal', None)
-            if prev_dist is None:
-                prev_dist = dist_to_goal
-            progress = prev_dist - dist_to_goal  # positive = moving toward goal
-            r_goal = self.w_goal * np.clip(progress, -0.05, 0.05)
-            self._prev_dist_to_goal = dist_to_goal
 
         # Manipulability reward: encourage non-singular configurations
         r_manip = self.w_manip * np.log(max(w, 1e-4))
@@ -131,12 +117,11 @@ class RewardFunction:
         if prev_dq is not None and self.w_action > 0.0:
             r_action = -self.w_action * np.sum((dq - prev_dq) ** 2)
 
-        total = r_track + r_obs + r_goal + r_manip + r_energy + r_collision + r_action
+        total = r_track + r_obs + r_manip + r_energy + r_collision + r_action
 
         info = {
             "r_track":     r_track,
             "r_obs":       r_obs,
-            "r_goal":      r_goal,
             "r_manip":     r_manip,
             "r_energy":    r_energy,
             "r_collision": r_collision,
