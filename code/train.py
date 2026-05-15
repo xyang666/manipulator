@@ -100,6 +100,8 @@ def parse_args():
                    help="Dense goal-progress reward weight")
     p.add_argument("--w_action", type=float, default=0.5,
                    help="Action smoothness penalty weight (penalizes ||Δẋ_RL||² + ||z||²)")
+    p.add_argument("--w_apf", type=float, default=0.0,
+                   help="APF gradient reward weight: reward dq aligned with ∇_q d_obs near obstacles")
     p.add_argument("--lr", type=float, default=3e-4,
                    help="Learning rate for actor/critic/alpha optimizers")
     p.add_argument("--alpha", type=float, default=0.1,
@@ -237,7 +239,7 @@ def main():
         path_deadzone=args.path_deadzone,
         w_obs=args.w_obs, w_obs_safe=args.w_obs_safe,
         w_collision=args.w_collision, w_track=args.w_track,
-        w_goal=args.w_goal, w_manip=args.w_manip, w_action=args.w_action,
+        w_goal=args.w_goal, w_manip=args.w_manip, w_action=args.w_action, w_apf=args.w_apf,
         d_safe=args.d_safe, success_bonus=args.success_bonus,
         sigma_d_safe=args.sigma_d_safe, sigma_d_critical=args.sigma_d_critical,
         obs_scene_embed=args.obs_scene_embed,
@@ -486,9 +488,9 @@ def main():
 
     print(f"Run directory: {run_dir}")
     print(f"{'Episode':^8}  {'Steps':^8}  {'Reward':^10}  "
-          f"{'r_trk':^9}  {'r_obs':^9}  {'r_goal':^8}  {'r_manip':^8}  {'r_en':^7}  {'r_coll':^8}  {'r_act':^8}  "
+          f"{'r_trk':^9}  {'r_obs':^9}  {'r_apf':^8}  {'r_goal':^8}  {'r_manip':^8}  {'r_en':^7}  {'r_coll':^8}  {'r_act':^8}  "
           f"{'L_actor':^10}  {'L_dyn':^9}  {'d_obs':^8}  {'suc':^5}")
-    print("-" * 150)
+    print("-" * 155)
 
     if args.render:
         # ================================================================
@@ -503,6 +505,7 @@ def main():
             ep_d_obs    = []
             ep_r_track  = []
             ep_r_obs    = []
+            ep_r_apf    = []
             ep_r_goal   = []
             ep_r_manip  = []
             ep_r_energy = []
@@ -541,6 +544,7 @@ def main():
                 ep_d_obs.append(info["d_obs"])
                 ep_r_track.append(info.get("r_track", 0.0))
                 ep_r_obs.append(info.get("r_obs", 0.0))
+                ep_r_apf.append(info.get("r_apf", 0.0))
                 ep_r_goal.append(info.get("r_goal", 0.0))
                 ep_r_manip.append(info.get("r_manip", 0.0))
                 ep_r_energy.append(info.get("r_energy", 0.0))
@@ -570,7 +574,7 @@ def main():
             if episode % args.log_every == 0:
                 def _avg(lst): return sum(lst)/len(lst) if lst else 0.0
                 print(f"{episode:>8d}  {total_steps:>8d}  {ep_reward:>10.3f}  "
-                      f"{_avg(ep_r_track):>9.4f}  {_avg(ep_r_obs):>9.4f}  "
+                      f"{_avg(ep_r_track):>9.4f}  {_avg(ep_r_obs):>9.4f}  {_avg(ep_r_apf):>8.4f}  "
                       f"{_avg(ep_r_goal):>8.4f}  "
                       f"{_avg(ep_r_manip):>8.4f}  {_avg(ep_r_energy):>7.4f}  "
                       f"{_avg(ep_r_coll):>8.4f}  {_avg(ep_r_action):>8.4f}  "
@@ -624,6 +628,7 @@ def main():
         env_w       = [[] for _ in range(n_envs)]
         env_r_track = [[] for _ in range(n_envs)]
         env_r_obs   = [[] for _ in range(n_envs)]
+        env_r_apf    = [[] for _ in range(n_envs)]
         env_r_goal  = [[] for _ in range(n_envs)]
         env_r_manip = [[] for _ in range(n_envs)]
         env_r_energy = [[] for _ in range(n_envs)]
@@ -676,6 +681,7 @@ def main():
                         env_w[i].append(info_i.get("w", 0.0))
                         env_r_track[i].append(info_i.get("r_track", 0.0))
                         env_r_obs[i].append(info_i.get("r_obs", 0.0))
+                        env_r_apf[i].append(info_i.get("r_apf", 0.0))
                         env_r_goal[i].append(info_i.get("r_goal", 0.0))
                         env_r_manip[i].append(info_i.get("r_manip", 0.0))
                         env_r_energy[i].append(info_i.get("r_energy", 0.0))
@@ -700,6 +706,7 @@ def main():
                             avg_w       = (sum(env_w[i]) / len(env_w[i])) if env_w[i] else None
                             avg_r_track = (sum(env_r_track[i]) / len(env_r_track[i])) if env_r_track[i] else None
                             avg_r_obs   = (sum(env_r_obs[i]) / len(env_r_obs[i])) if env_r_obs[i] else None
+                            avg_r_apf   = (sum(env_r_apf[i]) / len(env_r_apf[i])) if env_r_apf[i] else None
                             avg_r_goal  = (sum(env_r_goal[i]) / len(env_r_goal[i])) if env_r_goal[i] else None
                             avg_r_manip = (sum(env_r_manip[i]) / len(env_r_manip[i])) if env_r_manip[i] else None
                             avg_r_energy = (sum(env_r_energy[i]) / len(env_r_energy[i])) if env_r_energy[i] else None
@@ -732,7 +739,7 @@ def main():
 
                             if episode % args.log_every == 0:
                                 print(f"{episode:>8d}  {total_steps:>8d}  {env_rewards[i]:>10.3f}  "
-                                      f"{avg_r_track or 0:>9.4f}  {avg_r_obs or 0:>9.4f}  "
+                                      f"{avg_r_track or 0:>9.4f}  {avg_r_obs or 0:>9.4f}  {avg_r_apf or 0:>8.4f}  "
                                       f"{avg_r_goal or 0:>8.4f}  "
                                       f"{avg_r_manip or 0:>8.4f}  {avg_r_energy or 0:>7.4f}  "
                                       f"{avg_r_collision or 0:>8.4f}  {avg_r_action or 0:>8.4f}  "
@@ -751,6 +758,7 @@ def main():
                                 avg_w=avg_w,
                                 avg_r_track=avg_r_track,
                                 avg_r_obs=avg_r_obs,
+                                avg_r_apf=avg_r_apf,
                                 avg_r_goal=avg_r_goal,
                                 avg_r_manip=avg_r_manip,
                                 avg_r_energy=avg_r_energy,
@@ -875,6 +883,7 @@ def main():
                     env_w[i].append(result["info"][i].get("w", 0.0))
                     env_r_track[i].append(result["info"][i].get("r_track", 0.0))
                     env_r_obs[i].append(result["info"][i].get("r_obs", 0.0))
+                    env_r_apf[i].append(result["info"][i].get("r_apf", 0.0))
                     env_r_goal[i].append(result["info"][i].get("r_goal", 0.0))
                     env_r_manip[i].append(result["info"][i].get("r_manip", 0.0))
                     env_r_energy[i].append(result["info"][i].get("r_energy", 0.0))
@@ -899,6 +908,7 @@ def main():
                         avg_w       = (sum(env_w[i]) / len(env_w[i])) if env_w[i] else None
                         avg_r_track = (sum(env_r_track[i]) / len(env_r_track[i])) if env_r_track[i] else None
                         avg_r_obs   = (sum(env_r_obs[i]) / len(env_r_obs[i])) if env_r_obs[i] else None
+                        avg_r_apf   = (sum(env_r_apf[i]) / len(env_r_apf[i])) if env_r_apf[i] else None
                         avg_r_goal  = (sum(env_r_goal[i]) / len(env_r_goal[i])) if env_r_goal[i] else None
                         avg_r_manip = (sum(env_r_manip[i]) / len(env_r_manip[i])) if env_r_manip[i] else None
                         avg_r_energy = (sum(env_r_energy[i]) / len(env_r_energy[i])) if env_r_energy[i] else None
@@ -935,7 +945,7 @@ def main():
 
                         if episode % args.log_every == 0:
                             print(f"{episode:>8d}  {total_steps:>8d}  {env_rewards[i]:>10.3f}  "
-                                  f"{avg_r_track or 0:>9.4f}  {avg_r_obs or 0:>9.4f}  "
+                                  f"{avg_r_track or 0:>9.4f}  {avg_r_obs or 0:>9.4f}  {avg_r_apf or 0:>8.4f}  "
                                   f"{avg_r_goal or 0:>8.4f}  "
                                   f"{avg_r_manip or 0:>8.4f}  {avg_r_energy or 0:>7.4f}  "
                                   f"{avg_r_collision or 0:>8.4f}  {avg_r_action or 0:>8.4f}  "
@@ -954,6 +964,7 @@ def main():
                             avg_w=avg_w,
                             avg_r_track=avg_r_track,
                             avg_r_obs=avg_r_obs,
+                            avg_r_apf=avg_r_apf,
                             avg_r_goal=avg_r_goal,
                             avg_r_manip=avg_r_manip,
                             avg_r_energy=avg_r_energy,

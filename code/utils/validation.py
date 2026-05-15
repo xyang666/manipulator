@@ -100,8 +100,11 @@ class ValidationSet:
         # Reset episode state
         env.step_count = 0
         env._integral_err = np.zeros(3)
+        env._ever_collided = False
+        env.reward_fn._prev_dist_to_goal = None
         env.ee_trajectory.clear()
         env.path_param = 0.0
+        env._last_sigma = 0.0
 
 
 def evaluate_on_validation_set(agent, env, val_set: ValidationSet,

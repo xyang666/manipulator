@@ -607,9 +607,9 @@ def _run_env(env, args, label, get_action=None):
     rewards = []
     collisions = 0
 
-    print(f"\n{'Step':>6} {'Reward':>10} {'r_track':>9} {'r_obs':>9} {'r_manip':>8} "
+    print(f"\n{'Step':>6} {'Reward':>10} {'r_track':>9} {'r_obs':>9} {'r_apf':>8} {'r_manip':>8} "
           f"{'r_energy':>9} {'r_coll':>8} {'Track_err':>10} {'d_obs':>8}")
-    print("-" * 90)
+    print("-" * 98)
 
     for step in range(args.steps):
 
@@ -651,7 +651,7 @@ def _run_env(env, args, label, get_action=None):
         if step % 100 == 0:
             flag = " COLLIDE" if info.get("collision") else ""
             print(f"{step:>6d} {reward:>10.3f} "
-                  f"{info.get('r_track', 0):>9.4f} {info.get('r_obs', 0):>9.4f} "
+                  f"{info.get('r_track', 0):>9.4f} {info.get('r_obs', 0):>9.4f} {info.get('r_apf', 0):>8.4f} "
                   f"{info.get('r_manip', 0):>8.4f} {info.get('r_energy', 0):>9.4f} "
                   f"{info.get('r_collision', 0):>8.4f} "
                   f"{track_err:>10.4f} {d_obs:>8.3f}{flag}")

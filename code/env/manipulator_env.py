@@ -83,6 +83,7 @@ class ManipulatorEnv:
                  w_goal: float = 1.0,
                  w_manip: float = 0.05,
                  w_action: float = 0.5,
+                 w_apf: float = 0.0,
                  d_safe: float = 0.02,
                  success_bonus: float = 50.0,
                  sigma_d_safe: Optional[float] = None,
@@ -177,7 +178,9 @@ class ManipulatorEnv:
             w_manip=w_manip, w_action=w_action,
             d_safe=d_safe, d_critical=d_critical, alpha_relax=alpha_relax,
             collision_detector=self.collision_detector)
+        self.d_safe = d_safe
         self.success_bonus = success_bonus
+        self.w_apf = w_apf
         self.sdf = ObstacleSDF(n_obstacles, obs_radius)
 
         # Sigma gate parameters (default to reward d_safe/d_critical if not specified)
@@ -378,12 +381,69 @@ class ManipulatorEnv:
             self.ee_trajectory.pop(0)
         self.ee_trajectory.append(x_ee.copy())
 
+        # APF reward: per-link repulsive force mapped through link Jacobians
+        # (MPC-style Khatib potential field — Khatib 1986)
+        r_apf = 0.0
+        if self.w_apf > 0.0 and self.sdf.n_obs > 0:
+            capsules = self.kin.get_link_capsules(self.q)
+            link_names = [
+                "panda_link0", "panda_link1", "panda_link2", "panda_link3",
+                "panda_link4", "panda_link5", "panda_link5",
+                "panda_link6", "panda_link7", "panda_hand",
+                "panda_leftfinger", "panda_rightfinger",
+            ]
+            link_jacs = self.kin.link_jacobians_position(self.q, list(set(link_names)))
+
+            dq_rep = np.zeros(self.n)
+            apf_d_safe = max(self.d_safe * 5, 0.15)  # repulsive field range
+            rep_gain = 0.5
+            n_active = 0
+
+            for ci, (p1, p2, cap_r) in enumerate(capsules):
+                link_name = link_names[ci] if ci < len(link_names) else None
+                if link_name not in link_jacs:
+                    continue
+                J_link = link_jacs[link_name]  # [3×n]
+
+                for pt in [p1, (p1 + p2) / 2, p2]:
+                    F = np.zeros(3)
+                    for i in range(self.sdf.n_obs):
+                        diff = pt - self.sdf.centers[i]
+                        dist = np.linalg.norm(diff)
+                        if dist < 1e-8:
+                            continue
+                        d_signed = dist - self.sdf.radii[i]
+                        if 0 < d_signed < apf_d_safe:
+                            magnitude = rep_gain * (1.0 / d_signed - 1.0 / apf_d_safe) / (d_signed * d_signed)
+                            F += magnitude * diff / dist
+
+                    F_norm = np.linalg.norm(F)
+                    if F_norm < 1e-6:
+                        continue
+                    # Clip per-point force for stability
+                    if F_norm > 2.0:
+                        F = F / F_norm * 2.0
+                    # Map to joint space via this link's Jacobian pseudo-inverse
+                    Jpinv = self.kin.pseudo_inverse(J_link)
+                    dq_rep += Jpinv @ F
+                    n_active += 1
+
+            if n_active > 0:
+                dq_rep /= n_active  # average over active points
+                rep_norm = np.linalg.norm(dq_rep)
+                if rep_norm > 1e-6:
+                    # Scalar projection of actual dq onto APF direction (m/s in joint space)
+                    proj = float(np.dot(self.dq, dq_rep)) / rep_norm
+                    r_apf = self.w_apf * max(0.0, proj)
+
         reward, reward_info = self.reward_fn.compute(
             q=self.q, dq=self.dq, x_ee=x_ee,
             x_d=self.x_d, dx_d=self.dx_d,
             d_obs=d_obs, w=w, x_goal=self.x_goal,
             action=action, prev_dq=prev_dq,
         )
+        reward += r_apf
+        reward_info["r_apf"] = r_apf
         # Collision detection: use MuJoCo collision detector from reward_info;
         # fall back to SDF distance when MuJoCo is unavailable
         if self.mj_model is not None:
