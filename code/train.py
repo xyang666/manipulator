@@ -100,6 +100,8 @@ def parse_args():
                    help="Action smoothness penalty weight (penalizes ||Δẋ_RL||² + ||z||²)")
     p.add_argument("--w_apf", type=float, default=0.0,
                    help="APF gradient reward weight: reward dq aligned with ∇_q d_obs near obstacles")
+    p.add_argument("--w_null", type=float, default=0.0,
+                   help="Per-capsule null-space proximity penalty: penalize each link entering d_safe")
     p.add_argument("--lr", type=float, default=3e-4,
                    help="Learning rate for actor/critic/alpha optimizers")
     p.add_argument("--alpha", type=float, default=0.1,
@@ -164,6 +166,8 @@ def parse_args():
                    help="When resuming, reset log_alpha to match --alpha (overrides checkpoint value)")
     p.add_argument("--reset_critic", action="store_true",
                    help="When resuming, reinitialize critic (for architecture changes like LayerNorm)")
+    p.add_argument("--load_actor",  type=str, default=None,
+                   help="Load only actor weights from BC pretrained checkpoint")
     p.add_argument("--reset_actor",  action="store_true",
                    help="When resuming, reinitialize actor (for architecture changes like hidden_dims)")
     p.add_argument("--load_sac_actor", action="store_true",
@@ -238,6 +242,7 @@ def main():
         w_obs=args.w_obs, w_obs_safe=args.w_obs_safe,
         w_collision=args.w_collision, w_track=args.w_track,
         w_manip=args.w_manip, w_action=args.w_action, w_apf=args.w_apf,
+        w_null=args.w_null,
         d_safe=args.d_safe, success_bonus=args.success_bonus,
         sigma_d_safe=args.sigma_d_safe, sigma_d_critical=args.sigma_d_critical,
         obs_scene_embed=args.obs_scene_embed,
@@ -428,6 +433,25 @@ def main():
     total_steps = 0
     episode     = 0
     best_reward = -np.inf
+    if args.load_actor is not None:
+        bc_path = args.load_actor
+        if not os.path.isabs(bc_path):
+            bc_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), bc_path)
+        if os.path.exists(bc_path):
+            bc_ckpt = torch.load(bc_path, map_location="cpu", weights_only=False)
+            agent.actor.load_state_dict(bc_ckpt["actor"])
+            # Also restore obs normalizer if available
+            if "obs_normalizer" in bc_ckpt:
+                on = bc_ckpt["obs_normalizer"]
+                agent.obs_normalizer.mean = on["mean"]
+                agent.obs_normalizer.std = on["std"]
+                agent.obs_normalizer.n_samples = 100_000
+            bc_meta = bc_ckpt.get("metadata", {})
+            print(f"[train] Loaded BC-pretrained actor from {bc_path}")
+            print(f"[train] BC meta: {bc_meta}")
+        else:
+            print(f"[train] WARNING: BC checkpoint not found: {bc_path}")
+
     if args.resume is not None:
         ckpt_path = args.resume
         if not os.path.isabs(ckpt_path):

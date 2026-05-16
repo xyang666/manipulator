@@ -296,9 +296,13 @@ def run_rl(env, args, agent):
         for key, attr in [("sigma_d_safe", "sigma_d_safe"),
                            ("sigma_d_critical", "sigma_d_critical"),
                            ("d_safe", "d_safe"),
-                           ("d_critical", "d_critical")]:
+                           ("d_critical", "d_critical"),
+                           ("alpha_relax", "alpha_relax"),
+                           ("path_deadzone", "path_deadzone")]:
             if key in cli and cli[key] is not None:
                 setattr(env, attr, cli[key])
+        if "no_collision_term" in cli:
+            env.collision_term = not cli["no_collision_term"]
         # Also sync reward function params
         for key, attr in [("w_manip", "w_manip"),
                            ("w_track", "w_track"),
@@ -327,10 +331,12 @@ def run_rl(env, args, agent):
                     env._capsule_dists_dim = len(env.kin.get_link_capsules(zero_q))
                 except Exception:
                     env._capsule_dists_dim = 12  # fallback: 12 capsules for Panda
-            env.obs_dim = (env.n * 2 + 3 + 3 + 3
+            env.obs_dim = (env.n * 2 + 3 + 3     # q, dq, x_ee, x_d
                            + env._capsule_dists_dim
                            + env.obs_scene_embed * 4
-                           + len(env.obs_waypoint_steps) * 3)
+                           + len(env.obs_waypoint_steps) * 3
+                           + 1                    # path_progress s
+                           + env.n)               # dq_rep
             print(f"[SAC] Using extended observation: "
                   f"scene_embed={env.obs_scene_embed}, "
                   f"waypoints={env.obs_waypoint_steps}, dim={env.obs_dim}")
@@ -789,6 +795,12 @@ def parse_args():
                    choices=["scene1", "scene2", "scene3"],
                    help="Paper evaluation scenario: scene1=sparse+figure8, "
                         "scene2=dense+narrow, scene3=dynamic+obstacles")
+
+    # Observation parameters (for SAC checkpoint loading)
+    p.add_argument("--obs_scene_embed", type=int, default=0,
+                   help="Scene embedding dimension")
+    p.add_argument("--obs_waypoint_steps", type=str, default=None,
+                   help="Future waypoint step offsets, e.g. '10,20,50'")
 
     # RRT* parameters
     p.add_argument("--rrt_max_iter", type=int, default=3000,

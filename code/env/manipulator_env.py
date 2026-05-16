@@ -83,6 +83,7 @@ class ManipulatorEnv:
                  w_manip: float = 0.05,
                  w_action: float = 0.5,
                  w_apf: float = 0.0,
+                 w_null: float = 0.0,
                  d_safe: float = 0.02,
                  success_bonus: float = 50.0,
                  sigma_d_safe: Optional[float] = None,
@@ -180,6 +181,7 @@ class ManipulatorEnv:
         self.d_safe = d_safe
         self.success_bonus = success_bonus
         self.w_apf = w_apf
+        self.w_null = w_null
         self.sdf = ObstacleSDF(n_obstacles, obs_radius)
 
         # Sigma gate parameters (default to reward d_safe/d_critical if not specified)
@@ -450,14 +452,24 @@ class ManipulatorEnv:
 
         self._dq_rep = dq_rep.copy()  # store for observation
 
+        # Per-capsule null-space penalty: penalize individual links very close to obstacles
+        r_null = 0.0
+        if self.w_null > 0:
+            capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
+            d_null = 0.02  # tight per-link threshold (independent of d_safe for sigma gate)
+            for d_cap in capsule_dists:
+                if d_cap < d_null:
+                    r_null -= self.w_null * (d_null - d_cap) / d_null
+
         reward, reward_info = self.reward_fn.compute(
             q=self.q, dq=self.dq, x_ee=x_ee,
             x_d=self.x_d, dx_d=self.dx_d,
             d_obs=d_obs, w=w,
             action=action, prev_dq=prev_dq,
         )
-        reward += r_apf
+        reward += r_apf + r_null
         reward_info["r_apf"] = r_apf
+        reward_info["r_null"] = r_null
         # Collision detection: use MuJoCo collision detector from reward_info;
         # fall back to SDF distance when MuJoCo is unavailable
         if self.mj_model is not None:
