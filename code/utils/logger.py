@@ -12,14 +12,67 @@ import math
 import os
 from datetime import datetime
 
+# ---------------------------------------------------------------------------
+# Centralised reward component registry
+# Add a new component once here — prints, CSV columns, and accumulators
+# all pick it up automatically.
+#   (info_key,   csv_column,    print_label, width)
+# ---------------------------------------------------------------------------
+REWARD_COMPONENTS = [
+    ("r_track",    "r_track",     "r_trk",   9),
+    ("r_obs",      "r_obs",       "r_obs",   9),
+    ("r_null",     "r_null",      "r_null",  8),
+    ("r_apf",      "r_apf",       "r_apf",   8),
+    ("r_manip",    "r_manip",     "r_manip", 8),
+    ("r_energy",   "r_energy",    "r_en",    7),
+    ("r_collision","r_collision", "r_coll",  8),
+    ("r_action",   "r_action",    "r_act",   8),
+]
+
+REWARD_CSV_COLS = [csv_col for _, csv_col, _, _ in REWARD_COMPONENTS]
+REWARD_HEADER    = "  ".join(f"{label:^{width}}" for _, _, label, width in REWARD_COMPONENTS)
+REWARD_FORMAT    = "  ".join(f"{{r_{i}:>{w}.4f}}" for i, (_, _, _, w) in enumerate(REWARD_COMPONENTS))
 
 CSV_COLUMNS = [
     "global_step", "episode", "ep_step",
     "reward", "d_obs", "w",
-    "r_track", "r_obs", "r_apf", "r_manip", "r_energy", "r_collision", "r_action", "collision_penalty",
+] + REWARD_CSV_COLS + [
+    "collision_penalty",
     "critic_loss", "actor_rl_loss", "physics_loss", "actor_loss", "alpha",
     "success", "ever_collided",
 ]
+
+
+def reward_accumulators():
+    """Return {csv_col: []} for per-episode reward tracking."""
+    return {csv_col: [] for _, csv_col, _, _ in REWARD_COMPONENTS}
+
+
+def accumulate_rewards(info: dict, acc: dict) -> None:
+    """Accumulate reward components from an info dict into accumulator dicts."""
+    for info_key, csv_col, _, _ in REWARD_COMPONENTS:
+        acc[csv_col].append(info.get(info_key, 0.0))
+
+
+def avg_rewards(acc: dict) -> dict:
+    """Compute per-component averages from accumulator dicts."""
+    return {
+        col: (sum(vals) / len(vals)) if vals else 0.0
+        for col, vals in acc.items()
+    }
+
+
+def reward_values_from_info(info: dict) -> dict:
+    """Extract reward component values from info dict, keyed by csv_column."""
+    return {csv_col: info.get(info_key, "") for info_key, csv_col, _, _ in REWARD_COMPONENTS}
+
+
+def reward_print_values(avg_dict: dict) -> dict:
+    """
+    Build dict suitable for str.format(REWARD_FORMAT).
+    avg_dict keys are csv_column names.
+    """
+    return {f"r_{i}": avg_dict.get(csv_col, 0.0) for i, (_, csv_col, _, _) in enumerate(REWARD_COMPONENTS)}
 
 
 class TrainingLogger:
@@ -72,6 +125,24 @@ class TrainingLogger:
         self._ep_w: list[float] = []
         self._ep_success: list[bool] = []
 
+    # ---- reward helpers (class methods for convenience) ----
+    @staticmethod
+    def reward_accumulators():
+        return reward_accumulators()
+
+    @staticmethod
+    def accumulate_rewards(info, acc):
+        accumulate_rewards(info, acc)
+
+    @staticmethod
+    def avg_rewards(acc):
+        return avg_rewards(acc)
+
+    @staticmethod
+    def reward_print_values(avg_dict):
+        return reward_print_values(avg_dict)
+
+    # ---- step-level logging ----
     def log_step(self, step: int, episode: int, ep_step: int,
                  reward: float, info: dict) -> None:
         """Call once per env step, immediately after env.step()."""
@@ -87,18 +158,15 @@ class TrainingLogger:
             "reward":           reward,
             "d_obs":            info.get("d_obs", ""),
             "w":                info.get("w", ""),
-            "r_track":          info.get("r_track", ""),
-            "r_obs":            info.get("r_obs", ""),
-            "r_apf":            info.get("r_apf", ""),
-            "r_manip":          info.get("r_manip", ""),
-            "r_energy":         info.get("r_energy", ""),
-            "r_collision":      info.get("r_collision", ""),
-            "r_action":         info.get("r_action", ""),
-            "r_null":           info.get("r_null", ""),
+            **reward_values_from_info(info),
             "collision_penalty": info.get("collision_penalty", ""),
             "success":          int(info.get("success", False)),
         }
 
+        self._fill_losses(row)
+        self._csv_writer.writerow(row)
+
+    def _fill_losses(self, row: dict) -> None:
         if self._last_losses is not None:
             row.update({
                 "critic_loss":    self._last_losses.get("critic_loss", ""),
@@ -110,8 +178,6 @@ class TrainingLogger:
         else:
             row.update({k: "" for k in
                         ["critic_loss", "actor_rl_loss", "physics_loss", "actor_loss", "alpha"]})
-
-        self._csv_writer.writerow(row)
 
     def log_update(self, losses: dict) -> None:
         """Call once per agent.update(), passing the returned losses dict."""
@@ -182,20 +248,12 @@ class TrainingLogger:
                              avg_critic_loss: float = None,
                              avg_actor_total_loss: float = None,
                              avg_w: float = None,
-                             avg_r_track: float = None,
-                             avg_r_obs: float = None,
-                             avg_r_apf: float = None,
-                             avg_r_manip: float = None,
-                             avg_r_energy: float = None,
-                             avg_r_collision: float = None,
-                             avg_r_action: float = None,
-                             avg_r_null: float = None,
-                             avg_collision_penalty: float = None,
                              success: bool = None,
-                             ever_collided: bool = None) -> None:
+                             ever_collided: bool = None,
+                             **avg_reward_kwargs) -> None:
         """Write a single episode-summary row to the training CSV.
 
-        Used by the parallel training path (no per-step CSV logging).
+        avg_reward_kwargs keys must match csv_column names in REWARD_COMPONENTS.
         """
         row = {
             "global_step":      step,
@@ -215,28 +273,19 @@ class TrainingLogger:
             row["w"] = avg_w
         if alpha is not None:
             row["alpha"] = alpha
-        if avg_r_track is not None:
-            row["r_track"] = avg_r_track
-        if avg_r_obs is not None:
-            row["r_obs"] = avg_r_obs
-        if avg_r_apf is not None:
-            row["r_apf"] = avg_r_apf
-        if avg_r_manip is not None:
-            row["r_manip"] = avg_r_manip
-        if avg_r_energy is not None:
-            row["r_energy"] = avg_r_energy
-        if avg_r_collision is not None:
-            row["r_collision"] = avg_r_collision
-        if avg_r_action is not None:
-            row["r_action"] = avg_r_action
-        if avg_r_null is not None:
-            row["r_null"] = avg_r_null
-        if avg_collision_penalty is not None:
-            row["collision_penalty"] = avg_collision_penalty
+
+        for _, csv_col, _, _ in REWARD_COMPONENTS:
+            if csv_col in avg_reward_kwargs and avg_reward_kwargs[csv_col] is not None:
+                row[csv_col] = avg_reward_kwargs[csv_col]
+
+        collision_penalty = avg_reward_kwargs.get("collision_penalty")
+        if collision_penalty is not None:
+            row["collision_penalty"] = collision_penalty
         if success is not None:
             row["success"] = int(success)
         if ever_collided is not None:
             row["ever_collided"] = int(ever_collided)
+
         self._csv_writer.writerow(row)
         self._csv_file.flush()
 
