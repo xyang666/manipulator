@@ -94,6 +94,7 @@ class TrainingLogger:
             "r_energy":         info.get("r_energy", ""),
             "r_collision":      info.get("r_collision", ""),
             "r_action":         info.get("r_action", ""),
+            "r_null":           info.get("r_null", ""),
             "collision_penalty": info.get("collision_penalty", ""),
             "success":          int(info.get("success", False)),
         }
@@ -188,6 +189,7 @@ class TrainingLogger:
                              avg_r_energy: float = None,
                              avg_r_collision: float = None,
                              avg_r_action: float = None,
+                             avg_r_null: float = None,
                              avg_collision_penalty: float = None,
                              success: bool = None,
                              ever_collided: bool = None) -> None:
@@ -227,6 +229,8 @@ class TrainingLogger:
             row["r_collision"] = avg_r_collision
         if avg_r_action is not None:
             row["r_action"] = avg_r_action
+        if avg_r_null is not None:
+            row["r_null"] = avg_r_null
         if avg_collision_penalty is not None:
             row["collision_penalty"] = avg_collision_penalty
         if success is not None:

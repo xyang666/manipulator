@@ -283,7 +283,7 @@ class ManipulatorEnv:
 
         else:
             # Decompose 7D action into task relaxation + null-space coefficients
-            delta_x_rl = action[:3]   # Δẋ_RL ∈ R^3 (position-space relaxation)
+            delta_x_rl = np.zeros(3)  # Δẋ_RL = 0: tracking handled by nominal controller
             z          = action[3:]   # z ∈ R^4 (nullspace coefficients, via SVD basis)
 
             # Compute nominal task-space velocity (PID tracking)
