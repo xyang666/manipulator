@@ -68,8 +68,10 @@ def parse_args():
     p.add_argument("--grad_steps",  type=int,   default=4,
                    help="Number of gradient updates per env step")
     p.add_argument("--buffer_size", type=int,   default=500_000)
-    p.add_argument("--action_scale", type=float, default=0.3,
-                   help="SAC action scale for exploration (default: 0.3)")
+    p.add_argument("--task_scale", type=float, default=1.0,
+                   help="Task relaxation scale: Δẋ_RL ∈ [-task_scale, task_scale] (m/s)")
+    p.add_argument("--nullspace_scale", type=float, default=0.5,
+                   help="Nullspace coefficient scale: z ∈ [-nullspace_scale, nullspace_scale]")
     p.add_argument("--lambda_dyn",  type=float, default=1.0,
                    help="Weight of physics regularization loss")
     p.add_argument("--d_critical",  type=float, default=0.05,
@@ -361,6 +363,8 @@ def main():
             n_envs=args.n_envs,
             rollout_steps=args.rollout_steps,
             lambda_dyn=args.lambda_dyn,
+            task_scale=args.task_scale,
+            nullspace_scale=args.nullspace_scale,
             ppo_epochs=args.ppo_epochs,
             batch_size=args.batch_size,
             device=_device,
@@ -373,7 +377,8 @@ def main():
             dynamics=dyn,
             hidden_dims=args.hidden_dims,
             lambda_dyn=args.lambda_dyn,
-            action_scale=args.action_scale,
+            task_scale=args.task_scale,
+            nullspace_scale=args.nullspace_scale,
             lr=args.lr,
             alpha=args.alpha,
             target_entropy=args.target_entropy,
@@ -531,8 +536,8 @@ def main():
             done        = False
             while not done:
                 if total_steps < args.start_steps:
-                    a_task = np.random.uniform(-args.action_scale, args.action_scale, 3)
-                    a_null = np.random.uniform(-0.5, 0.5, env.n - 3)
+                    a_task = np.random.uniform(-args.task_scale, args.task_scale, 3)
+                    a_null = np.random.uniform(-args.nullspace_scale, args.nullspace_scale, env.n - 3)
                     action = np.concatenate([a_task, a_null])
                 else:
                     action = agent.select_action(obs)
@@ -828,8 +833,8 @@ def main():
                 actions = np.zeros((n_envs, action_dim), dtype=np.float32)
                 for i in range(n_envs):
                     if total_steps < args.start_steps:
-                        a_task = np.random.uniform(-args.action_scale, args.action_scale, 3)
-                        a_null = np.random.uniform(-0.5, 0.5, ref_env.n - 3)
+                        a_task = np.random.uniform(-args.task_scale, args.task_scale, 3)
+                        a_null = np.random.uniform(-args.nullspace_scale, args.nullspace_scale, ref_env.n - 3)
                         actions[i] = np.concatenate([a_task, a_null])
                     else:
                         actions[i] = agent.select_action(obs[i])

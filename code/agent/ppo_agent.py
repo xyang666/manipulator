@@ -53,7 +53,8 @@ class PPOAgent:
         ppo_epochs: int = 10,
         batch_size: int = 64,
         lambda_dyn: float = 0.1,
-        action_scale: float = 0.3,
+        task_scale: float = 1.0,
+        nullspace_scale: float = 0.5,
         hidden_dims: tuple = (256, 256),
         device: str = "cpu",
     ):
@@ -68,7 +69,8 @@ class PPOAgent:
 
         # Networks
         self.actor = PhysicsInformedActor(
-            state_dim, action_dim, list(hidden_dims), action_scale
+            state_dim, action_dim, list(hidden_dims),
+            task_scale=task_scale, nullspace_scale=nullspace_scale
         ).to(self.device)
         self.value = ValueNetwork(state_dim, list(hidden_dims)).to(self.device)
 

@@ -25,6 +25,7 @@ Usage:
 """
 
 import numpy as np
+from env.dynamics import DQ_MAX
 import json
 import argparse
 import sys
@@ -516,7 +517,6 @@ class TrajectoryGenerator:
         path_param = 0.0
         total = max_steps
         Kp_base = 4.0
-        DQ_MAX = np.array([2.175, 2.175, 2.175, 2.175, 2.61, 2.61, 2.61])
 
         # Trapezoidal profile: ease-in (20%), constant (60%), ease-out (20%)
         a_end = int(total * 0.2)

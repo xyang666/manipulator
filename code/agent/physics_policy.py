@@ -3,10 +3,10 @@ physics_policy.py
 -----------------
 Physics-Informed Policy Network (paper core contribution).
 
-Key idea: the actor network outputs 10D actions:
-    a = [Δẋ_RL (3), z (4)]
-    - Δẋ_RL: position-space relaxation (scaled to allow obstacle avoidance)
-    - z    : null-space coefficients, lifted to 7D via SVD basis B(q)
+Key idea: the actor network outputs actions:
+    a = [Δẋ_RL (3), z (n_joints-3)]
+    - Δẋ_RL: position-space relaxation (scaled by task_scale)
+    - z    : null-space coefficients, lifted to joint velocity via SVD basis B(q)
 
 Differentiable physics regularization (Plan B):
     Reconstructs dq_cmd from action analytically using stored Jacobian,
@@ -15,9 +15,9 @@ Differentiable physics regularization (Plan B):
 Architecture:
     Input:  state s_t = [q, dq, x_ee, x_d, dx_d, d_obs, w(q)]  (dim=state_dim=25)
     Hidden: MLP with tanh activations
-    Output: 10D action [Δẋ_RL (3), dq0 (7)]
-            task relaxation scaled by task_scale (larger for avoidance),
-            null-space motion scaled by nullspace_scale (smaller to reduce self-collision)
+    Output: [Δẋ_RL (3), z (n_joints-3)]
+            task relaxation scaled by task_scale,
+            null-space coefficients scaled by nullspace_scale
 """
 
 import numpy as np
@@ -33,33 +33,31 @@ LOG_STD_MAX = 2
 
 class PhysicsInformedActor(nn.Module):
     """
-    Gaussian actor for SAC outputting 7D actions: [Δẋ_RL (3), z (4)].
+    Gaussian actor for SAC outputting actions: [Δẋ_RL (3), z (n_joints-3)].
 
     Task relaxation and null-space components are scaled differently:
-    - task_scale (default 1.5): larger to allow decisive avoidance
-    - nullspace_scale (default 0.15): smaller to reduce self-collision risk
+    - task_scale (default 1.0): scales Δẋ_RL for task-space relaxation
+    - nullspace_scale (default 0.15): scales z for null-space self-motion
+    Default defaults differ -- CLI args override via --task_scale and --nullspace_scale.
 
-    The 4D nullspace coefficients z are lifted to 7D joint velocity via
+    The nullspace coefficients z are lifted to joint velocity via
     the differentiable SVD nullspace basis B(q) in the physics regularizer.
     """
 
     def __init__(self, state_dim: int, action_dim: int,
                  hidden_dims: list[int] = (256, 256),
-                 action_scale: float = 0.5,
-                 task_scale: float = 1.5,
+                 task_scale: float = 1.0,
                  nullspace_scale: float = 0.15):
         """
         Parameters
         ----------
-        state_dim      : dimension of input state (25)
-        action_dim     : total action dimension (10 = 3 + 7)
-        hidden_dims    : MLP hidden layer sizes
-        action_scale   : legacy scale (unused when task/nullspace scales provided)
-        task_scale     : scale for task relaxation Δẋ_RL (first 3 dims)
-        nullspace_scale: scale for null-space coefficients (last dims, n_joints-3)
+        state_dim        : dimension of input state (25)
+        action_dim       : total action dimension (10 = 3 + 7)
+        hidden_dims      : MLP hidden layer sizes
+        task_scale       : scale for task relaxation Δẋ_RL (first 3 dims)
+        nullspace_scale  : scale for null-space coefficients (last dims, n_joints-3)
         """
         super().__init__()
-        self.action_scale    = action_scale
         self.task_scale      = task_scale
         self.nullspace_scale = nullspace_scale
         self.task_dim        = 3  # position-only (Route A)

@@ -29,7 +29,7 @@ except ImportError:
     print("[env] WARNING: mujoco not found. Running in kinematics-only mode.")
 
 from env.kinematics import ManipulatorKinematics
-from env.dynamics import ManipulatorDynamics
+from env.dynamics import ManipulatorDynamics, DQ_MAX
 from agent.reward import RewardFunction
 from utils.sdf import ObstacleSDF
 from utils.collision import CollisionDetector
@@ -46,7 +46,6 @@ except ImportError:
 # Default Panda-like joint limits
 Q_MIN = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
 Q_MAX = np.array([ 2.8973,  1.7628,  2.8973, -0.0698,  2.8973,  3.7525,  2.8973])
-DQ_MAX = np.array([2.175, 2.175, 2.175, 2.175, 2.610, 2.610, 2.610])  # rad/s
 
 
 class ManipulatorEnv:
@@ -56,10 +55,6 @@ class ManipulatorEnv:
     If MuJoCo + URDF are available, runs full physics simulation.
     Otherwise runs a kinematics-only simulation for algorithm validation.
     """
-
-    # Joint velocity limits (rad/s) from MuJoCo actuator specifications
-    DQ_MAX = np.array([2.175, 2.175, 2.175, 2.175, 2.61, 2.61, 2.61])
-
     def __init__(self,
                  urdf_path: Optional[str] = None,
                  xml_path: Optional[str] = None,
@@ -283,8 +278,8 @@ class ManipulatorEnv:
 
         else:
             # Decompose 7D action into task relaxation + null-space coefficients
-            delta_x_rl = np.zeros(3)  # Δẋ_RL = 0: tracking handled by nominal controller
-            z          = action[3:]   # z ∈ R^4 (nullspace coefficients, via SVD basis)
+            delta_x_rl = action[:3]   # Δẋ_RL ∈ R^3: task-space relaxation (gated by σ)
+            z          = action[3:]   # z ∈ R^{n-3} (nullspace coefficients, via SVD basis)
 
             # Compute nominal task-space velocity (PID tracking)
             dx_nom = self._compute_task_velocity()  # ẋ_d + Kp(x_d - x) + Ki*∫(x_d - x)dt
@@ -323,6 +318,9 @@ class ManipulatorEnv:
 
         # Save previous joint velocity for smoothness penalty
         prev_dq = self.dq.copy()
+
+        # Apply joint velocity limits before integration
+        # dq_cmd = np.clip(dq_cmd, -self._dq_max, self._dq_max)
 
         # Integrate (kinematics-only mode)
         q_new = self.q + dq_cmd * self.dt

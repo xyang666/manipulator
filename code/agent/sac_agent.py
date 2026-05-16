@@ -37,7 +37,8 @@ class SACAgent:
                  alpha:        float = 0.2,
                  target_entropy: float | None = None,
                  lambda_dyn:   float = 0.1,
-                 action_scale: float = 0.3,
+                 task_scale:   float = 1.0,
+                 nullspace_scale: float = 0.5,
                  hidden_dims:  tuple = (256, 256),
                  device:       str   = "cpu",
                  critic_warmup: int = 5000,
@@ -53,7 +54,9 @@ class SACAgent:
 
         # Networks
         self.actor   = PhysicsInformedActor(state_dim, action_dim,
-                                            list(hidden_dims), action_scale).to(self.device)
+                                            list(hidden_dims),
+                                            task_scale=task_scale,
+                                            nullspace_scale=nullspace_scale).to(self.device)
         self.critic  = SoftmaxCritic(state_dim, action_dim, list(hidden_dims),
                                      n_critics=n_critics).to(self.device)
         self.critic_target = copy.deepcopy(self.critic).to(self.device)

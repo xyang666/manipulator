@@ -9,6 +9,8 @@ over a prediction horizon while respecting constraints.
 
 import numpy as np
 from typing import Optional
+from env.dynamics import DQ_MAX
+
 try:
     import cvxpy as cp
     HAS_CVXPY = True
@@ -436,10 +438,9 @@ class MPCController:
         cost = cp.sum_squares(dq_var - dq_desired) + 0.01 * cp.sum_squares(dq_var)
 
         # Constraints
-        dq_max = np.array([2.175, 2.175, 2.175, 2.175, 2.610, 2.610, 2.610])
         constraints = [
-            dq_var >= -dq_max,
-            dq_var <= dq_max
+            dq_var >= -DQ_MAX,
+            dq_var <= DQ_MAX
         ]
 
         # Solve

@@ -27,7 +27,8 @@ def parse_args():
     p.add_argument("--epochs", type=int, default=500)
     p.add_argument("--batch_size", type=int, default=256)
     p.add_argument("--lr", type=float, default=1e-3)
-    p.add_argument("--action_scale", type=float, default=0.5)
+    p.add_argument("--task_scale", type=float, default=1.0)
+    p.add_argument("--nullspace_scale", type=float, default=0.15)
     return p.parse_args()
 
 
@@ -52,7 +53,8 @@ def main():
 
     # Train the actual PhysicsInformedActor (Tanh activations, squashed output)
     actor = PhysicsInformedActor(args.state_dim, args.action_dim, hidden_dims,
-                                 action_scale=args.action_scale)
+                                 task_scale=args.task_scale,
+                                 nullspace_scale=args.nullspace_scale)
     optimizer = torch.optim.Adam(actor.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
     loss_fn = nn.MSELoss()
