@@ -27,8 +27,8 @@ class RewardFunction:
                  w_energy:      float = 0.001,
                  w_collision:   float = 100.0,
                  w_action:      float = 0.5,
-                 d_safe:        float = 0.02,
-                 d_critical:    float = 0.02,
+                 d_safe:        float = 0.06,
+                 d_critical:    float = 0.05,
                  alpha_relax:   float = 0.1,
                  dt:            float = 0.02,
                  collision_detector = None):

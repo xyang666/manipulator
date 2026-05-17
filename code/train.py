@@ -86,6 +86,8 @@ def parse_args():
                    help="Collision contact penalty weight")
     p.add_argument("--w_track", type=float, default=12.0,
                    help="Tracking error penalty weight")
+    p.add_argument("--w_energy", type=float, default=0.001,
+                   help="Joint velocity energy penalty weight")
     p.add_argument("--d_safe", type=float, default=0.06,
                    help="Safe distance threshold for obstacle reward (m)")
     p.add_argument("--sigma_d_safe", type=float, default=None,
@@ -245,8 +247,8 @@ def main():
         path_deadzone=args.path_deadzone,
         w_obs=args.w_obs, w_obs_safe=args.w_obs_safe,
         w_collision=args.w_collision, w_track=args.w_track,
-        w_manip=args.w_manip, w_action=args.w_action, w_apf=args.w_apf,
-        w_null=args.w_null,
+        w_manip=args.w_manip, w_energy=args.w_energy,
+        w_action=args.w_action, w_apf=args.w_apf, w_null=args.w_null,
         d_safe=args.d_safe, success_bonus=args.success_bonus,
         sigma_d_safe=args.sigma_d_safe, sigma_d_critical=args.sigma_d_critical,
         obs_scene_embed=args.obs_scene_embed,

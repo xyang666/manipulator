@@ -76,10 +76,11 @@ class ManipulatorEnv:
                  w_collision: float = 100.0,
                  w_track: float = 12.0,
                  w_manip: float = 0.05,
+                 w_energy: float = 0.001,
                  w_action: float = 0.5,
                  w_apf: float = 0.0,
                  w_null: float = 0.0,
-                 d_safe: float = 0.02,
+                 d_safe: float = 0.06,
                  success_bonus: float = 50.0,
                  sigma_d_safe: Optional[float] = None,
                  sigma_d_critical: Optional[float] = None,
@@ -170,7 +171,7 @@ class ManipulatorEnv:
         self.reward_fn = RewardFunction(
             dt=dt, w_obs=w_obs, w_obs_safe=w_obs_safe,
             w_collision=w_collision, w_track=w_track,
-            w_manip=w_manip, w_action=w_action,
+            w_manip=w_manip, w_energy=w_energy, w_action=w_action,
             d_safe=d_safe, d_critical=d_critical, alpha_relax=alpha_relax,
             collision_detector=self.collision_detector)
         self.d_safe = d_safe
@@ -182,10 +183,9 @@ class ManipulatorEnv:
         # Sigma gate parameters (default to reward d_safe/d_critical if not specified)
         self.sigma_d_safe = sigma_d_safe if sigma_d_safe is not None else d_safe
         self.sigma_d_critical = sigma_d_critical if sigma_d_critical is not None else d_critical
-        # Sync: w_track relaxation threshold = sigma gate open threshold
-        # When sigma opens (policy gains control), tracking weight drops accordingly
-        if sigma_d_safe is not None:
-            self.reward_fn.d_critical = self.sigma_d_safe
+        # Sync: tracking weight relaxation threshold = sigma gate open threshold
+        # Sigma gate and reward relaxation must share the same d_critical point
+        self.reward_fn.d_critical = self.sigma_d_safe
         self.sigma_smooth = sigma_smooth
         self._last_sigma = 0.0
 
