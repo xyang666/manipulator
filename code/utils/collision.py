@@ -172,20 +172,22 @@ class CollisionDetector:
         return float(total_pen), n_obs
 
     def compute_collision_penalty(self,
-                                   w_obstacle: float = 100.0,
-                                   w_self: float = 50.0) -> Tuple[float, dict]:
+                                   d_ref: float = 0.02) -> Tuple[float, dict]:
         """
-        Compute collision penalty for reward/loss function.
+        Compute normalized collision penalty.
+
+        Penetration depths (in meters) are divided by d_ref so the return
+        value is unitless and typically ∈ [0, 1] for light/medium contacts.
+        The caller applies its own weight.
 
         Parameters
         ----------
-        w_obstacle : weight for obstacle collision penalty
-        w_self     : weight for self-collision penalty
+        d_ref : reference depth (m).  0.02 = 2 cm.
 
         Returns
         -------
-        penalty : total collision penalty (negative reward)
-        info    : dict with collision details
+        penalty : normalized total collision penalty (obs + self)
+        info    : dict with raw penetration and contact counts
         """
         if not self.has_mujoco:
             return 0.0, {}
@@ -194,9 +196,9 @@ class CollisionDetector:
         obs_pen, n_obs = self.detect_obstacle_collisions()
         self_pen, n_self = self.detect_self_collisions()
 
-        # Compute penalties (linear: even sub-mm penetrations get meaningful cost)
-        penalty_obs = w_obstacle * abs(obs_pen)
-        penalty_self = w_self * abs(self_pen)
+        # Normalize by reference depth
+        penalty_obs = abs(obs_pen) / d_ref
+        penalty_self = abs(self_pen) / d_ref
 
         total_penalty = penalty_obs + penalty_self
 
