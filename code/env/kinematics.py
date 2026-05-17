@@ -28,6 +28,40 @@ except ImportError:
     print("[kinematics] WARNING: pinocchio not found. Using simplified DH model.")
 
 
+def _segment_distance_sq(a0, a1, b0, b1):
+    """Squared minimum distance between two line segments (Eberly 2002)."""
+    d1 = a1 - a0
+    d2 = b1 - b0
+    r = a0 - b0
+    a = np.dot(d1, d1)
+    e = np.dot(d2, d2)
+    f = np.dot(d2, r)
+    eps = 1e-12
+
+    if a <= eps and e <= eps:
+        return np.dot(r, r)
+    if a <= eps:
+        t = max(0.0, min(1.0, np.dot(d2, a0 - b0) / e))
+        return np.sum((a0 - b0 - t * d2) ** 2)
+    if e <= eps:
+        s = max(0.0, min(1.0, -np.dot(d1, r) / a))
+        return np.sum((a0 + s * d1 - b0) ** 2)
+
+    b = np.dot(d1, d2)
+    c = np.dot(d1, r)
+    denom = a * e - b * b
+
+    if denom < eps:
+        s = max(0.0, min(1.0, -c / a))
+        closest_a = a0 + s * d1
+        t = max(0.0, min(1.0, np.dot(d2, closest_a - b0) / e))
+        return np.sum((closest_a - b0 - t * d2) ** 2)
+
+    s = max(0.0, min(1.0, (b * f - c * e) / denom))
+    t = max(0.0, min(1.0, (a * f - b * c) / denom))
+    return np.sum((a0 + s * d1 - b0 - t * d2) ** 2)
+
+
 class ManipulatorKinematics:
     """
     Kinematic computations using Pinocchio (or a simplified fallback).
@@ -263,6 +297,76 @@ class ManipulatorKinematics:
                 capsules.append((f_base, f_tip, 0.015))
 
         return capsules
+
+    # Adjacent link pairs (parent-child in kinematic tree). Capsules from
+    # these link pairs are excluded from self-collision tracking since
+    # they are mechanically connected and cannot collide.
+    _ADJACENT_LINK_PAIRS = {
+        (0, 1), (1, 2), (2, 3), (3, 4), (4, 5),
+        (5, 6), (6, 7), (7, 8), (8, 9), (8, 10),
+    }
+
+    def _get_capsule_link_indices(self) -> list[int]:
+        """Return link index for each capsule (same length as get_link_capsules)."""
+        capsule_to_link = []
+        link_idx = 0
+        for link_name in [
+            "panda_link0", "panda_link1", "panda_link2", "panda_link3",
+            "panda_link4", "panda_link5", "panda_link6", "panda_link7",
+            "panda_hand", "panda_leftfinger", "panda_rightfinger",
+        ]:
+            if link_name == "panda_link5":
+                n_caps = 2
+            else:
+                n_caps = 1
+            for _ in range(n_caps):
+                capsule_to_link.append(link_idx)
+            link_idx += 1
+        return capsule_to_link
+
+    def get_self_collision_pairs(self) -> list[tuple[int, int]]:
+        """Return list of (i, j) capsule index pairs that can self-collide."""
+        capsule_to_link = self._get_capsule_link_indices()
+        n_caps = len(capsule_to_link)
+        pairs = []
+        for i in range(n_caps):
+            li = capsule_to_link[i]
+            for j in range(i + 1, n_caps):
+                lj = capsule_to_link[j]
+                # Same link: capsules share body, can't collide
+                if li == lj:
+                    continue
+                # Adjacent in kinematic tree: mechanically connected
+                if (li, lj) in self._ADJACENT_LINK_PAIRS:
+                    continue
+                if (lj, li) in self._ADJACENT_LINK_PAIRS:
+                    continue
+                pairs.append((i, j))
+        return pairs
+
+    def compute_self_distances(self, q: np.ndarray) -> np.ndarray:
+        """
+        Compute capsule-to-capsule distances for all non-adjacent pairs.
+
+        Returns
+        -------
+        distances : ndarray of shape (n_self_pairs,)
+            Each entry = max(0, segment_distance - r_i - r_j), the surface-to-
+            surface distance between the two capsule primitives.
+        """
+        capsules = self.get_link_capsules(q)
+        pairs = self.get_self_collision_pairs()
+        dists = np.empty(len(pairs), dtype=np.float32)
+        for pi, (i, j) in enumerate(pairs):
+            p1, p2, r_i = capsules[i]
+            q1, q2, r_j = capsules[j]
+            seg_dist = np.sqrt(max(_segment_distance_sq(p1, p2, q1, q2), 0.0))
+            dists[pi] = max(0.0, seg_dist - r_i - r_j)
+        return dists
+
+    @property
+    def n_self_pairs(self) -> int:
+        return len(self.get_self_collision_pairs())
 
     def jacobian_position(self, q: np.ndarray) -> np.ndarray:
         """

@@ -79,11 +79,13 @@ class RewardFunction:
         total_reward : float
         info         : dict with individual components
         """
-        # Tracking reward: linear position error with dynamic weight
-        # Linear (not squared) so moderate deviations still incur meaningful cost
+        # Tracking reward: exponential of position error (positive)
+        # Good tracking → positive reward, bad tracking → near zero.
+        # Dynamic weight w_eff drops near obstacles so the reward decays slower,
+        # giving the policy room to deviate for obstacle avoidance.
         pos_err = np.linalg.norm(x_ee - x_d)
         w_eff = self._effective_track_weight(d_obs)
-        r_track = -w_eff * pos_err
+        r_track = self.w_track * np.exp(-w_eff * pos_err)
 
         # Obstacle reward: 0 at d_safe boundary (continuous), ramps positive when safe,
         # dense penalty when close (below d_safe)
@@ -101,15 +103,17 @@ class RewardFunction:
         # Energy penalty: penalize large joint velocities
         r_energy = -self.w_energy * np.sum(dq ** 2)
 
-        # Collision penalty: MuJoCo-based collision detection
+        # Collision penalty: MuJoCo-based collision detection.
+        # Penetration is normalized by d_critical (reference depth), so the
+        # returned value is unitless ≈ [0, 1] for typical contacts.
+        # w_collision directly controls the max per-step contribution.
         r_collision = 0.0
         collision_info = {}
         if self.collision_detector is not None:
             collision_penalty, collision_info = self.collision_detector.compute_collision_penalty(
-                w_obstacle=self.w_collision,
-                w_self=self.w_collision * 0.5
+                d_ref=self.d_critical
             )
-            r_collision = -collision_penalty
+            r_collision = -self.w_collision * collision_penalty
 
         # Action smoothness penalty: penalize joint velocity change between steps
         # ‖dq_t - dq_{t-1}‖² — model learns to avoid jittery motion naturally

@@ -127,16 +127,27 @@ class ManipulatorEnv:
         except Exception:
             self._capsule_dists_dim = 0
 
+        # Self-collision distances (non-adjacent capsule pairs)
+        try:
+            self._self_dists_dim = self.kin.n_self_pairs
+        except Exception:
+            self._self_dists_dim = 0
+
         if self.obs_scene_embed > 0:
             # Scene-embed observation: no top-K (redundant with scene_embed)
             self.obs_dim = (self.n * 2 + 3 + 3    # q, dq, x_ee, x_d
                             + self._capsule_dists_dim
+                            + self._self_dists_dim
                             + self.obs_scene_embed * 4
                             + len(self.obs_waypoint_steps) * 3
                             + 1                   # path_progress s
                             + self.n)      # dq_rep
         else:
-            self.obs_dim = self.n * 2 + 3 + 3 + self._capsule_dists_dim + 1 + self.n  # 40-dim
+            self.obs_dim = (self.n * 2 + 3 + 3
+                            + self._capsule_dists_dim
+                            + self._self_dists_dim
+                            + 1
+                            + self.n)  # 40-dim
         self.act_dim = self.n  # 7D: 3 (task) + 4 (nullspace, via nullspace basis)
 
         # Truncate DQ_MAX to match actual DOF
@@ -450,14 +461,19 @@ class ManipulatorEnv:
 
         self._dq_rep = dq_rep.copy()  # store for observation
 
-        # Per-capsule null-space penalty: penalize individual links very close to obstacles
+        # Per-capsule null-space penalty: penalize individual links very close to obstacles.
+        # Each capsule contributes at most 1.0 (when d_cap ≤ 0), then mean is taken
+        # so the base is normalized to [0, 1].  w_null directly controls max contribution.
         r_null = 0.0
         if self.w_null > 0:
             capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
             d_null = 0.02  # tight per-link threshold (independent of d_safe for sigma gate)
+            null_raw = 0.0
             for d_cap in capsule_dists:
                 if d_cap < d_null:
-                    r_null -= self.w_null * (d_null - d_cap) / d_null
+                    null_raw += (d_null - d_cap) / d_null  # each ∈ [0, 1]
+            n_caps = max(len(capsule_dists), 1)
+            r_null = -self.w_null * null_raw / n_caps  # mean ∈ [0, 1]
 
         reward, reward_info = self.reward_fn.compute(
             q=self.q, dq=self.dq, x_ee=x_ee,
@@ -937,9 +953,14 @@ class ManipulatorEnv:
             # (n_capsules scalars — direct collision signal for each link)
             capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
 
+            # Per-capsule-pair self-collision distances
+            # (n_self_pairs scalars — direct signal for link-to-link proximity)
+            self_dists = self.kin.compute_self_distances(self.q)
+
             # State: [q(7), dq(7), x_ee(3), x_d(3),
             #         wp_1(3), ..., wp_N(3),
             #         capsule_dists(n_caps),
+            #         self_dists(n_self_pairs),
             #         scene_embed(N_obs * 4),
             #         path_progress(1),
             #         dq_rep(7)]
@@ -947,6 +968,7 @@ class ManipulatorEnv:
                 self.q, self.dq, x_ee, self.x_d,
                 *waypoints,
                 capsule_dists,
+                self_dists,
                 scene_embed,
                 [self.path_param],
                 self._dq_rep,
@@ -954,11 +976,12 @@ class ManipulatorEnv:
         else:
             # Legacy observation
             capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
+            self_dists = self.kin.compute_self_distances(self.q)
 
-            # State: [q(7), dq(7), x_ee(3), x_d(3), capsule_dists(12), path_progress(1), dq_rep(7)] = 40
+            # State: [q(7), dq(7), x_ee(3), x_d(3), capsule_dists(12), self_dists, path_progress(1), dq_rep(7)]
             obs = np.concatenate([
                 self.q, self.dq, x_ee, self.x_d,
-                capsule_dists, [self.path_param], self._dq_rep,
+                capsule_dists, self_dists, [self.path_param], self._dq_rep,
             ])
 
         return obs.astype(np.float32)
