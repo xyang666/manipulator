@@ -113,6 +113,8 @@ class PhysicsInformedActor(nn.Module):
 
         # log prob with change-of-variables for tanh
         log_prob = dist.log_prob(x) - torch.log(scale * (1 - y.pow(2)) + 1e-6)
+        # Zero-scale dimensions are deterministic → contribute 0 to log_prob
+        log_prob = log_prob * (scale > 0).float()
         log_prob = log_prob.sum(dim=-1, keepdim=True)
 
         mean_scale = torch.ones_like(mean)

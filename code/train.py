@@ -112,6 +112,8 @@ def parse_args():
                    help="Minimum per-step reward (clip negative tail). Default: no clip.")
     p.add_argument("--lr", type=float, default=3e-4,
                    help="Learning rate for actor/critic/alpha optimizers")
+    p.add_argument("--tau", type=float, default=0.005,
+                   help="Soft update coefficient for target networks")
     p.add_argument("--alpha", type=float, default=0.1,
                    help="Initial SAC entropy coefficient")
     p.add_argument("--target_entropy", type=float, default=None,
@@ -412,7 +414,7 @@ def main():
         "lr":           args.lr,
         "alpha":        args.alpha,
         "gamma":        0.99,
-        "tau":          0.005,
+        "tau":          args.tau,
         "state_dim":    state_dim,
         "action_dim":   action_dim,
     }
@@ -669,6 +671,7 @@ def main():
                     values = np.zeros(n_envs, dtype=np.float32)
                     for i in range(n_envs):
                         actions[i], log_probs[i], values[i] = agent.act(obs[i])
+                        actions[i][:3] = np.zeros(3)
 
                     result = pool.step_all(actions)
 
@@ -735,7 +738,7 @@ def main():
 
                             if episode % args.log_every == 0:
                                 rp = reward_print_values(avg_r)
-                                print(f"{episode:>8d}  {total_steps:>8d}  {env_rewards[i]:>10.3f}  "
+                                print(f"{episode:>8d}  {env_steps[i]:>8d}  {env_rewards[i]:>10.3f}  "
                                       f"{REWARD_FORMAT.format(**rp)}  "
                                       f"{avg_l_actor:>10.4f}  {avg_l_dyn:>9.4f}  {min_d_obs:>8.3f}  "
                                       f"s={scene_id}  suc={_log_success_count}")
@@ -838,11 +841,13 @@ def main():
                 actions = np.zeros((n_envs, action_dim), dtype=np.float32)
                 for i in range(n_envs):
                     if total_steps < args.start_steps:
-                        a_task = np.random.uniform(-args.task_scale, args.task_scale, 3)
+                        # a_task = np.random.uniform(-args.task_scale, args.task_scale, 3)
+                        a_task = np.zeros(3)
                         a_null = np.random.uniform(-args.nullspace_scale, args.nullspace_scale, ref_env.n - 3)
                         actions[i] = np.concatenate([a_task, a_null])
                     else:
                         actions[i] = agent.select_action(obs[i])
+                        actions[i][:3] = np.zeros(3)
 
                 # Step all envs in parallel
                 result = pool.step_all(actions)
@@ -912,7 +917,7 @@ def main():
 
                         if episode % args.log_every == 0:
                             rp = reward_print_values(avg_r)
-                            print(f"{episode:>8d}  {total_steps:>8d}  {env_rewards[i]:>10.3f}  "
+                            print(f"{episode:>8d}  {env_steps[i]:>8d}  {env_rewards[i]:>10.3f}  "
                                   f"{REWARD_FORMAT.format(**rp)}  "
                                   f"{avg_l_actor:>10.4f}  {avg_l_dyn:>9.4f}  {min_d_obs:>8.3f}  "
                                   f"s={scene_id}  suc={_log_success_count}")

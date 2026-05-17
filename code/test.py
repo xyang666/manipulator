@@ -332,8 +332,14 @@ def run_rl(env, args, agent):
                     env._capsule_dists_dim = len(env.kin.get_link_capsules(zero_q))
                 except Exception:
                     env._capsule_dists_dim = 12  # fallback: 12 capsules for Panda
+            # Also compute self-collision dim
+            try:
+                env._self_dists_dim = env.kin.n_self_pairs
+            except Exception:
+                env._self_dists_dim = 0
             env.obs_dim = (env.n * 2 + 3 + 3     # q, dq, x_ee, x_d
                            + env._capsule_dists_dim
+                           + env._self_dists_dim
                            + env.obs_scene_embed * 4
                            + len(env.obs_waypoint_steps) * 3
                            + 1                    # path_progress s

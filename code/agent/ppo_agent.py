@@ -197,12 +197,17 @@ class PPOAgent:
                 scale = torch.ones_like(mean)
                 scale[:, : self.actor.task_dim] = self.actor.task_scale
                 scale[:, self.actor.task_dim :] = self.actor.nullspace_scale
-                clamped = torch.clamp(actions / scale, -0.999, 0.999)
+
+                # Handle zero-scale dimensions (deterministic → no prob contribution)
+                nonzero_scale = (scale > 0).float()
+                safe_scale = scale + (1.0 - nonzero_scale) * 1e-8  # prevent 0/0 → NaN
+                clamped = torch.clamp(actions / safe_scale, -0.999, 0.999)
                 x = 0.5 * (torch.log(1 + clamped) - torch.log(1 - clamped))
 
                 log_prob = dist.log_prob(x) - torch.log(
                     scale * (1 - clamped.pow(2)) + 1e-6
                 )
+                log_prob = log_prob * nonzero_scale  # zero-scale dims contribute 0
                 log_prob = log_prob.sum(dim=-1, keepdim=True)
                 entropy = dist.entropy().sum(dim=-1, keepdim=True)
 
