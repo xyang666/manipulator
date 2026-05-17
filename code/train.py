@@ -108,6 +108,8 @@ def parse_args():
                    help="APF gradient reward weight: reward dq aligned with ∇_q d_obs near obstacles")
     p.add_argument("--w_null", type=float, default=0.0,
                    help="Per-capsule null-space proximity penalty: penalize each link entering d_safe")
+    p.add_argument("--reward_min", type=float, default=None,
+                   help="Minimum per-step reward (clip negative tail). Default: no clip.")
     p.add_argument("--lr", type=float, default=3e-4,
                    help="Learning rate for actor/critic/alpha optimizers")
     p.add_argument("--alpha", type=float, default=0.1,
@@ -254,6 +256,7 @@ def main():
         obs_scene_embed=args.obs_scene_embed,
         obs_waypoint_steps=obs_waypoint_steps,
         episode_len=args.episode_len,
+        reward_min=args.reward_min,
     )
 
     if args.sigma_smooth is not None:

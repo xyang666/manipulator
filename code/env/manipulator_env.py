@@ -82,6 +82,7 @@ class ManipulatorEnv:
                  w_null: float = 0.0,
                  d_safe: float = 0.06,
                  success_bonus: float = 50.0,
+                 reward_min: Optional[float] = None,
                  sigma_d_safe: Optional[float] = None,
                  sigma_d_critical: Optional[float] = None,
                  sigma_smooth: float = 0.9,
@@ -187,6 +188,7 @@ class ManipulatorEnv:
             collision_detector=self.collision_detector)
         self.d_safe = d_safe
         self.success_bonus = success_bonus
+        self.reward_min = reward_min
         self.w_apf = w_apf
         self.w_null = w_null
         self.sdf = ObstacleSDF(n_obstacles, obs_radius)
@@ -482,6 +484,9 @@ class ManipulatorEnv:
             action=action, prev_dq=prev_dq,
         )
         reward += r_apf + r_null
+        # Clip per-step reward to prevent Q-value divergence from collision spikes
+        if self.reward_min is not None:
+            reward = max(reward, self.reward_min)
         reward_info["r_apf"] = r_apf
         reward_info["r_null"] = r_null
         # Collision detection: use MuJoCo collision detector from reward_info;
