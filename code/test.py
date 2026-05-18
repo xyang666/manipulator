@@ -282,6 +282,7 @@ def run_rl(env, args, agent):
     ckpt_dir = os.path.dirname(args.checkpoint)
     config_path = os.path.join(ckpt_dir, "config.json")
     hidden_dims = (256, 256)  # default fallback
+    cli = {}
     if os.path.exists(config_path):
         with open(config_path) as f:
             cfg = json.load(f)
@@ -351,10 +352,16 @@ def run_rl(env, args, agent):
     else:
         print(f"[SAC] Using default hidden_dims={hidden_dims}")
 
+    # Read task_scale and nullspace_scale from training config
+    task_scale = cli.get("task_scale", 1.0)
+    nullspace_scale = cli.get("nullspace_scale", 0.5)
+    if task_scale != 1.0 or nullspace_scale != 0.5:
+        print(f"[SAC] Using task_scale={task_scale}, nullspace_scale={nullspace_scale} from config")
     dyn = ManipulatorDynamics(args.urdf)
     agent = SACAgent(
         state_dim=env.obs_dim, action_dim=env.act_dim, dynamics=dyn,
         hidden_dims=hidden_dims,
+        task_scale=task_scale, nullspace_scale=nullspace_scale,
         device='cuda' if __import__('torch').cuda.is_available() else 'cpu',
     )
     meta = agent.load(args.checkpoint, load_optimizers=False)
