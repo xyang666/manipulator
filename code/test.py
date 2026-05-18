@@ -308,7 +308,6 @@ def run_rl(env, args, agent):
         for key, attr in [("w_manip", "w_manip"),
                            ("w_track", "w_track"),
                            ("w_obs", "w_obs"),
-                           ("w_obs_safe", "w_obs_safe"),
                            ("w_collision", "w_collision"),
                            ("w_energy", "w_energy"),
                            ("w_action", "w_action"),

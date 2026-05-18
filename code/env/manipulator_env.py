@@ -72,7 +72,6 @@ class ManipulatorEnv:
                  collision_term: bool = True,
                  path_deadzone: float = 0.20,
                  w_obs: float = 1.0,
-                 w_obs_safe: float = 0.1,
                  w_collision: float = 100.0,
                  w_track: float = 12.0,
                  w_manip: float = 0.05,
@@ -181,7 +180,7 @@ class ManipulatorEnv:
 
         # Reward function with collision detection
         self.reward_fn = RewardFunction(
-            dt=dt, w_obs=w_obs, w_obs_safe=w_obs_safe,
+            dt=dt, w_obs=w_obs,
             w_collision=w_collision, w_track=w_track,
             w_manip=w_manip, w_energy=w_energy, w_action=w_action,
             d_safe=d_safe, d_critical=d_critical, alpha_relax=alpha_relax,
@@ -463,32 +462,24 @@ class ManipulatorEnv:
 
         self._dq_rep = dq_rep.copy()  # store for observation
 
-        # Per-capsule null-space penalty: penalize individual links very close to obstacles.
-        # Each capsule contributes at most 1.0 (when d_cap ≤ 0), then mean is taken
-        # so the base is normalized to [0, 1].  w_null directly controls max contribution.
-        r_null = 0.0
-        if self.w_null > 0:
-            capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
-            d_null = 0.02  # tight per-link threshold (independent of d_safe for sigma gate)
-            null_raw = 0.0
-            for d_cap in capsule_dists:
-                if d_cap < d_null:
-                    null_raw += (d_null - d_cap) / d_null  # each ∈ [0, 1]
-            n_caps = max(len(capsule_dists), 1)
-            r_null = -self.w_null * null_raw / n_caps  # mean ∈ [0, 1]
+        # Per-capsule distances for unified obstacle penalty (merged r_obs + r_null).
+        # Each step, compute per-link distances once and pass to reward_fn so both
+        # the dense obstacle gradient and the tight per-link penalty come from the
+        # same signal at the same d_safe threshold.
+        capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
 
         reward, reward_info = self.reward_fn.compute(
             q=self.q, dq=self.dq, x_ee=x_ee,
             x_d=self.x_d, dx_d=self.dx_d,
             d_obs=d_obs, w=w,
             action=action, prev_dq=prev_dq,
+            capsule_dists=capsule_dists,
         )
-        reward += r_apf + r_null
+        reward += r_apf
         # Clip per-step reward to prevent Q-value divergence from collision spikes
         if self.reward_min is not None:
             reward = max(reward, self.reward_min)
         reward_info["r_apf"] = r_apf
-        reward_info["r_null"] = r_null
         # Collision detection: use MuJoCo collision detector from reward_info;
         # fall back to SDF distance when MuJoCo is unavailable
         if self.mj_model is not None:

@@ -22,7 +22,6 @@ class RewardFunction:
     def __init__(self,
                  w_track:       float = 12.0,
                  w_obs:         float = 1.0,
-                 w_obs_safe:    float = 0.1,
                  w_manip:       float = 0.05,
                  w_energy:      float = 0.001,
                  w_collision:   float = 100.0,
@@ -34,7 +33,6 @@ class RewardFunction:
                  collision_detector = None):
         self.w_track       = w_track
         self.w_obs         = w_obs
-        self.w_obs_safe    = w_obs_safe
         self.w_manip       = w_manip
         self.w_energy      = w_energy
         self.w_collision   = w_collision
@@ -60,7 +58,8 @@ class RewardFunction:
         ratio = max(d_obs / self.d_critical, 0.0)  # clamp for d_obs < 0 (inside obstacle)
         return self.w_track * (self.alpha_relax + (1.0 - self.alpha_relax) * ratio)
 
-    def compute(self, q, dq, x_ee, x_d, dx_d, d_obs, w, action=None, prev_dq=None):
+    def compute(self, q, dq, x_ee, x_d, dx_d, d_obs, w, action=None, prev_dq=None,
+                capsule_dists=None):
         """
         Parameters
         ----------
@@ -73,6 +72,7 @@ class RewardFunction:
         w       : manipulability measure (scalar)
         action  : RL action [7] = [Δẋ_RL(3), z(4)] (deprecated, use prev_dq instead)
         prev_dq : previous step joint velocities [n] (for smoothness penalty)
+        capsule_dists : per-capsule distances [n_caps] (optional)
 
         Returns
         -------
@@ -87,14 +87,24 @@ class RewardFunction:
         w_eff = self._effective_track_weight(d_obs)
         r_track = self.w_track * np.exp(-w_eff * pos_err)
 
-        # Obstacle reward: 0 at d_safe boundary (continuous), ramps positive when safe,
-        # dense penalty when close (below d_safe)
-        if d_obs >= self.d_safe:
-            # Linear ramp from 0 at d_safe to w_obs_safe at 2*d_safe
-            r_obs = self.w_obs_safe * max(0.0, (d_obs - self.d_safe) / self.d_safe)
+        # Obstacle reward: per-capsule dense penalty.
+        # Each link within d_safe of any obstacle contributes a linear penalty,
+        # then averaged over all capsules.
+        if capsule_dists is not None:
+            total_penalty = 0.0
+            for d_cap in capsule_dists:
+                if d_cap < self.d_safe:
+                    depth = min(self.d_safe - d_cap, self.d_safe * 2.0)
+                    total_penalty += depth / self.d_safe
+            n_caps = max(len(capsule_dists), 1)
+            r_obs = -self.w_obs * total_penalty / n_caps
         else:
-            obs_depth = min(self.d_safe - d_obs, self.d_safe * 2.0)  # cap at 2x d_safe
-            r_obs = -self.w_obs * obs_depth / self.d_safe
+            # Fallback: global-min r_obs (legacy, no w_obs_safe)
+            if d_obs >= self.d_safe:
+                r_obs = 0.0
+            else:
+                obs_depth = min(self.d_safe - d_obs, self.d_safe * 2.0)
+                r_obs = -self.w_obs * obs_depth / self.d_safe
 
         # Manipulability reward: encourage non-singular configurations
         r_manip = self.w_manip * np.log(max(w, 1e-4))

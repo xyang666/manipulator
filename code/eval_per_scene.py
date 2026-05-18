@@ -37,7 +37,6 @@ def env_kwargs_from_config(config: dict) -> dict:
         alpha_relax=rw.get("alpha_relax", 0.1),
         w_track=rw.get("w_track", 3.0),
         w_obs=rw.get("w_obs", 5.0),
-        w_obs_safe=rw.get("w_obs_safe", 0.1),
         w_manip=rw.get("w_manip", 0.05),
         w_energy=rw.get("w_energy", 0.001),
         w_collision=rw.get("w_collision", 100.0),

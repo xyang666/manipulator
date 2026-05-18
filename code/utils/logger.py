@@ -21,7 +21,6 @@ from datetime import datetime
 REWARD_COMPONENTS = [
     ("r_track",    "r_track",     "r_trk",   9),
     ("r_obs",      "r_obs",       "r_obs",   9),
-    ("r_null",     "r_null",      "r_null",  8),
     ("r_apf",      "r_apf",       "r_apf",   8),
     ("r_manip",    "r_manip",     "r_manip", 8),
     ("r_energy",   "r_energy",    "r_en",    7),

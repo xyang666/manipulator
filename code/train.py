@@ -80,8 +80,6 @@ def parse_args():
                    help="Minimum tracking weight factor when d_obs < d_critical")
     p.add_argument("--w_obs", type=float, default=5.0,
                    help="Obstacle proximity penalty weight")
-    p.add_argument("--w_obs_safe", type=float, default=0.1,
-                   help="Safe-zone positive reward weight")
     p.add_argument("--w_collision", type=float, default=100.0,
                    help="Collision contact penalty weight")
     p.add_argument("--w_track", type=float, default=12.0,
@@ -249,7 +247,7 @@ def main():
         d_critical=args.d_critical, alpha_relax=args.alpha_relax,
         collision_term=not args.no_collision_term,
         path_deadzone=args.path_deadzone,
-        w_obs=args.w_obs, w_obs_safe=args.w_obs_safe,
+        w_obs=args.w_obs,
         w_collision=args.w_collision, w_track=args.w_track,
         w_manip=args.w_manip, w_energy=args.w_energy,
         w_action=args.w_action, w_apf=args.w_apf, w_null=args.w_null,
@@ -671,7 +669,6 @@ def main():
                     values = np.zeros(n_envs, dtype=np.float32)
                     for i in range(n_envs):
                         actions[i], log_probs[i], values[i] = agent.act(obs[i])
-                        actions[i][:3] = np.zeros(3)
 
                     result = pool.step_all(actions)
 
@@ -847,7 +844,6 @@ def main():
                         actions[i] = np.concatenate([a_task, a_null])
                     else:
                         actions[i] = agent.select_action(obs[i])
-                        actions[i][:3] = np.zeros(3)
 
                 # Step all envs in parallel
                 result = pool.step_all(actions)
