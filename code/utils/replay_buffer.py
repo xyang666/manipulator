@@ -97,7 +97,7 @@ class PrioritizedReplayBuffer:
 
     def push(self, state, action, reward, next_state, done,
              q=None, dq=None, dq_next=None,
-             J=None, sigma=None, dx_nom=None):
+             J=None, sigma=None, dx_nom=None, cost=None):
         data = {
             "state": np.asarray(state, dtype=np.float32),
             "action": np.asarray(action, dtype=np.float32),
@@ -110,6 +110,7 @@ class PrioritizedReplayBuffer:
             "J": np.asarray(J, dtype=np.float32) if J is not None else None,
             "sigma": np.float32(sigma) if sigma is not None else None,
             "dx_nom": np.asarray(dx_nom, dtype=np.float32) if dx_nom is not None else None,
+            "cost": np.float64(cost) if cost is not None else np.float64(0.0),
         }
         # New transitions get max priority to ensure they're sampled at least once
         prio = self.tree.max_priority if self.tree.size > 0 else 1.0
@@ -152,6 +153,8 @@ class PrioritizedReplayBuffer:
                 if key in ("sigma",):
                     arr = arr.reshape(-1, 1)
                 batch[key] = arr.astype(np.float32)
+        # Cost is always stored (defaults to 0.0 if not provided)
+        batch["cost"] = np.array([d["cost"] for d in batch_data], dtype=np.float64).reshape(-1, 1)
 
         return batch
 
@@ -186,19 +189,22 @@ class ReplayBuffer:
         self.J        = np.zeros((capacity, 3, joints), dtype=np.float32)
         self.sigma    = np.zeros((capacity, 1),        dtype=np.float32)
         self.dx_nom   = np.zeros((capacity, 3),        dtype=np.float32)
+        self.costs    = np.zeros((capacity, 1),        dtype=np.float64)
 
         self.ptr = 0
         self.size = 0
 
     def push(self, state, action, reward, next_state, done,
              q=None, dq=None, dq_next=None,
-             J=None, sigma=None, dx_nom=None):
+             J=None, sigma=None, dx_nom=None, cost=None):
         i = self.ptr
         self.states[i]  = state
         self.actions[i] = action
         self.rewards[i] = reward
         self.next_s[i]  = next_state
         self.dones[i]   = float(done)
+        if cost is not None:
+            self.costs[i]  = cost
         if q is not None:
             self.q_prev[i]  = q
             self.dq_prev[i] = dq
@@ -218,6 +224,7 @@ class ReplayBuffer:
             reward     = self.rewards[idx],
             next_state = self.next_s[idx],
             done       = self.dones[idx],
+            cost       = self.costs[idx],
             q          = self.q_prev[idx],
             dq         = self.dq_prev[idx],
             dq_next    = self.dq_next[idx],

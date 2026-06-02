@@ -37,7 +37,9 @@ CSV_COLUMNS = [
     "reward", "d_obs", "w",
 ] + REWARD_CSV_COLS + [
     "collision_penalty",
-    "critic_loss", "actor_rl_loss", "physics_loss", "actor_loss", "alpha",
+    "critic_loss", "safety_critic_loss",
+    "actor_rl_loss", "physics_loss", "actor_loss", "lag_loss",
+    "alpha", "lag",
     "success", "ever_collided",
 ]
 
@@ -169,14 +171,18 @@ class TrainingLogger:
         if self._last_losses is not None:
             row.update({
                 "critic_loss":    self._last_losses.get("critic_loss", ""),
+                "safety_critic_loss": self._last_losses.get("safety_critic_loss", ""),
                 "actor_rl_loss":  self._last_losses.get("actor_rl_loss", ""),
                 "physics_loss":   self._last_losses.get("physics_loss", ""),
                 "actor_loss":     self._last_losses.get("actor_loss", ""),
+                "lag_loss":       self._last_losses.get("lag_loss", ""),
                 "alpha":          self._last_losses.get("alpha", ""),
+                "lag":            self._last_losses.get("lag", ""),
             })
         else:
             row.update({k: "" for k in
-                        ["critic_loss", "actor_rl_loss", "physics_loss", "actor_loss", "alpha"]})
+                        ["critic_loss", "safety_critic_loss", "actor_rl_loss",
+                         "physics_loss", "actor_loss", "lag_loss", "alpha", "lag"]})
 
     def log_update(self, losses: dict) -> None:
         """Call once per agent.update(), passing the returned losses dict."""
@@ -245,6 +251,7 @@ class TrainingLogger:
                              avg_physics_loss: float, ep_step: int = None,
                              alpha: float = None,
                              avg_critic_loss: float = None,
+                             avg_safety_critic_loss: float = None,
                              avg_actor_total_loss: float = None,
                              avg_w: float = None,
                              success: bool = None,
@@ -266,6 +273,8 @@ class TrainingLogger:
             row["ep_step"] = ep_step
         if avg_critic_loss is not None:
             row["critic_loss"] = avg_critic_loss
+        if avg_safety_critic_loss is not None:
+            row["safety_critic_loss"] = avg_safety_critic_loss
         if avg_actor_total_loss is not None:
             row["actor_loss"] = avg_actor_total_loss
         if avg_w is not None:

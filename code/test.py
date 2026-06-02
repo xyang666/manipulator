@@ -104,12 +104,16 @@ def apply_scene(env, scene: dict) -> bool:
     env.dq = np.zeros(env.n)
     env.x_start = start_pos.copy()
     env.x_goal = goal_pos.copy()
-    env.x_d = start_pos.copy()
+    x_ee_actual, _ = env.kin.forward_kinematics(q_start)
+    env.x_d = x_ee_actual.copy()
+    # Keep x_start = start_pos for path, but x_d = actual EE
     env.dx_d = np.zeros(3)
     env.step_count = 0
     env.path_param = 0.0
     env.ee_trajectory.clear()
-    env._last_sigma = 0.0
+    env._lag_lambda = 0.0
+    env._integral_err = np.zeros(3)
+    env.reward_fn._prev_dist_to_goal = None
 
     # Set desired velocity toward goal
     direction = goal_pos - start_pos
@@ -293,13 +297,11 @@ def run_rl(env, args, agent):
         else:
             print(f"[SAC] Using default hidden_dims={hidden_dims}")
         # Sync env params with training config for consistent behavior
-        cli = cfg.get("cli_args", {})
-        for key, attr in [("sigma_d_safe", "sigma_d_safe"),
-                           ("sigma_d_critical", "sigma_d_critical"),
-                           ("d_safe", "d_safe"),
-                           ("d_critical", "d_critical"),
-                           ("alpha_relax", "alpha_relax"),
-                           ("path_deadzone", "path_deadzone")]:
+        cli = cfg.get("cli_args", cfg)
+        for key, attr in [("d_safe", "d_safe"),
+                           ("path_deadzone", "path_deadzone"),
+                           ("lr_lag", "lr_lag"),
+                           ("lag_target", "lag_target")]:
             if key in cli and cli[key] is not None:
                 setattr(env, attr, cli[key])
         if "no_collision_term" in cli:
@@ -311,12 +313,11 @@ def run_rl(env, args, agent):
                            ("w_collision", "w_collision"),
                            ("w_energy", "w_energy"),
                            ("w_action", "w_action"),
-                           ("d_safe", "d_safe"),
-                           ("d_critical", "d_critical")]:
+                           ("d_safe", "d_safe")]:
             if key in cli and cli[key] is not None:
                 setattr(env.reward_fn, attr, cli[key])
-        # Reset sigma filter
-        env._last_sigma = 0.0
+        # Reset Lagrangian multiplier
+        env._lag_lambda = 0.0
         # Sync observation format params (scene_embed, waypoints)
         if "obs_scene_embed" in cli and cli.get("obs_scene_embed", 0) or 0 > 0:
             env.obs_scene_embed = cli.get("obs_scene_embed", 0) or 0
@@ -368,8 +369,10 @@ def run_rl(env, args, agent):
 
     print(f"[SAC] Agent loaded. Metadata: {meta}")
     print(f"[SAC] Running policy rollouts...")
+    verbose = not getattr(args, 'eval_all', False)
     return _run_env(env, args, "SAC",
-                    get_action=lambda obs: agent.select_action(obs, deterministic=True))
+                    get_action=lambda obs: agent.select_action(obs, deterministic=True),
+                    verbose=verbose)
 
 
 def run_ppo(env, args):
@@ -615,7 +618,7 @@ def run_rrt_star(env, args):
 # Shared loop and reporting
 # ---------------------------------------------------------------------------
 
-def _run_env(env, args, label, get_action=None):
+def _run_env(env, args, label, get_action=None, verbose=True):
     """
     Generic environment stepping loop.
     If get_action is None, uses zero action (for KP/MPC modes).
@@ -624,10 +627,12 @@ def _run_env(env, args, label, get_action=None):
     obstacle_distances = []
     rewards = []
     collisions = 0
+    success = False
 
     from utils.logger import REWARD_HEADER, REWARD_FORMAT, REWARD_COMPONENTS, reward_print_values
-    print(f"\n{'Step':>6} {'Reward':>10} {REWARD_HEADER} {'Track_err':>10} {'d_obs':>8}")
-    print("-" * 98)
+    if verbose:
+        print(f"\n{'Step':>6} {'Reward':>10} {REWARD_HEADER} {'Track_err':>10} {'d_obs':>8}")
+        print("-" * 98)
 
     for step in range(args.steps):
 
@@ -666,7 +671,7 @@ def _run_env(env, args, label, get_action=None):
         if info.get("collision", False):
             collisions += 1
 
-        if step % 100 == 0:
+        if verbose and step % 100 == 0:
             flag = " COLLIDE" if info.get("collision") else ""
             rp = {f"r_{i}": info.get(info_key, 0.0) for i, (info_key, _, _, _) in enumerate(REWARD_COMPONENTS)}
             print(f"{step:>6d} {reward:>10.3f} {REWARD_FORMAT.format(**rp)} "
@@ -679,30 +684,35 @@ def _run_env(env, args, label, get_action=None):
         if done:
             # Collision doesn't terminate test — run full trajectory for evaluation
             if info.get("success", False):
+                success = True
                 print(f"\nGoal reached at step {step}")
                 break
             if step >= args.steps - 1:
                 break
 
-    return _summary(label, tracking_errors, obstacle_distances, rewards, collisions)
+    return _summary(label, tracking_errors, obstacle_distances, rewards, collisions, success=success, verbose=verbose)
 
 
-def _summary(label, tracking_errors, obstacle_distances, rewards, collisions=0):
-    print(f"\n{'=' * 60}")
-    print(f"{label} Summary")
-    print(f"{'=' * 60}")
+def _summary(label, tracking_errors, obstacle_distances, rewards, collisions=0, success=False, verbose=True):
+    if verbose:
+        print(f"\n{'=' * 60}")
+        print(f"{label} Summary")
+        print(f"{'=' * 60}")
     n = len(tracking_errors)
-    print(f"Steps:               {n}")
-    print(f"Mean tracking error:  {np.mean(tracking_errors):.4f} m")
-    print(f"Max tracking error:   {np.max(tracking_errors):.4f} m")
-    print(f"Mean reward:          {np.mean(rewards):.3f}")
-    print(f"Total reward:         {np.sum(rewards):.3f}")
-    print(f"Mean d_obs:           {np.mean(obstacle_distances):.4f} m")
-    print(f"Min d_obs:            {np.min(obstacle_distances):.4f} m")
-    print(f"Collisions:           {collisions}")
+    if verbose:
+        print(f"Steps:               {n}")
+        print(f"Success:             {success}")
+        print(f"Mean tracking error:  {np.mean(tracking_errors):.4f} m")
+        print(f"Max tracking error:   {np.max(tracking_errors):.4f} m")
+        print(f"Mean reward:          {np.mean(rewards):.3f}")
+        print(f"Total reward:         {np.sum(rewards):.3f}")
+        print(f"Mean d_obs:           {np.mean(obstacle_distances):.4f} m")
+        print(f"Min d_obs:            {np.min(obstacle_distances):.4f} m")
+        print(f"Collisions:           {collisions}")
     return {
         "label": label,
         "n_steps": n,
+        "success": success,
         "mean_error": np.mean(tracking_errors),
         "max_error": np.max(tracking_errors),
         "total_reward": np.sum(rewards),
@@ -820,6 +830,14 @@ def parse_args():
                    help="RRT* step size in normalized joint space")
     p.add_argument("--rrt_goal_bias", type=float, default=0.15,
                    help="RRT* goal sampling bias (0-1)")
+
+    # Multi-scene evaluation
+    p.add_argument("--eval_all", action="store_true",
+                   help="Evaluate on all scenes in scene_json and print summary")
+    p.add_argument("--use_cbf", action="store_true",
+                   help="Enable CBF safety filter on joint velocity commands")
+    p.add_argument("--cbf_alpha", type=float, default=1.0,
+                   help="CBF convergence gain (larger = more aggressive filtering)")
     return p.parse_args()
 
 
@@ -856,6 +874,8 @@ def setup_env(args):
         controller=ctrl,
         mpc_horizon=args.horizon,
         use_trajectory_generator=args.use_trajectory_generator,
+        use_cbf=args.use_cbf,
+        cbf_alpha=args.cbf_alpha,
     )
     env.reset()
 
@@ -954,6 +974,142 @@ def run_comparison(args):
     print_comparison(results_list)
 
 
+def run_eval_all(args):
+    """Evaluate SAC on all scenes."""
+    import json
+    from agent.sac_agent import SACAgent
+    from env.dynamics import ManipulatorDynamics
+
+    with open(args.scene_json) as f:
+        scenes = json.load(f)
+    print(f"Loaded {len(scenes)} scenes for evaluation\n")
+
+    # Override steps to match training episode length
+    args.steps = 400
+    # Resolve paths
+    if args.checkpoint and not os.path.isabs(args.checkpoint):
+        args.checkpoint = os.path.join(_ROOT, args.checkpoint)
+    if args.scene_json and not os.path.isabs(args.scene_json):
+        args.scene_json = os.path.join(_ROOT, args.scene_json)
+
+    # Read training config for architecture
+    ckpt_dir = os.path.dirname(args.checkpoint)
+    config_path = os.path.join(ckpt_dir, "config.json")
+    cli = {}
+    hidden_dims = (256, 256)
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            cfg = json.load(f)
+        cli = cfg.get("cli_args", cfg)
+        hd = cli.get("hidden_dims", None)
+        if hd is not None:
+            hidden_dims = tuple(hd) if isinstance(hd, list) else (hd,)
+
+    # Create env once (use max obstacles across all scenes)
+    n_obs = max(len(s["obstacles"]) for s in scenes)
+    wps = cli.get("obs_waypoint_steps", None)
+    if isinstance(wps, str):
+        wps = [int(s) for s in wps.replace(" ", "").split(",")]
+
+    env = ManipulatorEnv(
+        urdf_path=args.urdf, xml_path=args.xml, n_joints=7, dt=0.02,
+        episode_len=args.steps, n_obstacles=n_obs,
+        obs_radius=getattr(args, 'obs_radius', 0.08), controller="rl",
+        obs_scene_embed=cli.get("obs_scene_embed", 0),
+        obs_waypoint_steps=wps,
+        use_cbf=args.use_cbf,
+        cbf_alpha=args.cbf_alpha,
+    )
+    env.reset()
+
+    # Sync env params from training config
+    for key, attr in [("d_safe", "d_safe"),
+                       ("path_deadzone", "path_deadzone"),
+                       ("lr_lag", "lr_lag"),
+                       ("lag_target", "lag_target")]:
+        if key in cli and cli[key] is not None:
+            setattr(env, attr, cli[key])
+    if "no_collision_term" in cli:
+        env.collision_term = not cli["no_collision_term"]
+    for key, attr in [("w_manip", "w_manip"), ("w_track", "w_track"),
+                       ("w_obs", "w_obs"), ("w_collision", "w_collision"),
+                       ("w_energy", "w_energy"), ("w_action", "w_action"),
+                       ("d_safe", "d_safe")]:
+        if key in cli and cli[key] is not None:
+            setattr(env.reward_fn, attr, cli[key])
+
+    # Load agent once
+    dyn = ManipulatorDynamics(args.urdf)
+    task_scale = cli.get("task_scale", 1.0)
+    nullspace_scale = cli.get("nullspace_scale", 0.5)
+    agent = SACAgent(
+        state_dim=env.obs_dim, action_dim=env.act_dim, dynamics=dyn,
+        hidden_dims=hidden_dims,
+        task_scale=task_scale, nullspace_scale=nullspace_scale,
+        device='cuda' if __import__('torch').cuda.is_available() else 'cpu',
+    )
+    agent.load(args.checkpoint, load_optimizers=False)
+    agent.actor.eval()
+    print(f"Agent loaded (hidden={hidden_dims}, task_scale={task_scale}, "
+          f"nullspace_scale={nullspace_scale})")
+
+    all_results = []
+    for scene in scenes:
+        sid = scene["scene_id"]
+        # Apply scene
+        if not apply_scene(env, scene):
+            print(f"scene {sid:3d}: IK failed, skipping")
+            all_results.append({"scene_id": sid, "success": False, "collision": True,
+                                "mean_track_error": 0.0, "min_d_obs": 0.0})
+            continue
+        env._ever_collided = False
+
+        # Run episode
+        tracking_errors, d_obs_values = [], []
+        collisions = False
+        success = False
+        for step in range(args.steps):
+            action = agent.select_action(env._get_obs(), deterministic=True)
+            obs, reward, done, info = env.step(action)
+            x_ee, _ = env.kin.forward_kinematics(env.q)
+            track_err = np.linalg.norm(x_ee - env.x_d)
+            tracking_errors.append(track_err)
+            d_obs_values.append(info.get("d_obs", 1.0))
+            if info.get("collision", False):
+                collisions = True
+            if info.get("success", False):
+                success = True
+                break
+            if done:
+                break
+
+        mean_err = float(np.mean(tracking_errors)) if tracking_errors else 0.0
+        min_d = float(min(d_obs_values)) if d_obs_values else 1.0
+        x_ee_final, _ = env.kin.forward_kinematics(env.q)
+        final_dist = float(np.linalg.norm(x_ee_final - env.x_goal))
+        flag = " 💥" if collisions else (" ✅" if success else " ❌")
+        print(f"scene {sid:3d}: success={success} collision={collisions}"
+              f"  track_err={mean_err:.4f}  min_d_obs={min_d:.4f}"
+              f"  final_dist={final_dist:.4f}{flag}")
+        all_results.append({"scene_id": sid, "success": success, "collision": collisions,
+                            "mean_track_error": mean_err, "min_d_obs": min_d})
+
+    # Summary
+    success_rate = np.mean([r["success"] for r in all_results])
+    collision_rate = np.mean([r["collision"] for r in all_results])
+    print(f"\n{'=' * 60}")
+    print(f"Summary: success_rate={success_rate:.1%}  collision_rate={collision_rate:.1%}")
+    print(f"{'=' * 60}")
+
+    # Failures
+    failures = [r for r in all_results if not r["success"]]
+    if failures:
+        print(f"\nFailures ({len(failures)} scenes):")
+        for r in failures:
+            print(f"  Scene {r['scene_id']}: min_d_obs={r['min_d_obs']:.4f}, "
+                  f"collision={r['collision']}")
+
+
 def main():
     args = parse_args()
 
@@ -987,7 +1143,9 @@ def main():
     else:
         print(f"Obstacles: {args.n_obstacles} (radius={args.obs_radius})")
 
-    if args.compare:
+    if args.eval_all:
+        run_eval_all(args)
+    elif args.compare:
         run_comparison(args)
     else:
         run_single(args)

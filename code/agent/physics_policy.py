@@ -47,31 +47,71 @@ class PhysicsInformedActor(nn.Module):
     def __init__(self, state_dim: int, action_dim: int,
                  hidden_dims: list[int] = (256, 256),
                  task_scale: float = 1.0,
-                 nullspace_scale: float = 0.15):
+                 nullspace_scale: float = 0.15,
+                 backbone: str = "mlp",
+                 frame_stack: int = 1,
+                 action_horizon: int = 1,
+                 d_model: int = 128,
+                 n_heads: int = 4,
+                 n_enc_layers: int = 2,
+                 n_dec_layers: int = 2,
+                 dropout: float = 0.1):
         """
         Parameters
         ----------
-        state_dim        : dimension of input state (25)
-        action_dim       : total action dimension (10 = 3 + 7)
+        state_dim        : dimension of input state
+        action_dim       : total action dimension (7)
         hidden_dims      : MLP hidden layer sizes
         task_scale       : scale for task relaxation Δẋ_RL (first 3 dims)
         nullspace_scale  : scale for null-space coefficients (last dims, n_joints-3)
+        backbone         : "mlp" or "transformer"
+        frame_stack      : number of stacked history frames (transformer only)
+        action_horizon   : number of action chunk steps (transformer only)
+        d_model          : transformer hidden dimension
+        n_heads          : number of attention heads
+        n_enc_layers     : encoder layers
+        n_dec_layers     : decoder layers
+        dropout          : attention dropout
         """
         super().__init__()
+        self.backbone = backbone
         self.task_scale      = task_scale
         self.nullspace_scale = nullspace_scale
         self.task_dim        = 3  # position-only (Route A)
-        self.nullspace_dim   = action_dim - 3  # typically 7
+        self.nullspace_dim   = action_dim - 3  # typically 4
 
-        layers = []
-        in_dim = state_dim
-        for h in hidden_dims:
-            layers += [nn.Linear(in_dim, h), nn.Tanh()]
-            in_dim = h
+        if backbone == "transformer":
+            from agent.transformer_policy import ActionChunkActor
+            self._transformer = ActionChunkActor(
+                obs_dim=state_dim,
+                action_dim=action_dim,
+                frame_stack=frame_stack,
+                action_horizon=action_horizon,
+                d_model=d_model,
+                n_heads=n_heads,
+                n_enc_layers=n_enc_layers,
+                n_dec_layers=n_dec_layers,
+                dropout=dropout,
+                task_scale=task_scale,
+                nullspace_scale=nullspace_scale,
+            )
+            self.frame_stack = frame_stack
+            self.action_horizon = action_horizon
+            # MLP heads not used — transformer has its own
+            self.net = None
+            self.mean_head = None
+            self.log_std_head = None
+        else:
+            self._transformer = None
+            layers = []
+            in_dim = state_dim
+            for h in hidden_dims:
+                layers += [nn.Linear(in_dim, h), nn.LayerNorm(h), nn.Tanh()]
+                in_dim = h
 
-        self.net = nn.Sequential(*layers)
-        self.mean_head    = nn.Linear(in_dim, action_dim)
-        self.log_std_head = nn.Linear(in_dim, action_dim)
+            self.net = nn.Sequential(*layers)
+            self.mean_head    = nn.Linear(in_dim, action_dim)
+            self.log_std_head = nn.Linear(in_dim, action_dim)
 
     def forward(self, state: torch.Tensor):
         """
@@ -80,6 +120,9 @@ class PhysicsInformedActor(nn.Module):
         mean    : [batch x action_dim]
         log_std : [batch x action_dim]
         """
+        if self.backbone == "transformer":
+            chunk_mean, chunk_log_std = self._transformer.forward(state)
+            return chunk_mean[:, 0, :], chunk_log_std[:, 0, :]
         h = self.net(state)
         mean = self.mean_head(h)
         log_std = self.log_std_head(h).clamp(LOG_STD_MIN, LOG_STD_MAX)
@@ -91,10 +134,13 @@ class PhysicsInformedActor(nn.Module):
 
         Returns
         -------
-        action   : [batch x 10]  [Δẋ_RL (3), dq0 (7)], separately scaled
+        action   : [batch x action_dim]  [Δẋ_RL (3), dq0 (n-3)], separately scaled
         log_prob : [batch x 1]
-        mean     : [batch x 10]  deterministic action
+        mean     : [batch x action_dim]  deterministic action
         """
+        if self.backbone == "transformer":
+            return self._transformer.sample(state)
+
         mean, log_std = self.forward(state)
         std = log_std.exp()
 
@@ -301,6 +347,10 @@ class SoftmaxCritic(nn.Module):
     def q_min(self, state, action):
         q_vals = self.forward(state, action)
         return torch.min(torch.cat(q_vals, dim=-1), dim=-1, keepdim=True).values
+
+    def q_max(self, state, action):
+        q_vals = self.forward(state, action)
+        return torch.max(torch.cat(q_vals, dim=-1), dim=-1, keepdim=True).values
 
 
 if __name__ == "__main__":

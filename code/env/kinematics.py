@@ -344,14 +344,17 @@ class ManipulatorKinematics:
                 pairs.append((i, j))
         return pairs
 
+
     def compute_self_distances(self, q: np.ndarray) -> np.ndarray:
         """
         Compute capsule-to-capsule distances for all non-adjacent pairs.
 
+        Returns signed distances: negative values indicate capsule penetration.
+
         Returns
         -------
-        distances : ndarray of shape (n_self_pairs,)
-            Each entry = max(0, segment_distance - r_i - r_j), the surface-to-
+        distances : ndarray of shape (n_pairs,)
+            Each entry = segment_distance - r_i - r_j, the signed surface-to-
             surface distance between the two capsule primitives.
         """
         capsules = self.get_link_capsules(q)
@@ -361,7 +364,7 @@ class ManipulatorKinematics:
             p1, p2, r_i = capsules[i]
             q1, q2, r_j = capsules[j]
             seg_dist = np.sqrt(max(_segment_distance_sq(p1, p2, q1, q2), 0.0))
-            dists[pi] = max(0.0, seg_dist - r_i - r_j)
+            dists[pi] = seg_dist - r_i - r_j  # signed: negative = penetration
         return dists
 
     @property

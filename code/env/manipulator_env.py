@@ -18,6 +18,7 @@ Action space (paper, Route A — position-only):
 """
 
 import numpy as np
+import collections
 from typing import Optional
 
 try:
@@ -33,6 +34,7 @@ from env.dynamics import ManipulatorDynamics, DQ_MAX
 from agent.reward import RewardFunction
 from utils.sdf import ObstacleSDF
 from utils.collision import CollisionDetector
+from utils.cbf import CBFController
 from trajectory.generator import TrajectoryGenerator
 
 try:
@@ -65,8 +67,6 @@ class ManipulatorEnv:
                  obs_radius: float = 0.1,
                  controller: str = "rl",
                  mpc_horizon: int = 10,
-                 d_critical: float = 0.05,
-                 alpha_relax: float = 0.1,
                  use_trajectory_generator: bool = False,
                  manipulability_threshold: float = 0.01,
                  collision_term: bool = True,
@@ -80,13 +80,15 @@ class ManipulatorEnv:
                  w_apf: float = 0.0,
                  w_null: float = 0.0,
                  d_safe: float = 0.06,
+                 use_cbf: bool = False,
+                 cbf_alpha: float = 1.0,
                  success_bonus: float = 50.0,
                  reward_min: Optional[float] = None,
-                 sigma_d_safe: Optional[float] = None,
-                 sigma_d_critical: Optional[float] = None,
-                 sigma_smooth: float = 0.9,
+                 lr_lag: float = 0.01,
+                 lag_target: float = 0.05,
                  obs_waypoint_steps: list | None = None,
-                 obs_scene_embed: int = 0):
+                 obs_scene_embed: int = 0,
+                 frame_stack: int = 1):
         """
         Parameters
         ----------
@@ -107,6 +109,7 @@ class ManipulatorEnv:
         self.use_trajectory_generator = use_trajectory_generator
         self.collision_term = collision_term
         self.path_deadzone = path_deadzone
+        self.frame_stack = frame_stack
 
         # Observation dimensions
         self.obs_waypoint_steps = obs_waypoint_steps or []
@@ -141,14 +144,19 @@ class ManipulatorEnv:
                             + self.obs_scene_embed * 4
                             + len(self.obs_waypoint_steps) * 3
                             + 1                   # path_progress s
-                            + self.n)      # dq_rep
+                            + 1)                  # sigma gate
         else:
             self.obs_dim = (self.n * 2 + 3 + 3
                             + self._capsule_dists_dim
                             + self._self_dists_dim
                             + 1
-                            + self.n)  # 40-dim
+                            + 1)                  # sigma gate
         self.act_dim = self.n  # 7D: 3 (task) + 4 (nullspace, via nullspace basis)
+
+        # Frame stacking: store single-frame dim, then multiply obs_dim
+        self._single_obs_dim = self.obs_dim
+        self.obs_dim = self._single_obs_dim * self.frame_stack
+        self._obs_history = collections.deque(maxlen=self.frame_stack)
 
         # Truncate DQ_MAX to match actual DOF
         self._dq_max = DQ_MAX[:self.n]
@@ -183,23 +191,28 @@ class ManipulatorEnv:
             dt=dt, w_obs=w_obs,
             w_collision=w_collision, w_track=w_track,
             w_manip=w_manip, w_energy=w_energy, w_action=w_action,
-            d_safe=d_safe, d_critical=d_critical, alpha_relax=alpha_relax,
+            d_safe=d_safe,
             collision_detector=self.collision_detector)
         self.d_safe = d_safe
         self.success_bonus = success_bonus
         self.reward_min = reward_min
-        self.w_apf = w_apf
         self.w_null = w_null
+        self.w_apf = w_apf
         self.sdf = ObstacleSDF(n_obstacles, obs_radius)
 
-        # Sigma gate parameters (default to reward d_safe/d_critical if not specified)
-        self.sigma_d_safe = sigma_d_safe if sigma_d_safe is not None else d_safe
-        self.sigma_d_critical = sigma_d_critical if sigma_d_critical is not None else d_critical
-        # Sync: tracking weight relaxation threshold = sigma gate open threshold
-        # Sigma gate and reward relaxation must share the same d_critical point
-        self.reward_fn.d_critical = self.sigma_d_safe
-        self.sigma_smooth = sigma_smooth
-        self._last_sigma = 0.0
+        # CBF safety filter (optional, post-hoc dq_cmd safety wrapper)
+        self.cbf = None
+        if use_cbf:
+            self.cbf = CBFController(self.sdf, self.kin,
+                                     d_safe=d_safe, alpha=cbf_alpha)
+            print(f"[env] CBF safety filter enabled (alpha={cbf_alpha}, "
+                  f"d_safe={d_safe})")
+
+        # Lagrangian multiplier for constraint-based gating
+        # λ ≥ 0, updated via dual ascent: λ += lr_lag * (violation - target)
+        self.lr_lag = lr_lag
+        self.lag_target = lag_target
+        self._lag_lambda = 0.0
 
         # Controllers
         self.controller = controller
@@ -240,6 +253,7 @@ class ManipulatorEnv:
         self._reset_state()
         self.ee_trajectory.clear()
         self.path_param = 0.0
+        self._obs_history.clear()
         return self._get_obs()
 
     def set_parametric_trajectory(self, pos_func, vel_func):
@@ -287,6 +301,7 @@ class ManipulatorEnv:
             self._last_J = np.zeros((3, self.n), dtype=np.float32)
             self._last_sigma = np.float32(0.0)
             self._last_dx_nom = np.zeros(3, dtype=np.float32)
+            self._lag_lambda = 0.0
 
         else:
             # Decompose 7D action into task relaxation + null-space coefficients
@@ -296,22 +311,20 @@ class ManipulatorEnv:
             # Compute nominal task-space velocity (PID tracking)
             dx_nom = self._compute_task_velocity()  # ẋ_d + Kp(x_d - x) + Ki*∫(x_d - x)dt
 
-            # Gate operator σ: scales task relaxation based on obstacle distance
-            # σ → 0 when safe (d_obs >= sigma_d_safe), σ → 1 when dangerous
+            # Lagrangian gate σ: learned multiplier for constraint-based gating.
+            # λ ≥ 0 updated via dual ascent: λ += lr_lag * (violation - target)
+            # sigma = clip(λ, 0, 1) gates RL vs tracking control.
             # sigma_override bypasses the gate (used for random exploration in start_steps)
             sigma_ov = getattr(self, 'sigma_override', None)
             if sigma_ov is not None:
                 sigma = float(sigma_ov)
             else:
+                # Compute current d_obs for constraint violation (before integration)
                 x_ee_cur, _ = self.kin.forward_kinematics(self.q)
                 d_obs_cur = self.sdf.min_distance(x_ee_cur, self.q, kinematics=self.kin)
-                band = max(self.sigma_d_safe - self.sigma_d_critical, 1e-6)
-                raw_sigma = float(np.clip((self.sigma_d_safe - d_obs_cur) / band, 0.0, 1.0))
-                # Smoothstep: C1 continuity at 0 and 1 for smoother gate transitions
-                sigma_smooth = raw_sigma * raw_sigma * (3.0 - 2.0 * raw_sigma)
-                # Low-pass filter: prevent rapid sigma flickering from causing jitter
-                sigma = self.sigma_smooth * self._last_sigma + (1.0 - self.sigma_smooth) * sigma_smooth
-            self._last_sigma = sigma
+                violation = max(0.0, self.d_safe - d_obs_cur) / self.d_safe
+                self._lag_lambda = max(0.0, self._lag_lambda + self.lr_lag * (violation - self.lag_target))
+                sigma = float(np.clip(self._lag_lambda, 0.0, 1.0))
             delta_x_gated = sigma * delta_x_rl  # diag(σ) · Δẋ_RL
 
             # Reconstruct 7D nullspace velocity from 4D coefficients via SVD basis
@@ -327,6 +340,16 @@ class ManipulatorEnv:
             self._last_J = self.kin.jacobian_position(self.q).copy()
             self._last_sigma = sigma
             self._last_dx_nom = dx_nom.copy()
+
+            # CBF safety filter: modify dq_cmd to ensure d_obs stays above d_safe
+            # This is a post-hoc wrapper — does NOT affect physics loss intermediates
+            # (buffer stores raw RL action, CBF is part of the environment dynamics)
+            self._cbf_active = False
+            self._cbf_mod = 0.0
+            if self.cbf is not None:
+                dq_cmd, cbf_info = self.cbf.filter(dq_cmd, self.q)
+                self._cbf_active = cbf_info["active"]
+                self._cbf_mod = cbf_info["dq_norm"]
 
         # Save previous joint velocity for smoothness penalty
         prev_dq = self.dq.copy()
@@ -399,12 +422,6 @@ class ManipulatorEnv:
             self.ee_trajectory.pop(0)
         self.ee_trajectory.append(x_ee.copy())
 
-        # Unified obstacle potential reward (Khatib 1986)
-        # r_apf = -w_apf * total_repulsion where total_repulsion sums
-        # rep_gain * max(0, 1/d - 1/apf_d_safe) over all capsule points and obstacles.
-        # This replaces both the piecewise r_obs and the action-based r_apf.
-        # dq_rep is retained for the observation as a directional cue.
-        r_apf = 0.0
         dq_rep = np.zeros(self.n)
         if self.sdf.n_obs > 0:
             capsules = self.kin.get_link_capsules(self.q)
@@ -416,8 +433,7 @@ class ManipulatorEnv:
             ]
             link_jacs = self.kin.link_jacobians_position(self.q, list(set(link_names)))
 
-            dq_rep = np.zeros(self.n)
-            apf_d_safe = max(self.d_safe * 5, 0.15)  # repulsive field range
+            apf_d_safe = max(self.d_safe * 5, 0.15)
             rep_gain = 0.5
             n_active = 0
             total_repulsion = 0.0
@@ -426,7 +442,7 @@ class ManipulatorEnv:
                 link_name = link_names[ci] if ci < len(link_names) else None
                 if link_name not in link_jacs:
                     continue
-                J_link = link_jacs[link_name]  # [3×n]
+                J_link = link_jacs[link_name]
 
                 for pt in [p1, (p1 + p2) / 2, p2]:
                     F = np.zeros(3)
@@ -445,22 +461,20 @@ class ManipulatorEnv:
 
                     F_norm = np.linalg.norm(F)
                     if F_norm < 1e-6:
-
                         continue
-                    # Clip per-point force for stability
                     if F_norm > 2.0:
                         F = F / F_norm * 2.0
-                    # Map to joint space via this link's Jacobian pseudo-inverse
                     Jpinv = self.kin.pseudo_inverse(J_link)
                     dq_rep += Jpinv @ F
                     n_active += 1
 
             if n_active > 0:
-                dq_rep /= n_active  # average over active points for observation
+                dq_rep /= n_active
 
-            r_apf = -self.w_apf * total_repulsion
+        self._dq_rep = dq_rep.copy()
 
-        self._dq_rep = dq_rep.copy()  # store for observation
+        # APF obstacle avoidance reward (Khatib-style potential field)
+        r_apf = -self.w_apf * total_repulsion if self.sdf.n_obs > 0 else 0.0
 
         # Per-capsule distances for unified obstacle penalty (merged r_obs + r_null).
         # Each step, compute per-link distances once and pass to reward_fn so both
@@ -480,13 +494,14 @@ class ManipulatorEnv:
         if self.reward_min is not None:
             reward = max(reward, self.reward_min)
         reward_info["r_apf"] = r_apf
-        # Collision detection: use MuJoCo collision detector from reward_info;
-        # fall back to SDF distance when MuJoCo is unavailable
-        if self.mj_model is not None:
-            collision = (reward_info.get("n_obstacle_contacts", 0) > 0 or
-                         reward_info.get("n_self_contacts", 0) > 0)
+        # Collision detection: MuJoCo robot-obstacle + non-adjacent self-collisions.
+        # Adjacent link contacts and finger-finger initial contact are excluded.
+        if self.collision_detector is not None:
+            _, n_obs = self.collision_detector.detect_obstacle_collisions()
+            _, n_self = self.collision_detector.detect_self_collisions()
+            collision = (n_obs + n_self) > 0
         else:
-            collision = d_obs < 0.02
+            collision = False
 
         # Track cumulative collision flag for the entire episode
         self._ever_collided = self._ever_collided or collision
@@ -505,8 +520,14 @@ class ManipulatorEnv:
             reward += self.success_bonus
 
         tracking_error = float(np.linalg.norm(x_ee - self.x_d))
-        info = {"d_obs": d_obs, "w": w, "success": path_complete and not self._ever_collided, "collision": collision,
-                "path_param": self.path_param, "tracking_error": tracking_error, **reward_info}
+        # Safety cost: normalized constraint violation ∈ [0, ∞)
+        # d_obs < d_safe → cost > 0, proportional to penetration depth
+        cost = float(max(0.0, self.d_safe - d_obs) / max(self.d_safe, 1e-6))
+        info = {"d_obs": d_obs, "w": w, "success": path_complete and not self._ever_collided,
+                "collision": collision, "cost": cost,
+                "path_param": self.path_param, "tracking_error": tracking_error,
+                "cbf_active": self._cbf_active, "cbf_mod": self._cbf_mod,
+                **reward_info}
 
         return self._get_obs(), reward, done, info
 
@@ -660,11 +681,14 @@ class ManipulatorEnv:
         self._integral_err = np.zeros(3)
         self._ever_collided = False
         self.reward_fn._prev_dist_to_goal = None  # reset goal distance tracking
+        self._lag_lambda = 0.0  # reset Lagrangian multiplier
 
         # Initialize physics loss storage fields (set during step())
         self._last_J = np.zeros((3, self.n), dtype=np.float32)
         self._last_sigma = np.float32(0.0)
         self._last_dx_nom = np.zeros(3, dtype=np.float32)
+        self._cbf_active = False
+        self._cbf_mod = 0.0
 
         if self.use_trajectory_generator and self.traj_gen is not None:
             # Generate new scene using TrajectoryGenerator
@@ -925,7 +949,7 @@ class ManipulatorEnv:
         w = self._manipulability()
 
         if self.obs_scene_embed > 0:
-            # Future waypoints along the planned path
+            # Future waypoints along the planned path (relative to end-effector)
             waypoints = []
             for s in self.obs_waypoint_steps:
                 if self.use_parametric_traj and self._parametric_pos_func is not None:
@@ -934,7 +958,7 @@ class ManipulatorEnv:
                 else:
                     future_param = min(1.0, self.path_param + s / self.episode_len)
                     wp = (1.0 - future_param) * self.x_start + future_param * self.x_goal
-                waypoints.append(wp)
+                waypoints.append(wp - x_ee)  # relative to end-effector
 
             # Scene embedding: all obstacle positions (relative to EE) and radii
             # Provides full global layout — no top-K (redundant with full scene)
@@ -967,20 +991,30 @@ class ManipulatorEnv:
                 self_dists,
                 scene_embed,
                 [self.path_param],
-                self._dq_rep,
+                [self._last_sigma],
             ])
         else:
             # Legacy observation
             capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
             self_dists = self.kin.compute_self_distances(self.q)
 
-            # State: [q(7), dq(7), x_ee(3), x_d(3), capsule_dists(12), self_dists, path_progress(1), dq_rep(7)]
             obs = np.concatenate([
                 self.q, self.dq, x_ee, self.x_d,
-                capsule_dists, self_dists, [self.path_param], self._dq_rep,
+                capsule_dists, self_dists, [self.path_param],
+                [self._last_sigma],
             ])
 
-        return obs.astype(np.float32)
+        obs = obs.astype(np.float32)
+
+        # Frame stacking: maintain sliding window of recent observations
+        if self.frame_stack > 1:
+            self._obs_history.append(obs)
+            # Pad with copies of first frame until history is full
+            while len(self._obs_history) < self.frame_stack:
+                self._obs_history.append(self._obs_history[0])
+            stacked = np.concatenate(list(self._obs_history))
+            return stacked.astype(np.float32)
+        return obs
 
     def _solve_ik_mujoco(self, x_target: np.ndarray, max_iter: int = 100) -> np.ndarray:
         """

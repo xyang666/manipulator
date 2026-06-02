@@ -74,10 +74,6 @@ def parse_args():
                    help="Nullspace coefficient scale: z ∈ [-nullspace_scale, nullspace_scale]")
     p.add_argument("--lambda_dyn",  type=float, default=1.0,
                    help="Weight of physics regularization loss")
-    p.add_argument("--d_critical",  type=float, default=0.05,
-                   help="Critical distance for primary task relaxation (m)")
-    p.add_argument("--alpha_relax", type=float, default=0.1,
-                   help="Minimum tracking weight factor when d_obs < d_critical")
     p.add_argument("--w_obs", type=float, default=5.0,
                    help="Obstacle proximity penalty weight")
     p.add_argument("--w_collision", type=float, default=100.0,
@@ -88,12 +84,10 @@ def parse_args():
                    help="Joint velocity energy penalty weight")
     p.add_argument("--d_safe", type=float, default=0.06,
                    help="Safe distance threshold for obstacle reward (m)")
-    p.add_argument("--sigma_d_safe", type=float, default=None,
-                   help="Sigma gate activation start (defaults to d_safe)")
-    p.add_argument("--sigma_d_critical", type=float, default=None,
-                   help="Sigma gate fully activated (defaults to d_critical)")
-    p.add_argument("--sigma_smooth", type=float, default=None,
-                   help="Sigma low-pass filter coefficient (default 0.9, 0=instant)")
+    p.add_argument("--lr_lag", type=float, default=0.01,
+                   help="Lagrangian multiplier learning rate")
+    p.add_argument("--lag_target", type=float, default=0.05,
+                   help="Target constraint violation for Lagrangian (normalized)")
     p.add_argument("--obs_scene_embed", type=int, default=0,
                    help="Number of obstacles to embed full (pos+radius) in observation, 0=disable")
     p.add_argument("--obs_waypoint_steps", type=str, default=None,
@@ -103,7 +97,7 @@ def parse_args():
     p.add_argument("--w_action", type=float, default=0.5,
                    help="Action smoothness penalty weight (penalizes ||Δẋ_RL||² + ||z||²)")
     p.add_argument("--w_apf", type=float, default=0.0,
-                   help="APF gradient reward weight: reward dq aligned with ∇_q d_obs near obstacles")
+                    help="APF obstacle avoidance reward weight")
     p.add_argument("--w_null", type=float, default=0.0,
                    help="Per-capsule null-space proximity penalty: penalize each link entering d_safe")
     p.add_argument("--reward_min", type=float, default=None,
@@ -143,7 +137,7 @@ def parse_args():
                    help="Path to MuJoCo scene XML (None = kinematics-only mode)")
     p.add_argument("--save_path",   type=str,   default="checkpoints/sac_pirl.pt")
     p.add_argument("--log_every",   type=int,   default=10)
-    p.add_argument("--checkpoint_every", type=int, default=500,
+    p.add_argument("--checkpoint_every", type=int, default=1000,
                    help="Save a periodic checkpoint every N episodes")
     p.add_argument("--run_name",    type=str,   default=None,
                    help="Run directory name; auto-generated if not set")
@@ -184,6 +178,31 @@ def parse_args():
                    help="Deadzone for path progression (m). Larger = more deviation allowed before stalling")
     p.add_argument("--no_collision_term", action="store_true",
                    help="Disable collision-based episode termination")
+    p.add_argument("--cost_limit", type=float, default=0.05,
+                   help="Safety cost limit for constrained RL (default: 0.05)")
+    p.add_argument("--cost_scale", type=float, default=1.0,
+                   help="Cost scaling factor for safety critic loss normalization (default: 1.0)")
+    # Transformer backbone
+    p.add_argument("--backbone", type=str, default="mlp", choices=["mlp", "transformer"],
+                   help="Actor backbone: mlp or transformer")
+    p.add_argument("--frame_stack", type=int, default=1,
+                   help="Number of stacked history frames (transformer only)")
+    p.add_argument("--action_horizon", type=int, default=1,
+                   help="Action chunk horizon H (transformer only)")
+    p.add_argument("--d_model", type=int, default=128,
+                   help="Transformer hidden dimension")
+    p.add_argument("--n_heads", type=int, default=4,
+                   help="Number of attention heads")
+    p.add_argument("--n_enc_layers", type=int, default=2,
+                   help="Number of encoder layers")
+    p.add_argument("--n_dec_layers", type=int, default=2,
+                   help="Number of decoder layers")
+    p.add_argument("--dropout", type=float, default=0.1,
+                   help="Transformer dropout rate")
+    p.add_argument("--use_cbf", action="store_true",
+                   help="Enable CBF safety filter on joint velocity commands")
+    p.add_argument("--cbf_alpha", type=float, default=1.0,
+                   help="CBF convergence gain (larger = more aggressive filtering)")
     return p.parse_args()
 
 
@@ -244,7 +263,6 @@ def main():
         urdf_path=args.urdf, xml_path=args.xml, obs_radius=0.03,
         n_obstacles=n_obs,
         use_trajectory_generator=_scene_data is None,
-        d_critical=args.d_critical, alpha_relax=args.alpha_relax,
         collision_term=not args.no_collision_term,
         path_deadzone=args.path_deadzone,
         w_obs=args.w_obs,
@@ -252,15 +270,15 @@ def main():
         w_manip=args.w_manip, w_energy=args.w_energy,
         w_action=args.w_action, w_apf=args.w_apf, w_null=args.w_null,
         d_safe=args.d_safe, success_bonus=args.success_bonus,
-        sigma_d_safe=args.sigma_d_safe, sigma_d_critical=args.sigma_d_critical,
+        lr_lag=args.lr_lag, lag_target=args.lag_target,
         obs_scene_embed=args.obs_scene_embed,
         obs_waypoint_steps=obs_waypoint_steps,
+        frame_stack=args.frame_stack,
         episode_len=args.episode_len,
         reward_min=args.reward_min,
+        use_cbf=args.use_cbf,
+        cbf_alpha=args.cbf_alpha,
     )
-
-    if args.sigma_smooth is not None:
-        _env_kwargs["sigma_smooth"] = args.sigma_smooth
 
     # Reference env for dimension / attribute access
     ref_env = ManipulatorEnv(**_env_kwargs)
@@ -312,6 +330,7 @@ def main():
                         e.reward_fn._prev_dist_to_goal = None
                         e.path_param = 0.0
                         e._last_sigma = 0.0
+                        e._lag_lambda = 0.0
                         return e._get_obs()
                     e.reset = _reset_fixed
                 else:
@@ -349,6 +368,7 @@ def main():
                         e.reward_fn._prev_dist_to_goal = None
                         e.path_param = 0.0
                         e._last_sigma = 0.0
+                        e._lag_lambda = 0.0
                         return e._get_obs()
                     e.reset = _reset
             return e
@@ -376,6 +396,7 @@ def main():
         )
         buffer = None  # PPO uses internal RolloutBuffer
     else:
+        _single_dim = getattr(ref_env, '_single_obs_dim', state_dim)
         agent = SACAgent(
             state_dim=state_dim,
             action_dim=action_dim,
@@ -391,6 +412,17 @@ def main():
             critic_warmup=max(1, args.critic_warmup // args.n_envs),
             total_steps=args.steps,
             n_critics=args.n_critics,
+            cost_limit=args.cost_limit,
+            cost_scale=args.cost_scale,
+            backbone=args.backbone,
+            frame_stack=args.frame_stack,
+            action_horizon=args.action_horizon,
+            single_dim=_single_dim,
+            d_model=args.d_model,
+            n_heads=args.n_heads,
+            n_enc_layers=args.n_enc_layers,
+            n_dec_layers=args.n_dec_layers,
+            dropout=args.dropout,
         )
         if args.per:
             from utils.replay_buffer import PrioritizedReplayBuffer
@@ -407,8 +439,6 @@ def main():
         "update_every": args.update_every,
         "buffer_size":  args.buffer_size,
         "lambda_dyn":   args.lambda_dyn,
-        "d_critical":   args.d_critical,
-        "alpha_relax":  args.alpha_relax,
         "lr":           args.lr,
         "alpha":        args.alpha,
         "gamma":        0.99,
@@ -522,8 +552,9 @@ def main():
 
     print(f"Run directory: {run_dir}")
     print(f"{'Episode':^8}  {'Steps':^8}  {'Reward':^10}  {REWARD_HEADER}  "
-          f"{'L_actor':^10}  {'L_dyn':^9}  {'d_obs':^8}  {'suc':^5}")
-    print("-" * 145)
+          f"{'L_critic':^8}  {'L_scritic':^8}  "
+          f"{'L_actor':^10}  {'L_dyn':^9}  {'L_lag':^9}  {'d_obs':^8}  {'suc':^5}")
+    print("-" * 175)
 
     if args.render:
         # ================================================================
@@ -535,6 +566,7 @@ def main():
             ep_reward   = 0.0
             ep_l_actor  = 0.0
             ep_l_dyn    = 0.0
+            ep_l_lag    = 0.0
             ep_d_obs    = []
             ep_r_acc = reward_accumulators()  # {csv_col: []}
             ep_steps    = 0
@@ -562,7 +594,8 @@ def main():
                 buffer.push(
                     obs, action, reward_scaled, next_obs, done,
                     q=q_prev, dq=dq_prev, dq_next=dq_next,
-                    J=env._last_J, sigma=env._last_sigma, dx_nom=env._last_dx_nom
+                    J=env._last_J, sigma=env._last_sigma, dx_nom=env._last_dx_nom,
+                    cost=info.get("cost", 0.0),
                 )
 
                 obs = next_obs
@@ -583,11 +616,13 @@ def main():
                         logger.log_update(losses)
                         ep_l_actor += losses["actor_rl_loss"]
                         ep_l_dyn   += losses["physics_loss"]
+                        ep_l_lag   += losses.get("lag_loss", 0.0)
 
             episode += 1
             ep_summary = logger.end_episode(episode, total_steps)
             avg_l_actor = ep_l_actor / max(ep_steps, 1)
             avg_l_dyn   = ep_l_dyn   / max(ep_steps, 1)
+            avg_l_lag   = ep_l_lag   / max(ep_steps, 1)
             min_d_obs   = min(ep_d_obs) if ep_d_obs else 0.0
 
             if episode % args.log_every == 0:
@@ -595,7 +630,7 @@ def main():
                 rp = reward_print_values(avg_r)
                 print(f"{episode:>8d}  {total_steps:>8d}  {ep_reward:>10.3f}  "
                       f"{REWARD_FORMAT.format(**rp)}  "
-                      f"{avg_l_actor:>10.4f}  {avg_l_dyn:>9.4f}  {min_d_obs:>8.3f}")
+                      f"{avg_l_actor:>10.4f}  {avg_l_dyn:>9.4f}  {avg_l_lag:>9.4f}  {min_d_obs:>8.3f}")
 
             ckpt_meta = {
                 "step":         total_steps,
@@ -858,6 +893,7 @@ def main():
                         dq_next=result["dq_after"][i],
                         J=result["J"][i], sigma=result["sigma"][i],
                         dx_nom=result["dx_nom"][i],
+                        cost=result["info"][i].get("cost", 0.0),
                     )
                     total_steps += 1
                     env_rewards[i] += result["reward"][i]
@@ -876,7 +912,9 @@ def main():
                         scene_id = result["scene_id"][i]
                         avg_l_actor = last_losses.get("actor_rl_loss", 0.0)
                         avg_l_dyn   = last_losses.get("physics_loss", 0.0)
+                        avg_l_lag   = last_losses.get("lag_loss", 0.0)
                         last_critic = last_losses.get("critic_loss", None)
+                        last_scritic = last_losses.get("safety_critic_loss", None)
                         last_actor_total = last_losses.get("actor_loss", None)
                         last_alpha  = last_losses.get("alpha", None)
                         min_d_obs   = min(env_d_obs[i]) if env_d_obs[i] else 0.0
@@ -915,7 +953,8 @@ def main():
                             rp = reward_print_values(avg_r)
                             print(f"{episode:>8d}  {env_steps[i]:>8d}  {env_rewards[i]:>10.3f}  "
                                   f"{REWARD_FORMAT.format(**rp)}  "
-                                  f"{avg_l_actor:>10.4f}  {avg_l_dyn:>9.4f}  {min_d_obs:>8.3f}  "
+                                  f"{last_critic or 0:>8.4f}  {last_scritic or 0:>8.4f}  "
+                                  f"{avg_l_actor:>10.4f}  {avg_l_dyn:>9.4f}  {avg_l_lag:>9.4f}  {min_d_obs:>8.3f}  "
                                   f"s={scene_id}  suc={_log_success_count}")
                             _log_success_count = 0
 
@@ -926,6 +965,7 @@ def main():
                             ep_step=env_steps[i],
                             alpha=last_alpha,
                             avg_critic_loss=last_critic,
+                            avg_safety_critic_loss=last_scritic,
                             avg_actor_total_loss=last_actor_total,
                             avg_w=avg_w,
                             collision_penalty=avg_collision_penalty,
@@ -993,6 +1033,7 @@ def main():
                         losses, td_errors = agent.update(batch)
                         if args.per:
                             buffer.update_priorities(batch["indices"], td_errors)
+                        logger.log_update(losses)
                         last_losses = losses
 
     # -------- Cleanup --------
