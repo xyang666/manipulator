@@ -95,22 +95,23 @@ def point_to_mesh_distance(pt, mesh_verts):
 # From kinematics.py _get_capsule_link_indices / get_link_capsules
 LINK_NAMES = [
     "panda_link0", "panda_link1", "panda_link2", "panda_link3",
-    "panda_link4", "panda_link5", "panda_link5",
+    "panda_link4", "panda_link5",
     "panda_link6", "panda_link7", "panda_hand",
     "panda_leftfinger", "panda_rightfinger",
 ]
 
-# Each (link_name, mesh_stl_file)
+# Each (link_name, mesh_stl_file, capsule_index)
+# capsule_index accounts for link5 having 2 capsules in the kinematics list
 LINK_MESH_FILES = [
-    ("panda_link0", "link0.stl"),
-    ("panda_link1", "link1.stl"),
-    ("panda_link2", "link2.stl"),
-    ("panda_link3", "link3.stl"),
-    ("panda_link4", "link4.stl"),
-    ("panda_link5", "link5.stl"),
-    ("panda_link6", "link6.stl"),
-    ("panda_link7", "link7.stl"),
-    ("panda_hand", "hand.stl"),
+    ("panda_link0", "link0.stl", 0),
+    ("panda_link1", "link1.stl", 1),
+    ("panda_link2", "link2.stl", 2),
+    ("panda_link3", "link3.stl", 3),
+    ("panda_link4", "link4.stl", 4),
+    ("panda_link5", "link5.stl", 5),   # first of link5's 2 capsules
+    ("panda_link6", "link6.stl", 7),
+    ("panda_link7", "link7.stl", 8),
+    ("panda_hand", "hand.stl", 9),
     # fingers use box geoms, not STL meshes — skip
 ]
 
@@ -144,7 +145,7 @@ def main_pinocchio():
 
     # Load meshes
     mesh_data = {}
-    for link_name, mesh_file in LINK_MESH_FILES:
+    for link_name, mesh_file, _ in LINK_MESH_FILES:
         path = os.path.join(_mesh_dir, mesh_file)
         if os.path.exists(path):
             mesh_data[link_name] = read_stl_vertices(path)
@@ -174,8 +175,7 @@ def main_pinocchio():
         capsules = kin.get_link_capsules(q)  # 12 capsules, world frame
 
         # Build pin frame name → link name mapping
-        # Panda URDF has frames like: panda_link0, panda_link1, ..., panda_link7, panda_hand
-        for idx, (link_name, mesh_file) in enumerate(LINK_MESH_FILES[:9]):  # skip fingers
+        for link_name, mesh_file, cap_idx in LINK_MESH_FILES:
             if link_name not in mesh_data:
                 continue
 
@@ -185,7 +185,6 @@ def main_pinocchio():
             try:
                 frame_id = model.getFrameId(link_name)
             except:
-                # Try alternative naming
                 try:
                     frame_id = model.getFrameId(link_name.replace("panda_", ""))
                 except:
@@ -197,9 +196,9 @@ def main_pinocchio():
             t = oMf.translation.reshape(1, 3)
             verts_world = (R @ mesh_verts.T).T + t  # (N, 3)
 
-            # Capsule for this link
-            if idx < len(capsules):
-                p1, p2, cap_r = capsules[idx]
+            # Capsule for this link (using explicit capsule index)
+            if cap_idx < len(capsules):
+                p1, p2, cap_r = capsules[cap_idx]
             else:
                 continue
 

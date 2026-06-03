@@ -229,32 +229,39 @@ class ManipulatorKinematics:
                 )
 
             # URDF collision geometry: (link_frame, [(local_p1, local_p2, radius), ...])
-            # Extracted from panda_collision.urdf sphere positions
+            # Optimized via code/utils/optimize_capsules.py
             collision_specs = {
                 "panda_link0": [
-                    (np.array([-0.09, 0, 0.06]), np.array([-0.06, 0, 0.06]), 0.09),
+                    (np.array([0.0489, -0.0011, 0.1013]),
+                     np.array([-0.1569, 0.0015, 0.0001]), 0.118),
                 ],
                 "panda_link1": [
-                    (np.array([0, 0, -0.333]), np.array([0, 0, -0.05]), 0.09),
+                    (np.array([-0.0044, 0.0129, -0.1606]),
+                     np.array([-0.0006, -0.0639, 0.0292]), 0.076),
                 ],
                 "panda_link2": [
-                    (np.array([0, 0, -0.06]), np.array([0, 0, 0.06]), 0.09),
+                    (np.array([0.0033, -0.0176, 0.0596]),
+                     np.array([0.0059, -0.1741, -0.0402]), 0.094),
                 ],
                 "panda_link3": [
-                    (np.array([0, 0, -0.22]), np.array([0, 0, -0.07]), 0.09),
+                    (np.array([0.0650, 0.0516, -0.0102]),
+                     np.array([0.0248, 0.0084, -0.0800]), 0.091),
                 ],
                 "panda_link4": [
-                    (np.array([0, 0, -0.06]), np.array([0, 0, 0.06]), 0.09),
+                    (np.array([-0.0022, 0.0022, 0.0448]),
+                     np.array([-0.1111, 0.1087, -0.0235]), 0.075),
                 ],
                 "panda_link5": [
-                    (np.array([0, 0, -0.31]), np.array([0, 0, -0.21]), 0.09),
-                    (np.array([0, 0.08, -0.20]), np.array([0, 0.08, -0.06]), 0.055),
+                    (np.array([0.0009, 0.0855, 0.0297]),
+                     np.array([0.0108, -0.0108, -0.2491]), 0.078),
                 ],
                 "panda_link6": [
-                    (np.array([0, 0, -0.07]), np.array([0, 0, 0.01]), 0.08),
+                    (np.array([0.0853, 0.0069, 0.0056]),
+                     np.array([0.0200, 0.0004, 0.0109]), 0.080),
                 ],
                 "panda_link7": [
-                    (np.array([0, 0, -0.06]), np.array([0, 0, 0.08]), 0.07),
+                    (np.array([0.0354, 0.0304, 0.0846]),
+                     np.array([-0.0037, -0.0032, 0.0775]), 0.051),
                 ],
                 "panda_hand": [
                     (np.array([0, -0.075, 0.03]), np.array([0, 0.075, 0.03]), 0.05),
@@ -315,12 +322,8 @@ class ManipulatorKinematics:
             "panda_link4", "panda_link5", "panda_link6", "panda_link7",
             "panda_hand", "panda_leftfinger", "panda_rightfinger",
         ]:
-            if link_name == "panda_link5":
-                n_caps = 2
-            else:
-                n_caps = 1
-            for _ in range(n_caps):
-                capsule_to_link.append(link_idx)
+            # Each link has 1 capsule (link5 previously had 2, now 1)
+            capsule_to_link.append(link_idx)
             link_idx += 1
         return capsule_to_link
 

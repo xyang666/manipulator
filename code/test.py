@@ -291,6 +291,8 @@ def run_rl(env, args, agent):
         with open(config_path) as f:
             cfg = json.load(f)
         cli_hidden = cfg.get("cli_args", {}).get("hidden_dims", None)
+        if cli_hidden is None:
+            cli_hidden = cfg.get("hidden_dims", None)
         if cli_hidden is not None:
             hidden_dims = tuple(cli_hidden) if isinstance(cli_hidden, list) else (cli_hidden,)
             print(f"[SAC] Using hidden_dims={hidden_dims} from config.json")
@@ -357,6 +359,13 @@ def run_rl(env, args, agent):
     nullspace_scale = cli.get("nullspace_scale", 0.5)
     if task_scale != 1.0 or nullspace_scale != 0.5:
         print(f"[SAC] Using task_scale={task_scale}, nullspace_scale={nullspace_scale} from config")
+    # Override obs_dim to match checkpoint (handles code evolution like self-pair count changes)
+    ckpt_data = __import__('torch').load(args.checkpoint, map_location='cpu', weights_only=False)
+    ckpt_input_dim = ckpt_data["actor"]["net.0.weight"].shape[1]
+    if env.obs_dim != ckpt_input_dim:
+        print(f"[SAC] Overriding obs_dim {env.obs_dim} -> {ckpt_input_dim} to match checkpoint")
+        env.obs_dim = ckpt_input_dim
+
     dyn = ManipulatorDynamics(args.urdf)
     agent = SACAgent(
         state_dim=env.obs_dim, action_dim=env.act_dim, dynamics=dyn,

@@ -6,7 +6,8 @@
       "WebSearch",
       "Bash(python tune_baseline.py --steps 300 --trials 20)",
       "Bash(python3 tune_baseline.py --steps 300 --trials 20)",
-      "Bash(python3)"
+      "Bash(python3)",
+      "Bash(/home/merlin/manipulator/code/.venv/bin/python /home/merlin/manipulator/paper/gen_sac_diagram.py)"
     ]
   }
 }

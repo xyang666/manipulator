@@ -347,7 +347,7 @@ def compute_world_capsules(q, chain, capsule_params):
     # Correct mapping: capsule for collision_specs link i → body index i in MuJoCo
     # (body 0=world/panda_link0, body 1=link1, ..., body 7=link7, 8=leftfinger, 9=rightfinger)
     # Hand map to body 7 (link7, same frame in MJ).
-    cap_to_body = jnp.array([0, 1, 2, 3, 4, 5, 5, 6, 7, 7, 8, 9], dtype=jnp.int32)
+    cap_to_body = jnp.array([0, 1, 2, 3, 4, 5, 6, 7, 7, 8, 9], dtype=jnp.int32)
 
     def transform(i, carry):
         cw = carry
@@ -369,7 +369,7 @@ def compute_world_capsules(q, chain, capsule_params):
 def build_observation_v3(
     q_arm, dq_arm, x_ee, x_d,
     capsule_dists, self_dists, scene_embed, waypoints,
-    path_param, sigma, n_caps=12, n_self=53, n_obs_embed=5, n_wp=3,
+    path_param, sigma, n_caps=11, n_self=45, n_obs_embed=5, n_wp=3,
 ):
     """Build observation matching ManipulatorEnv scene_embed format (dq_rep removed).
 
@@ -431,7 +431,7 @@ class SceneManager:
 
 EnvState = Dict[str, jnp.ndarray]
 
-def init_state(n_envs: int, nv: int) -> EnvState:
+def init_state(n_envs: int, nv: int, n_self: int = 45) -> EnvState:
     return {
         'q': jnp.zeros((n_envs, nv)),
         'dq': jnp.zeros((n_envs, nv)),
@@ -450,7 +450,7 @@ def init_state(n_envs: int, nv: int) -> EnvState:
         'last_sigma': jnp.zeros((n_envs,)),
         'n_obs': jnp.zeros((n_envs,), dtype=jnp.int32),
         'scene_start_q': jnp.zeros((n_envs, nv)),
-        'self_dists_mask': jnp.ones((n_envs, 53), dtype=jnp.bool_),
+        'self_dists_mask': jnp.ones((n_envs, n_self), dtype=jnp.bool_),
     }
 
 
@@ -771,7 +771,7 @@ class MJXManipulatorEnv:
         env_indices = self.scene_manager.env_scene_ids
         starts, goals, start_qs, goal_qs, obs_c, obs_r, n_obs_np = \
             self.scene_manager.get_scene_data(env_indices)
-        state = init_state(self.n_envs, self.nv)
+        state = init_state(self.n_envs, self.nv, n_self=self.n_self)
         start_q_pad = np.concatenate([start_qs, np.zeros((self.n_envs, self.nv - self.n_arm))], axis=1)
         state['q'] = jnp.array(start_q_pad)
         # Compute EE at start_q per-env
