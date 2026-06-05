@@ -10,7 +10,7 @@ Key idea: the actor network outputs actions:
 
 Differentiable physics regularization (Plan B):
     Reconstructs dq_cmd from action analytically using stored Jacobian,
-    then penalizes torque limit violations via simplified dynamics in pure torch.
+    then penalizes torque limit violations via Pinocchio dynamics (M(q)·ddq + h(q,dq)).
 
 Architecture:
     Input:  state s_t = [q, dq, x_ee, x_d, dx_d, d_obs, w(q)]  (dim=state_dim=25)
@@ -207,30 +207,39 @@ class PhysicsRegularizer:
     def _compute_dynamics_batch(self, q: torch.Tensor,
                                  dq: torch.Tensor) -> tuple:
         """
-        Compute M(q) and h(q,dq) = C(q,dq)·dq + g(q) using Pinocchio (CPU).
+        Batched Pinocchio dynamics: M(q) and h(q,dq) = C(q,dq)·dq + g(q).
 
-        Returns (M, h) as torch tensors WITHOUT gradient tracking — the
-        real dynamics quantities are evaluated at the (detached) state, so
-        only the ddq → dq_cmd → action path carries gradients.
+        Each batch sample uses real Pinocchio dynamics via self.dynamics.compute().
+        q and dq are detached (from replay buffer), so no gradients flow here.
 
-        Falls back to simplified diagonal inertia if Pinocchio is unavailable.
+        Returns (M_batch, h_batch) as torch tensors on self.device with matching
+        dtype, with gradients *stopped* so the torque gradient only flows through
+        ddq (which comes from the policy action).
         """
         B = q.shape[0]
-        n = q.shape[1]
+        n = self.n
         dev = q.device
         dtype = q.dtype
-        q_np = q.detach().cpu().numpy()
-        dq_np = dq.detach().cpu().numpy()
 
-        M_list, h_list = [], []
+        # Detach and move to CPU numpy for Pinocchio (numpy-only library)
+        q_np = q.detach().cpu().numpy()  # (B, n)
+        dq_np = dq.detach().cpu().numpy()  # (B, n)
+
+        M_list = []
+        h_list = []
+
         for i in range(B):
-            M, C, g = self.dynamics.compute(q_np[i], dq_np[i])
-            M_list.append(M)
-            h_list.append(C @ dq_np[i] + g)
+            M_i, C_i, g_i = self.dynamics.compute(q_np[i], dq_np[i])
+            # h = C·dq + g  (Coriolis/centrifugal + gravity)
+            h_i = C_i @ dq_np[i] + g_i
+            M_list.append(M_i)
+            h_list.append(h_i)
 
-        M_t = torch.from_numpy(np.stack(M_list)).to(device=dev, dtype=dtype)
-        h_t = torch.from_numpy(np.stack(h_list)).to(device=dev, dtype=dtype)
-        return M_t, h_t
+        # Stack back to torch, no grad attached
+        M_batch = torch.as_tensor(np.stack(M_list, axis=0), dtype=dtype, device=dev)
+        h_batch = torch.as_tensor(np.stack(h_list, axis=0), dtype=dtype, device=dev)
+
+        return M_batch, h_batch
 
     def compute_loss_batch(self, q_batch: torch.Tensor,
                             dq_batch: torch.Tensor,
@@ -242,7 +251,7 @@ class PhysicsRegularizer:
         Batched physics loss with full gradient flow.
 
         Reconstructs dq_cmd from current-policy action analytically, then
-        computes torque via simplified dynamics and penalises limit violations.
+        computes torque via Pinocchio dynamics and penalises limit violations.
 
         Route A (position-only): uses 3D task space, J_pos ∈ ℝ³ˣⁿ.
         Nullspace coefficients z ∈ ℝⁿ⁻³ are lifted via differentiable SVD

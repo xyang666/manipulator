@@ -7,7 +7,10 @@
       "Bash(python tune_baseline.py --steps 300 --trials 20)",
       "Bash(python3 tune_baseline.py --steps 300 --trials 20)",
       "Bash(python3)",
-      "Bash(/home/merlin/manipulator/code/.venv/bin/python /home/merlin/manipulator/paper/gen_sac_diagram.py)"
+      "Bash(/home/merlin/manipulator/code/.venv/bin/python /home/merlin/manipulator/paper/gen_sac_diagram.py)",
+      "Bash(rm -rf /root/autodl-tmp/cpu_checkpoints/stage3_n8 /root/manipulator/log/stage3_n8.log)",
+      "Bash(PYTHONUNBUFFERED=1 nohup /root/manipulator/code/.venv/bin/python /root/manipulator/code/train.py --steps 5000000 --n_envs 8 --scene_json /root/manipulator/results/challenge_stage3.json --obs_scene_embed 5 --obs_waypoint_steps 10,20,50 --task_scale 0.2 --nullspace_scale 5 --w_track 1 --w_obs 50 --w_collision 100 --w_action 0 --w_manip 0 --w_energy 0 --w_apf 0 --success_bonus 500 --path_deadzone 0.10 --d_safe 0.06 --lr_lag 0.01 --lag_target 0.05 --tau 0.05 --lr 1e-4 --reward_scale 1 --start_steps 50000 --batch_size 512 --hidden_dims 512,512,512 --n_critics 5 --cost_limit 0.05 --per --no_collision_term --reward_min -10 --grad_steps 16 --val_json /root/manipulator/results/challenge_stage3.json --val_scenes 100 --val_every 500 --episode_len 400 --checkpoint_every 1000 --run_name stage3_n8 --save_path /root/autodl-tmp/cpu_checkpoints/stage3_n8)",
+      "Bash(echo \"PID: $!\")"
     ]
   }
 }

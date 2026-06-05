@@ -83,6 +83,7 @@ class ManipulatorEnv:
                  cbf_alpha: float = 1.0,
                  success_bonus: float = 50.0,
                  reward_min: Optional[float] = None,
+                 reward_scale: float = 1.0,
                  lr_lag: float = 0.01,
                  lag_target: float = 0.05,
                  obs_waypoint_steps: list | None = None,
@@ -194,6 +195,7 @@ class ManipulatorEnv:
         self.d_safe = d_safe
         self.success_bonus = success_bonus
         self.reward_min = reward_min
+        self.reward_scale = reward_scale
         self.w_null = w_null
         self.sdf = ObstacleSDF(n_obstacles, obs_radius)
 
@@ -364,6 +366,7 @@ class ManipulatorEnv:
 
         # Tracking-error-driven path progression with trapezoidal speed profile
         x_ee, _ = self.kin.forward_kinematics(self.q)
+        self._cached_x_ee = x_ee
         tracking_error = np.linalg.norm(x_ee - self.x_d)
 
         # Nominal path parameter (trapezoidal: ease-in → constant → ease-out)
@@ -406,11 +409,11 @@ class ManipulatorEnv:
 
         self.step_count += 1
 
-        # Compute reward
-        x_ee, _ = self.kin.forward_kinematics(self.q)
-        d_obs = self.sdf.min_distance(x_ee, self.q, kinematics=self.kin)
+        # Compute reward (use cached FK from progression step)
+        d_obs = self.sdf.min_distance(self._cached_x_ee, self.q, kinematics=self.kin)
         d_obs = float(np.clip(d_obs, -0.5, 0.5))  # cap inf for numerical stability
         w = self._manipulability()
+        self._cached_w = w
 
         # Record end-effector position for trajectory visualization
         if len(self.ee_trajectory) >= self.max_trajectory_len:
@@ -422,6 +425,7 @@ class ManipulatorEnv:
         # the dense obstacle gradient and the tight per-link penalty come from the
         # same signal at the same d_safe threshold.
         capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
+        self._cached_capsule_dists = capsule_dists
 
         reward, reward_info = self.reward_fn.compute(
             q=self.q, dq=self.dq, x_ee=x_ee,
@@ -457,6 +461,9 @@ class ManipulatorEnv:
         # Sparse success bonus when reaching goal (only if no collision)
         if path_complete and not self._ever_collided:
             reward += self.success_bonus
+
+        # Scale reward for stable Q-learning (compresses Q-value range)
+        reward = reward / self.reward_scale
 
         tracking_error = float(np.linalg.norm(x_ee - self.x_d))
         # Safety cost: normalized constraint violation ∈ [0, ∞)
@@ -628,6 +635,11 @@ class ManipulatorEnv:
         self._last_dx_nom = np.zeros(3, dtype=np.float32)
         self._cbf_active = False
         self._cbf_mod = 0.0
+
+        # Cached values for _get_obs() to avoid recomputation
+        self._cached_x_ee = None
+        self._cached_w = None
+        self._cached_capsule_dists = None
 
         if self.use_trajectory_generator and self.traj_gen is not None:
             # Generate new scene using TrajectoryGenerator
@@ -884,8 +896,14 @@ class ManipulatorEnv:
         return float(val)
 
     def _get_obs(self) -> np.ndarray:
-        x_ee, _ = self.kin.forward_kinematics(self.q)
-        w = self._manipulability()
+        if self._cached_x_ee is not None:
+            x_ee = self._cached_x_ee
+        else:
+            x_ee, _ = self.kin.forward_kinematics(self.q)
+        if self._cached_w is not None:
+            w = self._cached_w
+        else:
+            w = self._manipulability()
 
         if self.obs_scene_embed > 0:
             # Future waypoints along the planned path (relative to end-effector)
@@ -910,19 +928,15 @@ class ManipulatorEnv:
 
             # Per-capsule minimum distances to nearest obstacle
             # (n_capsules scalars — direct collision signal for each link)
-            capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
+            if self._cached_capsule_dists is not None:
+                capsule_dists = self._cached_capsule_dists
+            else:
+                capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
 
             # Per-capsule-pair self-collision distances
             # (n_self_pairs scalars — direct signal for link-to-link proximity)
             self_dists = self.kin.compute_self_distances(self.q)
 
-            # State: [q(7), dq(7), x_ee(3), x_d(3),
-            #         wp_1(3), ..., wp_N(3),
-            #         capsule_dists(n_caps),
-            #         self_dists(n_self_pairs),
-            #         scene_embed(N_obs * 4),
-            #         path_progress(1),
-            #         dq_rep(7)]
             obs = np.concatenate([
                 self.q, self.dq, x_ee, self.x_d,
                 *waypoints,
@@ -934,7 +948,10 @@ class ManipulatorEnv:
             ])
         else:
             # Legacy observation
-            capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
+            if self._cached_capsule_dists is not None:
+                capsule_dists = self._cached_capsule_dists
+            else:
+                capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
             self_dists = self.kin.compute_self_distances(self.q)
 
             obs = np.concatenate([

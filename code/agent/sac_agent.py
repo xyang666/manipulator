@@ -54,7 +54,9 @@ class SACAgent:
                  n_heads:      int   = 4,
                  n_enc_layers: int   = 2,
                  n_dec_layers: int   = 2,
-                 dropout:      float = 0.1):
+                 dropout:      float = 0.1,
+                 grad_steps:   int   = 1,
+                 lr_lag:       float = 0.01):
         self.gamma       = gamma
         self.tau         = tau
         self.alpha       = alpha
@@ -67,6 +69,15 @@ class SACAgent:
         self._frame_stack = frame_stack
         self._single_dim = single_dim if single_dim is not None else state_dim
         self._backbone = backbone
+        self._grad_steps = max(1, grad_steps)
+
+        # Scale tau by 1/grad_steps so the effective Polyak averaging rate is
+        # τ per env step (not per gradient step). Otherwise when grad_steps > 1,
+        # the target network tracks the online network too closely, collapsing
+        # the stabilizing lag between Q(s,a) and the TD target and triggering
+        # bootstrap divergence (Q-value explosion to infinity).
+        #   effective movement per env step ≈ 1 - (1 - τ/grad_steps)^grad_steps ≈ τ
+        self.tau = tau / max(1, grad_steps)
 
         # Actor: may take stacked frames (transformer) or single frame (mlp)
         actor_state_dim = state_dim
@@ -113,20 +124,29 @@ class SACAgent:
         self.alpha_opt = optim.Adam([self.log_alpha], lr=lr)
 
         # Learnable Lagrange multiplier for safety constraint
-        # λ = exp(log_lag), updated via gradient descent on dual objective
-        # λ_loss = λ * (Q_cost - cost_limit), pushes λ up when constraint violated
+        # λ = exp(log_lag), updated via dual gradient descent on λ only
+        # λ_loss = -λ * (Q_c - cost_limit), pushes λ up when constraint violated
+        # NOTE: λ update gated behind update(is_last=True) to avoid over-acceleration
+        # when grad_steps > 1 (single scalar gradient-stomping).
         self.log_lag = torch.tensor(np.log(0.1), requires_grad=True, device=self.device)
-        self.lag_opt = optim.Adam([self.log_lag], lr=lr)
+        self.lag_opt = optim.Adam([self.log_lag], lr=lr_lag)
+        self._lambda_max = 100.0  # cap λ to prevent exponential runaway
 
         # Observation normalization
         self.obs_normalizer = RunningMeanStd(shape=(state_dim,))
 
         # Cosine learning rate annealing
+        # NOTE: scheduler.step() is called inside agent.update() for every gradient update.
+        # When grad_steps > 1 (gradient updates per env step), T_max must be multiplied
+        # by grad_steps so the LR anneals over the intended number of env steps, not
+        # gradient steps. Otherwise the LR decays to eta_min in only 1/grad_steps of
+        # the training duration, stranding the critic at low LR and enabling divergence.
         if total_steps > 0:
+            _grad_mult = max(1, grad_steps)
             self.actor_scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                self.actor_opt, T_max=total_steps, eta_min=lr * 0.1)
+                self.actor_opt, T_max=total_steps * _grad_mult, eta_min=lr * 0.1)
             self.critic_scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                self.critic_opt, T_max=total_steps, eta_min=lr * 0.1)
+                self.critic_opt, T_max=total_steps * _grad_mult, eta_min=lr * 0.1)
         else:
             self.actor_scheduler = None
             self.critic_scheduler = None
@@ -173,11 +193,21 @@ class SACAgent:
             return x.cpu().numpy()
         return np.asarray(x)
 
-    def update(self, batch: dict, batch_size: int = 256):
+    def update(self, batch: dict, batch_size: int = 256, is_last: bool = False):
         """
         One gradient update step from a sampled batch.
 
         Accepts both numpy arrays and GPU torch tensors.
+
+        Parameters
+        ----------
+        batch : dict from replay buffer
+        batch_size : int (unused, kept for compat)
+        is_last : bool
+            If True (last of grad_steps iterations), also update α (entropy
+            temperature) and λ (Lagrange multiplier).  These are single-scalar
+            optimisers that should step once per env step, not once per
+            gradient step — otherwise they overshoot when grad_steps > 1.
 
         Supports ensemble critic (N Q-networks) and prioritized replay weights.
 
@@ -264,7 +294,8 @@ class SACAgent:
             # λ is learned via dual gradient descent (see lag update below)
             # detach() λ in actor loss: λ gradient only comes from dual objective
             # Use q_max for cost critic (pessimistic) and q_min for reward critic (optimistic)
-            actor_rl_loss = (self.alpha * log_pi - q_min + lag.detach() * q_c_max).mean()
+            # actor_rl_loss = (self.alpha * log_pi - q_min + lag.detach() * q_c_max).mean()
+            actor_rl_loss = (self.alpha * log_pi - q_min).mean()
 
             # Differentiable physics regularization
             q_t  = self._to_tensor(batch["q"])
@@ -282,7 +313,8 @@ class SACAgent:
             if torch.isnan(physics_loss) or torch.isinf(physics_loss):
                 physics_loss = torch.tensor(0.0, device=self.device)
 
-            actor_loss = actor_rl_loss + physics_loss
+            # actor_loss = actor_rl_loss + physics_loss
+            actor_loss = actor_rl_loss
 
             # Chunk smoothness regularization (transformer only)
             if self._backbone == "transformer" and self._frame_stack > 1:
@@ -297,28 +329,34 @@ class SACAgent:
             if self.actor_scheduler is not None:
                 self.actor_scheduler.step()
 
-            # -------- Alpha (entropy) update --------
-            with torch.no_grad():
-                _, log_pi_new, _ = self.actor.sample(s)
-            alpha = self.log_alpha.exp()
-            alpha_loss = -(alpha * (log_pi_new + self.target_entropy).detach()).mean()
-            self.alpha_opt.zero_grad()
-            alpha_loss.backward()
-            self.alpha_opt.step()
-            self.log_alpha.data.clamp_(min=np.log(self.min_alpha))
-            self.alpha = self.log_alpha.exp().item()
+            # -------- Alpha (entropy) update (once per env step) --------
+            if is_last:
+                with torch.no_grad():
+                    _, log_pi_new, _ = self.actor.sample(s)
+                alpha = self.log_alpha.exp()
+                alpha_loss = -(alpha * (log_pi_new + self.target_entropy).detach()).mean()
+                self.alpha_opt.zero_grad()
+                alpha_loss.backward()
+                self.alpha_opt.step()
+                self.log_alpha.data.clamp_(min=np.log(self.min_alpha))
+                self.alpha = self.log_alpha.exp().item()
+            else:
+                alpha_loss = torch.tensor(0.0, device=self.device)
 
-            # -------- Lagrange multiplier λ update (dual gradient descent) --------
+            # -------- Lagrange multiplier λ update (once per env step) --------
             # λ_loss = -λ * (Q_c - cost_limit)
-            # When Q_c > cost_limit, gradient pushes log_lag up → λ increases (more safety penalty).
-            # When Q_c < cost_limit, gradient pushes log_lag down → λ decreases (less safety penalty).
-            with torch.no_grad():
-                q_c_max_detach = self.safety_critic.q_max(s_critic, a_new)
-            lag_loss = -lag * (q_c_max_detach - self.cost_limit * self.cost_scale).detach().mean()
-            self.lag_opt.zero_grad()
-            lag_loss.backward()
-            self.lag_opt.step()
-            self.log_lag.data.clamp_(min=np.log(1e-6))  # keep λ ≥ 0
+            # When Q_c > cost_limit, gradient pushes log_lag up → λ increases.
+            # When Q_c < cost_limit, gradient pushes log_lag down → λ decreases.
+            if is_last:
+                with torch.no_grad():
+                    q_c_max_detach = self.safety_critic.q_max(s_critic, a_new)
+                lag_loss = -lag * (q_c_max_detach - self.cost_limit * self.cost_scale).detach().mean()
+                self.lag_opt.zero_grad()
+                lag_loss.backward()
+                self.lag_opt.step()
+                self.log_lag.data.clamp_(min=np.log(1e-6), max=np.log(self._lambda_max))
+            else:
+                lag_loss = torch.tensor(0.0, device=self.device)
 
         # -------- Soft update target critics (task + safety) --------
         for p, p_t in zip(self.critic.parameters(), self.critic_target.parameters()):

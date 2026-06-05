@@ -1,37 +1,18 @@
 """
 train.py
 --------
-Training entry point for physics-informed RL on the manipulator env.
-Supports SAC (off-policy) and PPO (on-policy) algorithms.
+SAC (off-policy) training entry point for physics-informed RL on a
+7-DOF manipulator with obstacle avoidance.
 
 Usage:
-    cd code/
-
-    # SAC training (default):
-    python train.py --steps 500000 --n_envs 16 --scene_json results/trajectories_obs.json
-
-    # PPO training:
-    python train.py --algo ppo --steps 500000 --n_envs 16 --rollout_steps 200 --ppo_epochs 10 \\
-                    --scene_json results/trajectories_obs.json
+    python train.py --steps 500000 --n_envs 16 \\
+        --scene_json results/trajectories_obs.json
 
     # Resume from checkpoint:
     python train.py --resume checkpoints/run_name/ckpt_best.pt --steps 1000000
 
-    # Validation only:
-    python train.py --resume checkpoints/run_name/ckpt_best.pt --val_json results/trajectories_obs.json
-
-Key arguments:
-    --algo sac|ppo              RL algorithm (default: sac)
-    --steps N                   Total environment steps (default: 500000)
-    --n_envs N                  Parallel environments (default: 16)
-    --scene_json path           JSON with training scenes
-    --val_json path             JSON with validation scenes (optional)
-    --rollout_steps N           PPO: steps per rollout (default: 200)
-    --ppo_epochs N              PPO: training epochs per rollout (default: 10)
-    --render                    Single-env mode with MuJoCo viewer
-
-Prints per-episode:
-    episode | steps | reward | L_actor | L_dyn | d_obs [scene_id]
+    # Render mode (single env):
+    python train.py --render --steps 10000 --n_envs 1
 """
 
 import json
@@ -43,86 +24,92 @@ import numpy as np
 from datetime import datetime
 from multiprocessing import Array, Lock
 
-# Allow imports from code/ root
 sys.path.insert(0, os.path.dirname(__file__))
 
 from env.manipulator_env import ManipulatorEnv
 from env.dynamics import ManipulatorDynamics
 from agent.sac_agent import SACAgent
-from agent.ppo_agent import PPOAgent
 from utils.replay_buffer import ReplayBuffer
-from utils.logger import (TrainingLogger, REWARD_COMPONENTS, REWARD_HEADER,
-                           REWARD_FORMAT, reward_accumulators,
-                           accumulate_rewards, avg_rewards, reward_print_values)
+from utils.logger import (TrainingLogger, REWARD_HEADER, REWARD_FORMAT,
+                           reward_accumulators, accumulate_rewards,
+                           avg_rewards, reward_print_values)
 from utils.validation import ValidationSet, evaluate_on_validation_set
 
 
+# ========================================================================
+# Argument parsing
+# ========================================================================
+
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--steps",       type=int,   default=500_000,
-                   help="Total environment steps (SAC typically needs 500k-1M)")
-    p.add_argument("--batch_size",  type=int,   default=512)
-    p.add_argument("--start_steps", type=int,   default=10_000,
-                   help="Random exploration steps before training begins")
-    p.add_argument("--update_every",type=int,   default=1)
-    p.add_argument("--grad_steps",  type=int,   default=4,
-                   help="Number of gradient updates per env step")
-    p.add_argument("--buffer_size", type=int,   default=500_000)
-    p.add_argument("--task_scale", type=float, default=1.0,
-                   help="Task relaxation scale: Δẋ_RL ∈ [-task_scale, task_scale] (m/s)")
-    p.add_argument("--nullspace_scale", type=float, default=0.5,
-                   help="Nullspace coefficient scale: z ∈ [-nullspace_scale, nullspace_scale]")
-    p.add_argument("--lambda_dyn",  type=float, default=1.0,
-                   help="Weight of physics regularization loss")
-    p.add_argument("--w_obs", type=float, default=5.0,
-                   help="Obstacle proximity penalty weight")
-    p.add_argument("--w_collision", type=float, default=100.0,
-                   help="Collision contact penalty weight")
-    p.add_argument("--w_track", type=float, default=12.0,
-                   help="Tracking error penalty weight")
-    p.add_argument("--w_energy", type=float, default=0.001,
-                   help="Joint velocity energy penalty weight")
-    p.add_argument("--d_safe", type=float, default=0.06,
-                   help="Safe distance threshold for obstacle reward (m)")
-    p.add_argument("--lr_lag", type=float, default=0.01,
-                   help="Lagrangian multiplier learning rate")
-    p.add_argument("--lag_target", type=float, default=0.05,
-                   help="Target constraint violation for Lagrangian (normalized)")
-    p.add_argument("--obs_scene_embed", type=int, default=0,
-                   help="Number of obstacles to embed full (pos+radius) in observation, 0=disable")
-    p.add_argument("--obs_waypoint_steps", type=str, default=None,
-                   help="Comma-separated future step offsets for waypoints, e.g. '10,20'")
-    p.add_argument("--success_bonus", type=float, default=50.0,
-                   help="Sparse success bonus upon reaching goal")
-    p.add_argument("--w_action", type=float, default=0.5,
-                   help="Action smoothness penalty weight (penalizes ||Δẋ_RL||² + ||z||²)")
 
-    p.add_argument("--w_null", type=float, default=0.0,
-                   help="Per-capsule null-space proximity penalty: penalize each link entering d_safe")
-    p.add_argument("--reward_min", type=float, default=None,
-                   help="Minimum per-step reward (clip negative tail). Default: no clip.")
-    p.add_argument("--lr", type=float, default=3e-4,
-                   help="Learning rate for actor/critic/alpha optimizers")
-    p.add_argument("--tau", type=float, default=0.005,
-                   help="Soft update coefficient for target networks")
-    p.add_argument("--alpha", type=float, default=0.1,
-                   help="Initial SAC entropy coefficient")
-    p.add_argument("--target_entropy", type=float, default=None,
-                   help="SAC target entropy (default: -action_dim)")
-    p.add_argument("--critic_warmup", type=int, default=5000,
-                   help="Number of critic-only updates before actor starts training")
-    p.add_argument("--algo", type=str, default="sac", choices=["sac", "ppo"],
-                   help="RL algorithm: sac (off-policy) or ppo (on-policy)")
-    p.add_argument("--rollout_steps", type=int, default=200,
-                   help="PPO: steps per rollout collection (default: episode_len)")
-    p.add_argument("--ppo_epochs", type=int, default=10,
-                   help="PPO: number of training epochs per rollout")
-    p.add_argument("--val_json",       type=str, default=None,
-                   help="Path to validation trajectories JSON file")
-    p.add_argument("--val_every",   type=int,   default=50,
-                   help="Evaluate on validation set every N episodes")
-    p.add_argument("--val_scenes",  type=int,   default=10,
-                   help="Number of validation scenes to evaluate")
+    # --- SAC training ---
+    p.add_argument("--steps",        type=int,   default=500_000)
+    p.add_argument("--batch_size",   type=int,   default=1024)
+    p.add_argument("--start_steps",  type=int,   default=10_000)
+    p.add_argument("--grad_steps",   type=int,   default=2)
+    p.add_argument("--update_every", type=int,   default=1)
+    p.add_argument("--buffer_size",  type=int,   default=500_000)
+    p.add_argument("--n_envs",       type=int,   default=16)
+    p.add_argument("--episode_len",  type=int,   default=400)
+
+    # --- Policy / action ---
+    p.add_argument("--task_scale",       type=float, default=1.0)
+    p.add_argument("--nullspace_scale",  type=float, default=0.5)
+    p.add_argument("--hidden_dims",      type=str,   default="256,256")
+    p.add_argument("--n_critics",        type=int,   default=5)
+    p.add_argument("--backbone",         type=str,   default="mlp", choices=["mlp", "transformer"])
+    p.add_argument("--frame_stack",      type=int,   default=1)
+    p.add_argument("--action_horizon",   type=int,   default=1)
+    p.add_argument("--d_model",          type=int,   default=128)
+    p.add_argument("--n_heads",          type=int,   default=4)
+    p.add_argument("--n_enc_layers",     type=int,   default=2)
+    p.add_argument("--n_dec_layers",     type=int,   default=2)
+    p.add_argument("--dropout",          type=float, default=0.1)
+    p.add_argument("--use_cbf",          action="store_true")
+    p.add_argument("--cbf_alpha",        type=float, default=1.0)
+
+    # --- Physics regularization ---
+    p.add_argument("--lambda_dyn",  type=float, default=1.0)
+
+    # --- Learning ---
+    p.add_argument("--lr",            type=float, default=3e-4)
+    p.add_argument("--tau",           type=float, default=0.005)
+    p.add_argument("--alpha",         type=float, default=0.1)
+    p.add_argument("--target_entropy",type=float, default=None)
+    p.add_argument("--critic_warmup", type=int,   default=5000)
+    p.add_argument("--lr_lag",        type=float, default=0.01)
+    p.add_argument("--lag_target",    type=float, default=0.05)
+    p.add_argument("--cost_limit",    type=float, default=0.05)
+    p.add_argument("--cost_scale",    type=float, default=1.0)
+
+    # --- Reward ---
+    p.add_argument("--w_track",      type=float, default=12.0)
+    p.add_argument("--w_obs",        type=float, default=5.0)
+    p.add_argument("--w_collision",  type=float, default=100.0)
+    p.add_argument("--w_manip",      type=float, default=0.05)
+    p.add_argument("--w_energy",     type=float, default=0.001)
+    p.add_argument("--w_action",     type=float, default=0.5)
+    p.add_argument("--w_null",       type=float, default=0.0)
+    p.add_argument("--d_safe",       type=float, default=0.06)
+    p.add_argument("--success_bonus",type=float, default=50.0)
+    p.add_argument("--reward_min",   type=float, default=None)
+    p.add_argument("--reward_scale", type=float, default=1.0)
+    p.add_argument("--path_deadzone",type=float, default=0.20)
+
+    # --- Data ---
+    p.add_argument("--scene_json",   type=str,   default=None)
+    p.add_argument("--scene_id",     type=int,   default=-1)
+    p.add_argument("--val_json",     type=str,   default=None)
+    p.add_argument("--val_every",    type=int,   default=50)
+    p.add_argument("--val_scenes",   type=int,   default=10)
+    p.add_argument("--obs_scene_embed", type=int, default=0)
+    p.add_argument("--obs_waypoint_steps", type=str, default=None)
+
+    # --- Replay buffer ---
+    p.add_argument("--per",         action="store_true")
+
+    # --- Paths ---
     _here = os.path.dirname(os.path.abspath(__file__))
     _root = os.path.dirname(_here)
     _venv_data = os.path.join(_here, ".venv/lib/python3.12/site-packages/cmeel.prefix"
@@ -130,144 +117,87 @@ def parse_args():
     _default_urdf = os.path.join(_venv_data, "urdf/panda.urdf")
     _default_xml  = os.path.join(_root, "models/panda_scene.xml")
 
-    p.add_argument("--urdf",        type=str,   default=_default_urdf,
-                   help="Path to robot URDF for Pinocchio kinematics/dynamics")
-    p.add_argument("--xml",         type=str,   default=_default_xml,
-                   help="Path to MuJoCo scene XML (None = kinematics-only mode)")
-    p.add_argument("--save_path",   type=str,   default="checkpoints/sac_pirl.pt")
-    p.add_argument("--log_every",   type=int,   default=10)
-    p.add_argument("--checkpoint_every", type=int, default=1000,
-                   help="Save a periodic checkpoint every N episodes")
-    p.add_argument("--run_name",    type=str,   default=None,
-                   help="Run directory name; auto-generated if not set")
-    p.add_argument("--scene_json", type=str,   default=None,
-                   help="Path to JSON with scenes (for fixed-scene training)")
-    p.add_argument("--scene_id",   type=int,   default=-1,
-                   help="Scene ID (>=0 = fixed scene, -1 = random cycle through all scenes)")
-    p.add_argument("--n_envs",      type=int,   default=16,
-                   help="Number of parallel environment workers (>>1 = faster GPU utilization)")
-    p.add_argument("--w_manip",     type=float, default=0.05,
-                   help="Manipulability reward weight")
-    p.add_argument("--n_critics",   type=int,   default=5,
-                   help="Number of Q-networks in ensemble critic (default 5, 2=standard SAC)")
-    p.add_argument("--hidden_dims", type=str,   default="256,256",
-                   help="Hidden layer sizes for actor/critic networks (comma-separated, e.g. '512,512,512')")
-    p.add_argument("--per",         action="store_true",
-                   help="Use Prioritized Experience Replay instead of uniform sampling")
-    p.add_argument("--episode_len", type=int,   default=400,
-                   help="Max steps per episode (default: 400; use more for obstacle avoidance)")
-    p.add_argument("--reward_scale", type=float, default=1.0,
-                   help="Reward scaling factor: rewards are divided by this before storing in buffer. "
-                        "Use >1 to compress Q-values for stable SAC training (e.g. 50).")
-    p.add_argument("--render",      action="store_true",
-                   help="Render the scene with MuJoCo viewer during training")
-    p.add_argument("--resume",      type=str,   default=None,
-                   help="Path to checkpoint to resume training from")
-    p.add_argument("--reset_alpha", action="store_true",
-                   help="When resuming, reset log_alpha to match --alpha (overrides checkpoint value)")
-    p.add_argument("--reset_critic", action="store_true",
-                   help="When resuming, reinitialize critic (for architecture changes like LayerNorm)")
-    p.add_argument("--load_actor",  type=str, default=None,
-                   help="Load only actor weights from BC pretrained checkpoint")
-    p.add_argument("--reset_actor",  action="store_true",
-                   help="When resuming, reinitialize actor (for architecture changes like hidden_dims)")
-    p.add_argument("--load_sac_actor", action="store_true",
-                   help="PPO: load actor from SAC checkpoint (ignores critic/value weights)")
-    p.add_argument("--path_deadzone", type=float, default=0.20,
-                   help="Deadzone for path progression (m). Larger = more deviation allowed before stalling")
-    p.add_argument("--no_collision_term", action="store_true",
-                   help="Disable collision-based episode termination")
-    p.add_argument("--cost_limit", type=float, default=0.05,
-                   help="Safety cost limit for constrained RL (default: 0.05)")
-    p.add_argument("--cost_scale", type=float, default=1.0,
-                   help="Cost scaling factor for safety critic loss normalization (default: 1.0)")
-    # Transformer backbone
-    p.add_argument("--backbone", type=str, default="mlp", choices=["mlp", "transformer"],
-                   help="Actor backbone: mlp or transformer")
-    p.add_argument("--frame_stack", type=int, default=1,
-                   help="Number of stacked history frames (transformer only)")
-    p.add_argument("--action_horizon", type=int, default=1,
-                   help="Action chunk horizon H (transformer only)")
-    p.add_argument("--d_model", type=int, default=128,
-                   help="Transformer hidden dimension")
-    p.add_argument("--n_heads", type=int, default=4,
-                   help="Number of attention heads")
-    p.add_argument("--n_enc_layers", type=int, default=2,
-                   help="Number of encoder layers")
-    p.add_argument("--n_dec_layers", type=int, default=2,
-                   help="Number of decoder layers")
-    p.add_argument("--dropout", type=float, default=0.1,
-                   help="Transformer dropout rate")
-    p.add_argument("--use_cbf", action="store_true",
-                   help="Enable CBF safety filter on joint velocity commands")
-    p.add_argument("--cbf_alpha", type=float, default=1.0,
-                   help="CBF convergence gain (larger = more aggressive filtering)")
+    p.add_argument("--urdf",       type=str, default=_default_urdf)
+    p.add_argument("--xml",        type=str, default=_default_xml)
+    p.add_argument("--save_path",  type=str, default="checkpoints")
+    p.add_argument("--run_name",   type=str, default=None)
+
+    # --- Logging / checkpoint ---
+    p.add_argument("--log_every",        type=int, default=10)
+    p.add_argument("--checkpoint_every", type=int, default=1000)
+    p.add_argument("--no_collision_term", action="store_true")
+
+    # --- Render ---
+    p.add_argument("--render", action="store_true")
+
+    # --- Resume ---
+    p.add_argument("--resume",       type=str, default=None)
+    p.add_argument("--reset_alpha",  action="store_true")
+    p.add_argument("--reset_critic", action="store_true")
+    p.add_argument("--reset_actor",  action="store_true")
+    p.add_argument("--load_actor",   type=str, default=None)
+
     return p.parse_args()
 
 
-def main():
-    args = parse_args()
+# ========================================================================
+# Setup helpers
+# ========================================================================
 
-    # Parse hidden_dims from comma-separated string
-    if hasattr(args, 'hidden_dims') and args.hidden_dims:
-        args.hidden_dims = [int(x) for x in args.hidden_dims.replace(' ', '').split(',')]
-    else:
-        args.hidden_dims = [256, 256]
+def setup_scene_loading(args):
+    """
+    Load scenes from JSON and initialize prioritized sampling.
 
-    # -------- Setup --------
-    dyn = ManipulatorDynamics(args.urdf)
+    Returns
+    -------
+    scene_data      : (ValidationSet, scenes) or (ValidationSet, single_scene) or None
+    n_obs           : number of obstacles per scene
+    scene_weights   : multiprocessing.Array for shared scene sampling weights
+    scene_ema       : np.ndarray for per-scene EMA of rewards
+    scene_counts    : np.ndarray for per-scene visit counts
+    scene_lock      : multiprocessing.Lock for weights access
+    obs_waypoint_steps : list of int or None
+    """
+    scene_data = None
+    scene_weights = scene_ema = scene_counts = None
+    scene_lock = None
+    obs_waypoint_steps = None
 
-    # If scene JSON mode, load scenes (fixed or random cycle)
-    _scene_data = None  # (ValidationSet, scene_or_scenes)
-    if args.scene_json is not None:
-        _vs = ValidationSet(args.scene_json)
-        if args.scene_id >= 0:
-            # Fixed single scene
-            _scene_data = (_vs, _vs.get_scene(args.scene_id))
-            n_obs = len(_scene_data[1]["obstacles"])
-            print(f"[train] Fixed scene mode: scene_id={args.scene_id}, "
-                  f"obstacles={n_obs}")
-        else:
-            # Random cycle through all scenes
-            _scene_data = (_vs, _vs.scenes)
-            n_obs = len(_vs.scenes[0]["obstacles"])
-            print(f"[train] Scene cycle mode: {len(_vs.scenes)} scenes, "
-                  f"obs/scene={n_obs}")
-
-        # Prioritized scene sampling: shared weights for parallel workers
-        _scene_weights = None
-        _scene_ema = None
-        _scene_counts = None
-        _scene_lock = None
-        if args.n_envs > 1 and _scene_data is not None and args.scene_id < 0:
-            n_scenes = len(_scene_data[1])
-            _scene_weights = Array('d', [1.0] * n_scenes)
-            _scene_lock = Lock()
-            _scene_ema = np.zeros(n_scenes, dtype=np.float64)
-            _scene_counts = np.zeros(n_scenes, dtype=np.int32)
-    else:
-        n_obs = 5
-        _scene_weights = None
-        _scene_ema = None
-        _scene_counts = None
-
-    # Parse observation waypoint steps
     if args.obs_waypoint_steps is not None:
         obs_waypoint_steps = [int(s.strip()) for s in args.obs_waypoint_steps.split(",")]
-    else:
-        obs_waypoint_steps = None
 
-    # -------- Environment setup --------
-    _env_kwargs = dict(
+    if args.scene_json is not None:
+        vs = ValidationSet(args.scene_json)
+        if args.scene_id >= 0:
+            scene_data = (vs, vs.get_scene(args.scene_id))
+            n_obs = len(scene_data[1]["obstacles"])
+            print(f"[train] Fixed scene mode: scene_id={args.scene_id}, obstacles={n_obs}")
+        else:
+            scene_data = (vs, vs.scenes)
+            n_obs = len(vs.scenes[0]["obstacles"])
+            print(f"[train] Scene cycle mode: {len(vs.scenes)} scenes, obs/scene={n_obs}")
+
+        if args.n_envs > 1 and scene_data is not None and args.scene_id < 0:
+            n_scenes = len(scene_data[1])
+            scene_weights = Array('d', [1.0] * n_scenes)
+            scene_lock = Lock()
+            scene_ema = np.zeros(n_scenes, dtype=np.float64)
+            scene_counts = np.zeros(n_scenes, dtype=np.int32)
+    else:
+        n_obs = 5
+
+    return scene_data, n_obs, scene_weights, scene_ema, scene_counts, scene_lock, obs_waypoint_steps
+
+
+def make_env_kwargs(args, n_obs, obs_waypoint_steps):
+    return dict(
         urdf_path=args.urdf, xml_path=args.xml, obs_radius=0.03,
         n_obstacles=n_obs,
-        use_trajectory_generator=_scene_data is None,
+        use_trajectory_generator=args.scene_json is None,
         collision_term=not args.no_collision_term,
         path_deadzone=args.path_deadzone,
-        w_obs=args.w_obs,
-        w_collision=args.w_collision, w_track=args.w_track,
-        w_manip=args.w_manip, w_energy=args.w_energy,
-        w_action=args.w_action, w_null=args.w_null,
+        w_obs=args.w_obs, w_collision=args.w_collision, w_track=args.w_track,
+        w_manip=args.w_manip, w_energy=args.w_energy, w_action=args.w_action, w_null=args.w_null,
         d_safe=args.d_safe, success_bonus=args.success_bonus,
         lr_lag=args.lr_lag, lag_target=args.lag_target,
         obs_scene_embed=args.obs_scene_embed,
@@ -275,54 +205,526 @@ def main():
         frame_stack=args.frame_stack,
         episode_len=args.episode_len,
         reward_min=args.reward_min,
-        use_cbf=args.use_cbf,
-        cbf_alpha=args.cbf_alpha,
+        reward_scale=args.reward_scale,
+        use_cbf=args.use_cbf, cbf_alpha=args.cbf_alpha,
     )
 
-    # Reference env for dimension / attribute access
-    ref_env = ManipulatorEnv(**_env_kwargs)
+
+def setup_agent_and_buffer(args, state_dim, action_dim, dyn, ref_env, device):
+    """Create SACAgent and ReplayBuffer."""
+    single_dim = getattr(ref_env, '_single_obs_dim', state_dim)
+    agent = SACAgent(
+        state_dim=state_dim, action_dim=action_dim, dynamics=dyn,
+        hidden_dims=args.hidden_dims,
+        lambda_dyn=args.lambda_dyn,
+        task_scale=args.task_scale, nullspace_scale=args.nullspace_scale,
+        lr=args.lr, alpha=args.alpha, target_entropy=args.target_entropy,
+        device=device,
+        critic_warmup=max(1, args.critic_warmup // args.n_envs),
+        total_steps=args.steps,
+        n_critics=args.n_critics,
+        cost_limit=args.cost_limit,
+        cost_scale=args.cost_scale,
+        backbone=args.backbone, frame_stack=args.frame_stack,
+        action_horizon=args.action_horizon,
+        single_dim=single_dim,
+        d_model=args.d_model, n_heads=args.n_heads,
+        n_enc_layers=args.n_enc_layers, n_dec_layers=args.n_dec_layers,
+        dropout=args.dropout,
+        grad_steps=args.grad_steps,
+        lr_lag=args.lr_lag,
+    )
+    if args.per:
+        from utils.replay_buffer import PrioritizedReplayBuffer
+        buffer = PrioritizedReplayBuffer(args.buffer_size, state_dim, action_dim)
+    else:
+        buffer = ReplayBuffer(args.buffer_size, state_dim, action_dim)
+    return agent, buffer
+
+
+def handle_resume(args, agent, scene_ema, scene_counts, scene_weights, logger):
+    """Load checkpoint and restore training state. Returns (total_steps, episode, best_reward)."""
+    total_steps = 0
+    episode = 0
+    best_reward = -np.inf
+
+    # BC pretrained actor (optional)
+    if args.load_actor is not None:
+        bc_path = args.load_actor
+        if not os.path.isabs(bc_path):
+            bc_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), bc_path)
+        if os.path.exists(bc_path):
+            ckpt = torch.load(bc_path, map_location="cpu", weights_only=False)
+            agent.actor.load_state_dict(ckpt["actor"])
+            if "obs_normalizer" in ckpt:
+                on = ckpt["obs_normalizer"]
+                agent.obs_normalizer.mean = on["mean"]
+                agent.obs_normalizer.std = on["std"]
+                agent.obs_normalizer.n_samples = 100_000
+            print(f"[train] Loaded BC-pretrained actor from {bc_path}, meta: {ckpt.get('metadata', {})}")
+        else:
+            print(f"[train] WARNING: BC checkpoint not found: {bc_path}")
+
+    # SAC checkpoint resume
+    if args.resume is not None:
+        ckpt_path = args.resume
+        if not os.path.isabs(ckpt_path):
+            ckpt_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ckpt_path)
+        if os.path.exists(ckpt_path):
+            meta = agent.load(ckpt_path, reset_alpha=args.reset_alpha,
+                              reset_critic=args.reset_critic, reset_actor=args.reset_actor,
+                              lr=args.lr)
+            total_steps = meta.get("step", 0)
+            episode = meta.get("episode", 0)
+            best_reward = meta.get("best_reward", -np.inf)
+            logger.best_reward = best_reward
+
+            # Restore per-scene stats
+            if scene_ema is not None and "scene_ema" in meta and meta["scene_ema"] is not None \
+                    and len(meta["scene_ema"]) == len(scene_ema):
+                scene_ema[:] = meta["scene_ema"]
+                scene_counts[:] = meta["scene_counts"]
+                ema = scene_ema.copy()
+                ema_min = ema.min()
+                ema_max = ema.max()
+                if ema_max > ema_min:
+                    norm = (ema - ema_min) / (ema_max - ema_min + 1e-8)
+                else:
+                    norm = np.ones_like(ema) * 0.5
+                weights = np.maximum(0.01, 1.0 - norm)
+                weights = weights / weights.sum()
+                for s in range(len(weights)):
+                    scene_weights[s] = weights[s]
+                print(f"[train] Restored scene performance stats for {len(scene_ema)} scenes")
+
+            print(f"[train] Resumed from {ckpt_path}: step={total_steps}, episode={episode}, "
+                  f"best_reward={best_reward:.3f}")
+
+            if args.reset_alpha:
+                agent.log_alpha.data.fill_(np.log(args.alpha))
+                agent.alpha = args.alpha
+                agent.alpha_opt = torch.optim.Adam([agent.log_alpha], lr=args.lr)
+                print(f"[train] Reset alpha to {args.alpha}")
+        else:
+            print(f"[train] WARNING: resume checkpoint not found: {ckpt_path}")
+
+    return total_steps, episode, best_reward
+
+
+# ========================================================================
+# Single-env render loop
+# ========================================================================
+
+def _run_render_loop(agent, env, buffer, args, hyperparams, logger, val_set,
+                     total_steps=0, episode=0, best_reward=-np.inf):
+    """Single-environment training loop with MuJoCo viewer."""
+    reward_scale = args.reward_scale
+
+    print(f"{'Episode':^8}  {'Steps':^8}  {'Reward':^10}  {REWARD_HEADER}  "
+          f"{'L_actor':^10}  {'L_dyn':^9}  {'L_lag':^9}  {'d_obs':^8}")
+    print("-" * 150)
+
+    while total_steps < args.steps:
+        obs = env.reset()
+        agent.obs_normalizer.update(obs)
+        ep_reward = 0.0
+        ep_l_actor = ep_l_dyn = ep_l_lag = 0.0
+        ep_d_obs = []
+        ep_r_acc = reward_accumulators()
+        ep_steps = 0
+        done = False
+
+        while not done:
+            if total_steps < args.start_steps:
+                a_task = np.random.uniform(-args.task_scale, args.task_scale, 3)
+                a_null = np.random.uniform(-args.nullspace_scale, args.nullspace_scale, env.n - 3)
+                action = np.concatenate([a_task, a_null])
+            else:
+                action = agent.select_action(obs)
+
+            q_prev = env.q.copy()
+            dq_prev = env.dq.copy()
+            next_obs, reward, done, info = env.step(action)
+
+            if args.render:
+                env.render()
+
+            logger.log_step(total_steps, episode, ep_steps, reward, info)
+            dq_next = env.dq.copy()
+            agent.obs_normalizer.update(next_obs)
+
+            buffer.push(obs, action, reward, next_obs, done,
+                        q=q_prev, dq=dq_prev, dq_next=dq_next,
+                        J=env._last_J, sigma=env._last_sigma, dx_nom=env._last_dx_nom,
+                        cost=info.get("cost", 0.0))
+
+            obs = next_obs
+            ep_reward += reward
+            ep_d_obs.append(info["d_obs"])
+            accumulate_rewards(info, ep_r_acc)
+            total_steps += 1
+            ep_steps += 1
+
+            if total_steps >= args.start_steps and len(buffer) >= args.batch_size \
+                    and total_steps % args.update_every == 0:
+                for i in range(args.grad_steps):
+                    batch = buffer.sample(args.batch_size)
+                    losses, td_errors = agent.update(batch, is_last=(i == args.grad_steps - 1))
+                    if args.per:
+                        buffer.update_priorities(batch["indices"], td_errors)
+                    logger.log_update(losses)
+                    ep_l_actor += losses["actor_rl_loss"]
+                    ep_l_dyn += losses["physics_loss"]
+                    ep_l_lag += losses.get("lag_loss", 0.0)
+
+        episode += 1
+        ep_summary = logger.end_episode(episode, total_steps)
+        min_d_obs = min(ep_d_obs) if ep_d_obs else 0.0
+        avg_l_actor = ep_l_actor / max(ep_steps, 1)
+        avg_l_dyn = ep_l_dyn / max(ep_steps, 1)
+        avg_l_lag = ep_l_lag / max(ep_steps, 1)
+
+        if episode % args.log_every == 0:
+            rp = reward_print_values(avg_rewards(ep_r_acc))
+            print(f"{episode:>8d}  {total_steps:>8d}  {ep_reward:>10.3f}  "
+                  f"{REWARD_FORMAT.format(**rp)}  "
+                  f"{avg_l_actor:>10.4f}  {avg_l_dyn:>9.4f}  {avg_l_lag:>9.4f}  {min_d_obs:>8.3f}")
+
+        ckpt_meta = {"step": total_steps, "episode": episode, "best_reward": logger.best_reward,
+                     "hyperparams": hyperparams, "csv_path": logger.csv_path}
+
+        if episode % args.checkpoint_every == 0:
+            agent.save(logger.checkpoint_path(f"ep{episode:05d}"), metadata=ckpt_meta)
+        if ep_summary["total_reward"] > logger.best_reward:
+            logger.best_reward = ep_summary["total_reward"]
+            best_reward = logger.best_reward
+            ckpt_meta["best_reward"] = best_reward
+            agent.save(logger.checkpoint_path("best"), metadata=ckpt_meta)
+
+        if val_set is not None and episode % args.val_every == 0:
+            print(f"\n{'='*60}\nValidation at episode {episode}\n{'='*60}")
+            val_results = evaluate_on_validation_set(
+                agent, env, val_set, num_scenes=args.val_scenes, max_steps=env.episode_len
+            )
+            print(f"Success Rate:      {val_results['success_rate']*100:.1f}%")
+            print(f"Avg Reward:        {val_results['avg_reward']:.3f}")
+            print(f"Avg Track Error:   {val_results['avg_tracking_error']:.4f}m")
+            print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
+            print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
+            print(f"{'='*60}\n")
+            logger.log_validation(episode, val_results)
+
+    return best_reward
+
+
+# ========================================================================
+# Parallel SAC training loop
+# ========================================================================
+
+def _train_sac_parallel(agent, buffer, pool, ref_env, args, hyperparams, logger,
+                         val_set, scene_ema, scene_counts, scene_weights, scene_lock,
+                         total_steps=0, episode=0, best_reward=-np.inf):
+    """Multi-environment SAC training with batched action selection."""
+    n_envs = args.n_envs
+    obs = pool.reset_all()
+    for o in obs:
+        agent.obs_normalizer.update(o)
+
+    # Per-env tracking (re-initialized when an episode ends)
+    env_rewards = np.zeros(n_envs)
+    env_d_obs = [[] for _ in range(n_envs)]
+    env_w = [[] for _ in range(n_envs)]
+    env_r_acc = [reward_accumulators() for _ in range(n_envs)]
+    env_collision_penalty = [[] for _ in range(n_envs)]
+    env_ever_collided = [False for _ in range(n_envs)]
+    env_steps = np.zeros(n_envs, dtype=int)
+    log_success_count = 0
+    last_val_ep = -1
+    last_losses = {"actor_rl_loss": 0.0, "physics_loss": 0.0}
+
+    # Force sigma=1 during start_steps so random actions actually explore
+    if args.start_steps > 0:
+        pool.broadcast_setattr("sigma_override", 1.0)
+    sigma_overridden = True
+
+    print(f"Run directory: {logger.run_dir}")
+    print(f"{'Episode':^8}  {'Steps':^8}  {'Reward':^10}  {REWARD_HEADER}  "
+          f"{'L_critic':^8}  {'L_scritic':^8}  "
+          f"{'L_actor':^10}  {'L_dyn':^9}  {'L_lag':^9}  {'d_obs':^8}  {'suc':^5}")
+    print("-" * 175)
+
+    while total_steps < args.steps:
+        # Clear sigma override once start_steps finishes
+        if sigma_overridden and total_steps >= args.start_steps:
+            pool.broadcast_setattr("sigma_override", None)
+            sigma_overridden = False
+
+        # Collect actions for all envs in parallel (batched)
+        if total_steps < args.start_steps:
+            actions = np.zeros((n_envs, ref_env.act_dim), dtype=np.float32)
+            actions[:, 3:] = np.random.uniform(
+                -args.nullspace_scale, args.nullspace_scale,
+                (n_envs, ref_env.n - 3)
+            )
+        else:
+            actions = agent.select_action_batch(obs)
+
+        # Step all envs in parallel
+        result = pool.step_all(actions)
+
+        # Store transitions and track per-env metrics
+        for i in range(n_envs):
+            buffer.push(
+                obs[i], actions[i], result["reward"][i],
+                result["obs"][i], result["done"][i],
+                q=result["q_before"][i], dq=result["dq_before"][i],
+                dq_next=result["dq_after"][i],
+                J=result["J"][i], sigma=result["sigma"][i],
+                dx_nom=result["dx_nom"][i],
+                cost=result["info"][i].get("cost", 0.0),
+            )
+            total_steps += 1
+            env_rewards[i] += result["reward"][i]
+            env_d_obs[i].append(result["info"][i].get("d_obs", 0.0))
+            env_w[i].append(result["info"][i].get("w", 0.0))
+            accumulate_rewards(result["info"][i], env_r_acc[i])
+            env_collision_penalty[i].append(result["info"][i].get("collision_penalty", 0.0))
+            env_ever_collided[i] = env_ever_collided[i] or result["info"][i].get("collision", False)
+            env_steps[i] += 1
+
+            if result["done"][i]:
+                episode += 1
+                ep_success = result["info"][i].get("success", False)
+                scene_id = result["scene_id"][i]
+                min_d_obs = min(env_d_obs[i]) if env_d_obs[i] else 0.0
+                avg_w = (sum(env_w[i]) / len(env_w[i])) if env_w[i] else None
+                avg_r = avg_rewards(env_r_acc[i])
+                avg_collision_penalty = (sum(env_collision_penalty[i]) / len(env_collision_penalty[i])) \
+                    if env_collision_penalty[i] else None
+
+                # Per-scene EMA for prioritized sampling
+                if scene_ema is not None:
+                    ema_alpha = 0.3
+                    scene_ema[scene_id] = ema_alpha * env_rewards[i] + (1 - ema_alpha) * scene_ema[scene_id]
+                    scene_counts[scene_id] += 1
+                    if scene_counts.min() >= 1:
+                        ema = scene_ema.copy()
+                        ema_min = ema.min()
+                        ema_max = ema.max()
+                        if ema_max > ema_min:
+                            norm = (ema - ema_min) / (ema_max - ema_min + 1e-8)
+                        else:
+                            norm = np.ones_like(ema) * 0.5
+                        weights = np.maximum(0.01, 1.0 - norm)
+                        weights = weights / weights.sum()
+                        if scene_lock is not None:
+                            scene_lock.acquire()
+                        for s in range(len(weights)):
+                            scene_weights[s] = weights[s]
+                        if scene_lock is not None:
+                            scene_lock.release()
+
+                if ep_success:
+                    log_success_count += 1
+
+                # Logging
+                if episode % args.log_every == 0:
+                    rp = reward_print_values(avg_r)
+                    print(f"{episode:>8d}  {total_steps:>8d}  {env_rewards[i]:>10.3f}  "
+                          f"{REWARD_FORMAT.format(**rp)}  "
+                          f"{last_losses.get('critic_loss', 0):>8.4f}  {last_losses.get('safety_critic_loss', 0):>8.4f}  "
+                          f"{last_losses.get('actor_rl_loss', 0):>10.4f}  {last_losses.get('physics_loss', 0):>9.4f}  "
+                          f"{last_losses.get('lag_loss', 0):>9.4f}  {min_d_obs:>8.3f}  "
+                          f"s={scene_id}  suc={log_success_count}")
+                    log_success_count = 0
+
+                logger.log_episode_summary(
+                    step=total_steps, episode=episode,
+                    total_reward=env_rewards[i], min_d_obs=min_d_obs,
+                    avg_actor_loss=last_losses.get("actor_rl_loss", 0.0),
+                    avg_physics_loss=last_losses.get("physics_loss", 0.0),
+                    ep_step=env_steps[i],
+                    alpha=last_losses.get("alpha"),
+                    avg_critic_loss=last_losses.get("critic_loss"),
+                    avg_safety_critic_loss=last_losses.get("safety_critic_loss"),
+                    avg_actor_total_loss=last_losses.get("actor_loss"),
+                    avg_w=avg_w,
+                    collision_penalty=avg_collision_penalty,
+                    success=int(ep_success),
+                    ever_collided=int(env_ever_collided[i]),
+                    **avg_r,
+                )
+
+                ckpt_meta = {
+                    "step": total_steps, "episode": episode,
+                    "best_reward": best_reward, "hyperparams": hyperparams,
+                    "csv_path": logger.csv_path,
+                    "scene_ema": scene_ema.tolist() if scene_ema is not None else None,
+                    "scene_counts": scene_counts.tolist() if scene_counts is not None else None,
+                }
+
+                if episode % args.checkpoint_every == 0:
+                    agent.save(logger.checkpoint_path(f"ep{episode:05d}"), metadata=ckpt_meta)
+                if env_rewards[i] > best_reward:
+                    best_reward = env_rewards[i]
+                    ckpt_meta["best_reward"] = best_reward
+                    agent.save(logger.checkpoint_path("best"), metadata=ckpt_meta)
+
+                # Validation
+                if val_set is not None and episode > 0 and episode % args.val_every == 0 \
+                        and episode != last_val_ep:
+                    last_val_ep = episode
+                    print(f"\n{'='*60}")
+                    print(f"Validation at episode {episode}")
+                    print(f"{'='*60}")
+                    val_results = evaluate_on_validation_set(
+                        agent, ref_env, val_set,
+                        num_scenes=args.val_scenes, max_steps=ref_env.episode_len
+                    )
+                    print(f"Success Rate:      {val_results['success_rate']*100:.1f}%")
+                    print(f"Avg Reward:        {val_results['avg_reward']:.3f}")
+                    print(f"Avg Track Error:   {val_results['avg_tracking_error']:.4f}m")
+                    print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
+                    print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
+                    print(f"{'='*60}\n")
+                    logger.log_validation(episode, val_results)
+
+                # Reset per-env tracking
+                env_rewards[i] = 0.0
+                env_d_obs[i] = []
+                env_w[i] = []
+                env_r_acc[i] = reward_accumulators()
+                env_collision_penalty[i] = []
+                env_ever_collided[i] = False
+                env_steps[i] = 0
+
+        obs = result["obs"]
+
+        # Batch obs normalizer update
+        agent.obs_normalizer.update(result["obs"])
+
+        # SAC training update
+        if total_steps >= args.start_steps and len(buffer) >= args.batch_size:
+            for i in range(args.grad_steps):
+                batch = buffer.sample(args.batch_size)
+                losses, td_errors = agent.update(batch, is_last=(i == args.grad_steps - 1))
+                if args.per:
+                    buffer.update_priorities(batch["indices"], td_errors)
+                logger.log_update(losses)
+                last_losses = losses
+
+    return best_reward
+
+
+# ========================================================================
+# Main
+# ========================================================================
+
+def main():
+    args = parse_args()
+
+    # Parse hidden_dims
+    if hasattr(args, 'hidden_dims') and args.hidden_dims:
+        args.hidden_dims = [int(x) for x in args.hidden_dims.replace(' ', '').split(',')]
+    else:
+        args.hidden_dims = [256, 256]
+
+    # ---- Dynamics ----
+    dyn = ManipulatorDynamics(args.urdf)
+
+    # ---- Scene loading ----
+    scene_data, n_obs, scene_weights, scene_ema, scene_counts, scene_lock, obs_waypoint_steps = \
+        setup_scene_loading(args)
+
+    # ---- Environment ----
+    env_kwargs = make_env_kwargs(args, n_obs, obs_waypoint_steps)
+    ref_env = ManipulatorEnv(**env_kwargs)
     state_dim = ref_env.obs_dim
     action_dim = ref_env.act_dim
 
-    # -------- Load validation set --------
+    # ---- Validation set ----
     val_set = None
     if args.val_json is not None:
-        val_json_path = args.val_json
-        if not os.path.isabs(val_json_path):
-            val_json_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), val_json_path)
-        if os.path.exists(val_json_path):
-            val_set = ValidationSet(val_json_path)
+        val_path = args.val_json
+        if not os.path.isabs(val_path):
+            val_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), val_path)
+        if os.path.exists(val_path):
+            val_set = ValidationSet(val_path)
             print(f"[train] Validation set: {len(val_set.scenes)} scenes available")
         else:
-            print(f"Warning: Validation file not found at {val_json_path}")
+            print(f"Warning: Validation file not found at {val_path}")
 
-    # -------- Environment (single for render, parallel pool otherwise) --------
-    if args.render:
-        env = ManipulatorEnv(**_env_kwargs)
-        if _scene_data is not None:
-            _vs, _scenes = _scene_data
+    # ---- Device ----
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    # ---- Agent + buffer ----
+    agent, buffer = setup_agent_and_buffer(args, state_dim, action_dim, dyn, ref_env, device)
+
+    # ---- Logger ----
+    run_name = args.run_name or f"sac_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_dir = os.path.join(args.save_path, run_name)
+    hyperparams = {
+        "steps": args.steps, "batch_size": args.batch_size,
+        "start_steps": args.start_steps, "update_every": args.update_every,
+        "buffer_size": args.buffer_size,
+        "lambda_dyn": args.lambda_dyn, "lr": args.lr,
+        "alpha": args.alpha, "gamma": 0.99, "tau": args.tau,
+        "state_dim": state_dim, "action_dim": action_dim,
+    }
+    logger = TrainingLogger(run_dir=run_dir, hyperparams=hyperparams)
+    os.makedirs(args.save_path, exist_ok=True)
+
+    # Save config
+    _config = {
+        "command": " ".join(sys.argv),
+        "cli_args": vars(args),
+        "hyperparams": hyperparams,
+        "git_commit": os.popen("git rev-parse HEAD 2>/dev/null").read().strip(),
+    }
+    with open(os.path.join(run_dir, "config.json"), "w") as f:
+        json.dump(_config, f, indent=2, default=str)
+    print(f"[train] Config saved to {run_dir}/config.json")
+
+    # ---- Resume ----
+    total_steps, episode, best_reward = handle_resume(
+        args, agent, scene_ema, scene_counts, scene_weights, logger
+    )
+
+    # ---- Launch training ----
+    if args.render or args.n_envs <= 1:
+        # ---- Single-env mode (render or single-process debug) ----
+        env = ManipulatorEnv(**env_kwargs)
+        if scene_data is not None:
+            vs, scenes = scene_data
             if args.scene_id >= 0:
-                _vs.apply_scene_to_env(env, _scenes)
-                env.reset = lambda seed=None: (_vs.apply_scene_to_env(env, _scenes), env._get_obs())[1]
+                vs.apply_scene_to_env(env, scenes)
+                env.reset = lambda seed=None: (vs.apply_scene_to_env(env, scenes), env._get_obs())[1]
             else:
-                _vs.apply_scene_to_env(env, _scenes[0])
+                vs.apply_scene_to_env(env, scenes[0])
                 env.reset = lambda seed=None: (
-                    _vs.apply_scene_to_env(env, _scenes[np.random.randint(len(_scenes))]),
+                    vs.apply_scene_to_env(env, scenes[np.random.randint(len(scenes))]),
                     env._get_obs()
                 )[1]
-        pool = None
-        print(f"[train] Single-env mode (--render)")
+        print(f"[train] Single-env mode ({'render' if args.render else 'n_envs=1 debug'})")
+        best_reward = _run_render_loop(
+            agent, env, buffer, args, hyperparams, logger, val_set,
+            total_steps, episode, best_reward
+        )
+        if hasattr(env, '_viewer'):
+            env._viewer.close()
     else:
+        # ---- Parallel mode ----
         from utils.parallel_env import ParallelEnvPool
 
         def _create_env():
-            e = ManipulatorEnv(**_env_kwargs)
-            if _scene_data is not None:
-                _vs, _scenes = _scene_data
+            e = ManipulatorEnv(**env_kwargs)
+            if scene_data is not None:
+                vs, scenes = scene_data
                 if args.scene_id >= 0:
-                    _vs.apply_scene_to_env(e, _scenes)
+                    vs.apply_scene_to_env(e, scenes)
+
                     def _reset_fixed(seed=None):
-                        _vs.apply_scene_to_env(e, _scenes)
+                        vs.apply_scene_to_env(e, scenes)
                         e.step_count = 0
                         e._integral_err = np.zeros(3)
                         e._ever_collided = False
@@ -333,17 +735,15 @@ def main():
                         return e._get_obs()
                     e.reset = _reset_fixed
                 else:
-                    n_s = len(_scenes)
+                    n_s = len(scenes)
 
                     def _sample_idx() -> int:
-                        if _scene_weights is not None:
-                            if _scene_lock is not None:
-                                _scene_lock.acquire()
-                            raw = np.frombuffer(
-                                _scene_weights.get_obj(), dtype=np.float64
-                            ).copy()
-                            if _scene_lock is not None:
-                                _scene_lock.release()
+                        if scene_weights is not None:
+                            if scene_lock is not None:
+                                scene_lock.acquire()
+                            raw = np.frombuffer(scene_weights.get_obj(), dtype=np.float64).copy()
+                            if scene_lock is not None:
+                                scene_lock.release()
                             raw = np.maximum(raw, 0.0)
                             total = raw.sum()
                             if total > 0:
@@ -354,12 +754,12 @@ def main():
                         return int(np.random.randint(n_s))
 
                     init_idx = _sample_idx()
-                    _vs.apply_scene_to_env(e, _scenes[init_idx])
+                    vs.apply_scene_to_env(e, scenes[init_idx])
                     e._current_scene_id = init_idx
 
                     def _reset(seed=None):
                         new_idx = _sample_idx()
-                        _vs.apply_scene_to_env(e, _scenes[new_idx])
+                        vs.apply_scene_to_env(e, scenes[new_idx])
                         e._current_scene_id = new_idx
                         e.step_count = 0
                         e._integral_err = np.zeros(3)
@@ -373,674 +773,17 @@ def main():
             return e
 
         pool = ParallelEnvPool(args.n_envs, _create_env)
-        env = None
         print(f"[train] Parallel mode: {args.n_envs} env workers")
 
-    # -------- Agent, replay buffer, logger (CUDA init after fork) --------
-    _device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-    if args.algo == "ppo":
-        agent = PPOAgent(
-            state_dim=state_dim,
-            action_dim=action_dim,
-            dynamics=dyn,
-            n_envs=args.n_envs,
-            rollout_steps=args.rollout_steps,
-            lambda_dyn=args.lambda_dyn,
-            task_scale=args.task_scale,
-            nullspace_scale=args.nullspace_scale,
-            ppo_epochs=args.ppo_epochs,
-            batch_size=args.batch_size,
-            device=_device,
+        # Override total_steps/episode from resume (may differ from scratch)
+        # agent and buffer are shared; pool resets envs automatically.
+        best_reward = _train_sac_parallel(
+            agent, buffer, pool, ref_env, args, hyperparams, logger,
+            val_set, scene_ema, scene_counts, scene_weights, scene_lock
         )
-        buffer = None  # PPO uses internal RolloutBuffer
-    else:
-        _single_dim = getattr(ref_env, '_single_obs_dim', state_dim)
-        agent = SACAgent(
-            state_dim=state_dim,
-            action_dim=action_dim,
-            dynamics=dyn,
-            hidden_dims=args.hidden_dims,
-            lambda_dyn=args.lambda_dyn,
-            task_scale=args.task_scale,
-            nullspace_scale=args.nullspace_scale,
-            lr=args.lr,
-            alpha=args.alpha,
-            target_entropy=args.target_entropy,
-            device=_device,
-            critic_warmup=max(1, args.critic_warmup // args.n_envs),
-            total_steps=args.steps,
-            n_critics=args.n_critics,
-            cost_limit=args.cost_limit,
-            cost_scale=args.cost_scale,
-            backbone=args.backbone,
-            frame_stack=args.frame_stack,
-            action_horizon=args.action_horizon,
-            single_dim=_single_dim,
-            d_model=args.d_model,
-            n_heads=args.n_heads,
-            n_enc_layers=args.n_enc_layers,
-            n_dec_layers=args.n_dec_layers,
-            dropout=args.dropout,
-        )
-        if args.per:
-            from utils.replay_buffer import PrioritizedReplayBuffer
-            buffer = PrioritizedReplayBuffer(args.buffer_size, state_dim, action_dim)
-        else:
-            buffer = ReplayBuffer(args.buffer_size, state_dim, action_dim)
-
-    run_name = args.run_name or f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    run_dir  = os.path.join(os.path.dirname(args.save_path), run_name)
-    hyperparams = {
-        "steps":        args.steps,
-        "batch_size":   args.batch_size,
-        "start_steps":  args.start_steps,
-        "update_every": args.update_every,
-        "buffer_size":  args.buffer_size,
-        "lambda_dyn":   args.lambda_dyn,
-        "lr":           args.lr,
-        "alpha":        args.alpha,
-        "gamma":        0.99,
-        "tau":          args.tau,
-        "state_dim":    state_dim,
-        "action_dim":   action_dim,
-    }
-    logger = TrainingLogger(run_dir=run_dir, hyperparams=hyperparams)
-
-    os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
-
-    # Save config for reproducibility
-    try:
-        from agent.reward import RewardFunction
-        import inspect
-        reward_defaults = {
-            k: v.default for k, v in inspect.signature(RewardFunction.__init__).parameters.items()
-            if v.default is not inspect.Parameter.empty and k not in ('self', 'collision_detector')
-        }
-    except Exception:
-        reward_defaults = {}
-    _config = {
-        "command": " ".join(sys.argv),
-        "cli_args": vars(args),
-        "hyperparams": hyperparams,
-        "reward_weights": reward_defaults,
-        "git_commit": os.popen("git rev-parse HEAD 2>/dev/null").read().strip(),
-    }
-    with open(os.path.join(run_dir, "config.json"), "w") as f:
-        json.dump(_config, f, indent=2, default=str)
-    print(f"[train] Config saved to {run_dir}/config.json")
-
-    # -------- Resume from checkpoint --------
-    total_steps = 0
-    episode     = 0
-    best_reward = -np.inf
-    if args.load_actor is not None:
-        bc_path = args.load_actor
-        if not os.path.isabs(bc_path):
-            bc_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), bc_path)
-        if os.path.exists(bc_path):
-            bc_ckpt = torch.load(bc_path, map_location="cpu", weights_only=False)
-            agent.actor.load_state_dict(bc_ckpt["actor"])
-            # Also restore obs normalizer if available
-            if "obs_normalizer" in bc_ckpt:
-                on = bc_ckpt["obs_normalizer"]
-                agent.obs_normalizer.mean = on["mean"]
-                agent.obs_normalizer.std = on["std"]
-                agent.obs_normalizer.n_samples = 100_000
-            bc_meta = bc_ckpt.get("metadata", {})
-            print(f"[train] Loaded BC-pretrained actor from {bc_path}")
-            print(f"[train] BC meta: {bc_meta}")
-        else:
-            print(f"[train] WARNING: BC checkpoint not found: {bc_path}")
-
-    if args.resume is not None:
-        ckpt_path = args.resume
-        if not os.path.isabs(ckpt_path):
-            ckpt_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ckpt_path)
-        if os.path.exists(ckpt_path):
-            if args.load_sac_actor:
-                if args.algo != "ppo":
-                    print("[train] WARNING: --load_sac_actor only supported for PPO. Ignoring.")
-                    meta = agent.load(ckpt_path, reset_alpha=args.reset_alpha,
-                                      reset_critic=args.reset_critic, reset_actor=args.reset_actor,
-                                      lr=args.lr)
-                else:
-                    meta = agent.load_actor_from_sac(ckpt_path)
-            else:
-                meta = agent.load(ckpt_path, reset_alpha=args.reset_alpha,
-                                  reset_critic=args.reset_critic, reset_actor=args.reset_actor,
-                                  lr=args.lr)
-            total_steps = meta.get("step", 0)
-            episode     = meta.get("episode", 0)
-            best_reward = meta.get("best_reward", -np.inf)
-            logger.best_reward = best_reward
-
-            # Restore per-scene stats (skip if scene count mismatched — e.g. phase upgrade)
-            if (_scene_ema is not None and "scene_ema" in meta
-                    and meta["scene_ema"] is not None
-                    and len(meta["scene_ema"]) == len(_scene_ema)):
-                _scene_ema[:] = meta["scene_ema"]
-                _scene_counts[:] = meta["scene_counts"]
-                ema = _scene_ema.copy()
-                ema_min = ema.min()
-                ema_max = ema.max()
-                if ema_max > ema_min:
-                    norm = (ema - ema_min) / (ema_max - ema_min + 1e-8)
-                else:
-                    norm = np.ones_like(ema) * 0.5
-                weights = np.maximum(0.01, 1.0 - norm)
-                weights = weights / weights.sum()
-                for s in range(len(weights)):
-                    _scene_weights[s] = weights[s]
-                print(f"[train] Restored scene performance stats for {len(_scene_ema)} scenes")
-
-            print(f"[train] Resumed from {ckpt_path}: step={total_steps}, episode={episode}, "
-                  f"best_reward={best_reward:.3f}")
-
-            if args.reset_alpha:
-                agent.log_alpha.data.fill_(np.log(args.alpha))
-                agent.alpha = args.alpha
-                # Reinitialize alpha optimizer to avoid stale state from checkpoint
-                agent.alpha_opt = torch.optim.Adam([agent.log_alpha], lr=args.lr)
-                print(f"[train] Reset alpha to {args.alpha} (log_alpha={np.log(args.alpha):.4f})")
-        else:
-            print(f"[train] WARNING: resume checkpoint not found: {ckpt_path}")
-
-    # -------- Training loop --------
-    reward_scale = args.reward_scale  # normalize reward magnitude for stable Q learning
-
-    print(f"Run directory: {run_dir}")
-    print(f"{'Episode':^8}  {'Steps':^8}  {'Reward':^10}  {REWARD_HEADER}  "
-          f"{'L_critic':^8}  {'L_scritic':^8}  "
-          f"{'L_actor':^10}  {'L_dyn':^9}  {'L_lag':^9}  {'d_obs':^8}  {'suc':^5}")
-    print("-" * 175)
-
-    if args.render:
-        # ================================================================
-        # Single-env training (original loop, supports --render)
-        # ================================================================
-        while total_steps < args.steps:
-            obs = env.reset()
-            agent.obs_normalizer.update(obs)
-            ep_reward   = 0.0
-            ep_l_actor  = 0.0
-            ep_l_dyn    = 0.0
-            ep_l_lag    = 0.0
-            ep_d_obs    = []
-            ep_r_acc = reward_accumulators()  # {csv_col: []}
-            ep_steps    = 0
-            done        = False
-            while not done:
-                if total_steps < args.start_steps:
-                    a_task = np.random.uniform(-args.task_scale, args.task_scale, 3)
-                    a_null = np.random.uniform(-args.nullspace_scale, args.nullspace_scale, env.n - 3)
-                    action = np.concatenate([a_task, a_null])
-                else:
-                    action = agent.select_action(obs)
-
-                q_prev  = env.q.copy()
-                dq_prev = env.dq.copy()
-                next_obs, reward, done, info = env.step(action)
-
-                if args.render:
-                    env.render()
-
-                logger.log_step(total_steps, episode, ep_steps, reward, info)
-                dq_next = env.dq.copy()
-                agent.obs_normalizer.update(next_obs)
-                reward_scaled = reward / reward_scale
-
-                buffer.push(
-                    obs, action, reward_scaled, next_obs, done,
-                    q=q_prev, dq=dq_prev, dq_next=dq_next,
-                    J=env._last_J, sigma=env._last_sigma, dx_nom=env._last_dx_nom,
-                    cost=info.get("cost", 0.0),
-                )
-
-                obs = next_obs
-                ep_reward += reward
-                ep_d_obs.append(info["d_obs"])
-                accumulate_rewards(info, ep_r_acc)
-                total_steps += 1
-                ep_steps    += 1
-
-                if (total_steps >= args.start_steps and
-                        len(buffer) >= args.batch_size and
-                        total_steps % args.update_every == 0):
-                    for _ in range(args.grad_steps):
-                        batch = buffer.sample(args.batch_size)
-                        losses, td_errors = agent.update(batch)
-                        if args.per:
-                            buffer.update_priorities(batch["indices"], td_errors)
-                        logger.log_update(losses)
-                        ep_l_actor += losses["actor_rl_loss"]
-                        ep_l_dyn   += losses["physics_loss"]
-                        ep_l_lag   += losses.get("lag_loss", 0.0)
-
-            episode += 1
-            ep_summary = logger.end_episode(episode, total_steps)
-            avg_l_actor = ep_l_actor / max(ep_steps, 1)
-            avg_l_dyn   = ep_l_dyn   / max(ep_steps, 1)
-            avg_l_lag   = ep_l_lag   / max(ep_steps, 1)
-            min_d_obs   = min(ep_d_obs) if ep_d_obs else 0.0
-
-            if episode % args.log_every == 0:
-                avg_r = avg_rewards(ep_r_acc)
-                rp = reward_print_values(avg_r)
-                print(f"{episode:>8d}  {total_steps:>8d}  {ep_reward:>10.3f}  "
-                      f"{REWARD_FORMAT.format(**rp)}  "
-                      f"{avg_l_actor:>10.4f}  {avg_l_dyn:>9.4f}  {avg_l_lag:>9.4f}  {min_d_obs:>8.3f}")
-
-            ckpt_meta = {
-                "step":         total_steps,
-                "episode":      episode,
-                "best_reward":  logger.best_reward,
-                "hyperparams":  hyperparams,
-                "csv_path":     logger.csv_path,
-            }
-
-            if episode % args.checkpoint_every == 0:
-                agent.save(logger.checkpoint_path(f"ep{episode:05d}"), metadata=ckpt_meta)
-
-            if ep_summary["total_reward"] > logger.best_reward:
-                logger.best_reward = ep_summary["total_reward"]
-                best_reward = logger.best_reward
-                ckpt_meta["best_reward"] = logger.best_reward
-                agent.save(logger.checkpoint_path("best"), metadata=ckpt_meta)
-
-            if val_set is not None and episode % args.val_every == 0:
-                print(f"\n{'='*60}")
-                print(f"Validation at episode {episode}")
-                print(f"{'='*60}")
-                val_results = evaluate_on_validation_set(
-                    agent, env, val_set,
-                    num_scenes=args.val_scenes, max_steps=env.episode_len
-                )
-                print(f"Success Rate:      {val_results['success_rate']*100:.1f}%")
-                print(f"Avg Reward:        {val_results['avg_reward']:.3f}")
-                print(f"Avg Track Error:   {val_results['avg_tracking_error']:.4f}m")
-                print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
-                print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
-                print(f"{'='*60}\n")
-                logger.log_validation(episode, val_results)
-
-    else:
-        # ================================================================
-        # Parallel training (pool of n_envs workers)
-        # ================================================================
-        n_envs = args.n_envs
-        obs = pool.reset_all()
-        for o in obs:
-            agent.obs_normalizer.update(o)
-
-        # Per-env episode tracking
-        env_rewards = np.zeros(n_envs)
-        env_d_obs   = [[] for _ in range(n_envs)]
-        env_w       = [[] for _ in range(n_envs)]
-        env_r_acc = [reward_accumulators() for _ in range(n_envs)]
-        env_collision_penalty = [[] for _ in range(n_envs)]
-        env_ever_collided = [False for _ in range(n_envs)]
-        env_steps   = np.zeros(n_envs, dtype=int)
-        _log_success_count = 0
-        _last_val_ep = -1
-        last_losses = {"actor_rl_loss": 0.0, "physics_loss": 0.0}
-
-        if args.algo == "ppo":
-            # ============================================================
-            # PPO parallel training (on-policy: collect rollout, then update)
-            # ============================================================
-            while total_steps < args.steps:
-                agent.buffer.clear()
-
-                # --- Rollout collection ---
-                for step_in_rollout in range(args.rollout_steps):
-                    if total_steps >= args.steps:
-                        break
-
-                    # Get actions with log_probs and values from current policy
-                    actions = np.zeros((n_envs, action_dim), dtype=np.float32)
-                    log_probs = np.zeros(n_envs, dtype=np.float32)
-                    values = np.zeros(n_envs, dtype=np.float32)
-                    for i in range(n_envs):
-                        actions[i], log_probs[i], values[i] = agent.act(obs[i])
-
-                    result = pool.step_all(actions)
-
-                    # Push full step (all envs) into rollout buffer
-                    agent.buffer.push(
-                        obs, actions, result["reward"], result["done"],
-                        log_probs, values,
-                        q=result["q_before"], dq=result["dq_before"],
-                        dq_next=result["dq_after"],
-                        J=result["J"], sigma=result["sigma"],
-                        dx_nom=result["dx_nom"],
-                    )
-
-                    # Per-env tracking
-                    for i in range(n_envs):
-                        total_steps += 1
-                        env_rewards[i] += result["reward"][i]
-                        info_i = result["info"][i]
-                        env_d_obs[i].append(info_i.get("d_obs", 0.0))
-                        env_w[i].append(info_i.get("w", 0.0))
-                        accumulate_rewards(info_i, env_r_acc[i])
-                        env_collision_penalty[i].append(info_i.get("collision_penalty", 0.0))
-                        env_ever_collided[i] = env_ever_collided[i] or info_i.get("collision", False)
-                        env_steps[i] += 1
-                        agent.obs_normalizer.update(result["obs"][i])
-
-                        if result["done"][i]:
-                            episode += 1
-                            # Episode-end success: path_complete AND no collision during episode
-                            ep_success = info_i.get("success", False)
-                            scene_id = result["scene_id"][i]
-                            avg_l_actor = last_losses.get("actor_rl_loss", 0.0)
-                            avg_l_dyn   = last_losses.get("physics_loss", 0.0)
-                            last_critic = last_losses.get("critic_loss", None)
-                            last_actor_total = last_losses.get("actor_loss", None)
-                            last_alpha  = last_losses.get("alpha", None)
-                            min_d_obs   = min(env_d_obs[i]) if env_d_obs[i] else 0.0
-                            avg_w       = (sum(env_w[i]) / len(env_w[i])) if env_w[i] else None
-                            avg_r = avg_rewards(env_r_acc[i])
-                            avg_collision_penalty = (sum(env_collision_penalty[i]) / len(env_collision_penalty[i])) if env_collision_penalty[i] else None
-
-                            # Per-scene performance tracking
-                            if _scene_ema is not None:
-                                ema_alpha = 0.3
-                                _scene_ema[scene_id] = (ema_alpha * env_rewards[i]
-                                                        + (1 - ema_alpha) * _scene_ema[scene_id])
-                                _scene_counts[scene_id] += 1
-                                if _scene_counts.min() >= 1:
-                                    ema = _scene_ema.copy()
-                                    ema_min = ema.min()
-                                    ema_max = ema.max()
-                                    if ema_max > ema_min:
-                                        norm = (ema - ema_min) / (ema_max - ema_min + 1e-8)
-                                    else:
-                                        norm = np.ones_like(ema) * 0.5
-                                    weights = np.maximum(0.01, 1.0 - norm)
-                                    weights = weights / weights.sum()
-                                    for s in range(len(weights)):
-                                        _scene_weights[s] = weights[s]
-
-                            # Track success for logging window
-                            if ep_success:
-                                _log_success_count += 1
-
-                            if episode % args.log_every == 0:
-                                rp = reward_print_values(avg_r)
-                                print(f"{episode:>8d}  {env_steps[i]:>8d}  {env_rewards[i]:>10.3f}  "
-                                      f"{REWARD_FORMAT.format(**rp)}  "
-                                      f"{avg_l_actor:>10.4f}  {avg_l_dyn:>9.4f}  {min_d_obs:>8.3f}  "
-                                      f"s={scene_id}  suc={_log_success_count}")
-                                _log_success_count = 0
-
-                            logger.log_episode_summary(
-                                step=total_steps, episode=episode,
-                                total_reward=env_rewards[i], min_d_obs=min_d_obs,
-                                avg_actor_loss=avg_l_actor, avg_physics_loss=avg_l_dyn,
-                                ep_step=env_steps[i],
-                                alpha=last_alpha,
-                                avg_critic_loss=last_critic,
-                                avg_actor_total_loss=last_actor_total,
-                                avg_w=avg_w,
-                                collision_penalty=avg_collision_penalty,
-                                success=int(ep_success),
-                                ever_collided=int(env_ever_collided[i]),
-                                **avg_r,
-                            )
-
-                            ckpt_meta = {
-                                "step":        total_steps,
-                                "episode":     episode,
-                                "best_reward": best_reward,
-                                "hyperparams": hyperparams,
-                                "csv_path":    logger.csv_path,
-                                "scene_ema":   _scene_ema.tolist() if _scene_ema is not None else None,
-                                "scene_counts": _scene_counts.tolist() if _scene_counts is not None else None,
-                            }
-
-                            if episode % args.checkpoint_every == 0:
-                                agent.save(
-                                    logger.checkpoint_path(f"ep{episode:05d}"),
-                                    metadata=ckpt_meta
-                                )
-
-                            if env_rewards[i] > best_reward:
-                                best_reward = env_rewards[i]
-                                ckpt_meta["best_reward"] = best_reward
-                                agent.save(
-                                    logger.checkpoint_path("best"),
-                                    metadata=ckpt_meta
-                                )
-
-                            # Validation evaluation (only once per val_every boundary)
-                            if val_set is not None and episode > 0 and episode % args.val_every == 0 and episode != _last_val_ep:
-                                _last_val_ep = episode
-                                print(f"\n{'='*60}")
-                                print(f"Validation at episode {episode}")
-                                print(f"{'='*60}")
-                                val_results = evaluate_on_validation_set(
-                                    agent, ref_env, val_set,
-                                    num_scenes=args.val_scenes, max_steps=ref_env.episode_len
-                                )
-                                print(f"Success Rate:      {val_results['success_rate']*100:.1f}%")
-                                print(f"Avg Reward:        {val_results['avg_reward']:.3f}")
-                                print(f"Avg Track Error:   {val_results['avg_tracking_error']:.4f}m")
-                                print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
-                                print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
-                                print(f"{'='*60}\n")
-                                logger.log_validation(episode, val_results)
-
-                            # Reset per-env tracking
-                            env_rewards[i] = 0.0
-                            env_d_obs[i]   = []
-                            env_w[i]       = []
-                            env_r_acc[i] = reward_accumulators()
-                            env_collision_penalty[i] = []
-                            env_ever_collided[i] = False
-                            env_steps[i]   = 0
-                    obs = result["obs"]
-
-                # --- GAE computation ---
-                if len(agent.buffer) > 0:
-                    last_values = agent.get_value(obs)
-                    agent.buffer.compute_advantages(last_values)
-
-                    # --- PPO update ---
-                    losses = agent.update()
-                    last_losses = losses
-
-                # --- Validation (moved inside done block below) ---
-
-        else:
-            # ============================================================
-            # SAC parallel training (off-policy: store + update per step)
-            # ============================================================
-            # Force sigma=1 during start_steps so random actions actually explore
-            if args.start_steps > 0:
-                pool.broadcast_setattr("sigma_override", 1.0)
-            _sigma_overridden = True
-
-            while total_steps < args.steps:
-                # Clear sigma override once start_steps finishes
-                if _sigma_overridden and total_steps >= args.start_steps:
-                    pool.broadcast_setattr("sigma_override", None)
-                    _sigma_overridden = False
-
-                # Collect actions for all envs in parallel
-                actions = np.zeros((n_envs, action_dim), dtype=np.float32)
-                for i in range(n_envs):
-                    if total_steps < args.start_steps:
-                        # a_task = np.random.uniform(-args.task_scale, args.task_scale, 3)
-                        a_task = np.zeros(3)
-                        a_null = np.random.uniform(-args.nullspace_scale, args.nullspace_scale, ref_env.n - 3)
-                        actions[i] = np.concatenate([a_task, a_null])
-                    else:
-                        actions[i] = agent.select_action(obs[i])
-
-                # Step all envs in parallel
-                result = pool.step_all(actions)
-
-                # Store in buffer and track per-env metrics (episode completion
-                # checked inline so each done env sees its own total_steps)
-                for i in range(n_envs):
-                    buffer.push(
-                        obs[i], actions[i], result["reward"][i] / reward_scale,
-                        result["obs"][i], result["done"][i],
-                        q=result["q_before"][i], dq=result["dq_before"][i],
-                        dq_next=result["dq_after"][i],
-                        J=result["J"][i], sigma=result["sigma"][i],
-                        dx_nom=result["dx_nom"][i],
-                        cost=result["info"][i].get("cost", 0.0),
-                    )
-                    total_steps += 1
-                    env_rewards[i] += result["reward"][i]
-                    env_d_obs[i].append(result["info"][i].get("d_obs", 0.0))
-                    env_w[i].append(result["info"][i].get("w", 0.0))
-                    accumulate_rewards(result["info"][i], env_r_acc[i])
-                    env_collision_penalty[i].append(result["info"][i].get("collision_penalty", 0.0))
-                    env_ever_collided[i] = env_ever_collided[i] or result["info"][i].get("collision", False)
-                    env_steps[i] += 1
-                    agent.obs_normalizer.update(result["obs"][i])
-
-                    if result["done"][i]:
-                        episode += 1
-                        # Episode-end success: path_complete AND no collision during episode
-                        ep_success = result["info"][i].get("success", False)
-                        scene_id = result["scene_id"][i]
-                        avg_l_actor = last_losses.get("actor_rl_loss", 0.0)
-                        avg_l_dyn   = last_losses.get("physics_loss", 0.0)
-                        avg_l_lag   = last_losses.get("lag_loss", 0.0)
-                        last_critic = last_losses.get("critic_loss", None)
-                        last_scritic = last_losses.get("safety_critic_loss", None)
-                        last_actor_total = last_losses.get("actor_loss", None)
-                        last_alpha  = last_losses.get("alpha", None)
-                        min_d_obs   = min(env_d_obs[i]) if env_d_obs[i] else 0.0
-                        avg_w       = (sum(env_w[i]) / len(env_w[i])) if env_w[i] else None
-                        avg_r = avg_rewards(env_r_acc[i])
-                        avg_collision_penalty = (sum(env_collision_penalty[i]) / len(env_collision_penalty[i])) if env_collision_penalty[i] else None
-
-                        # Per-scene performance tracking
-                        if _scene_ema is not None:
-                            ema_alpha = 0.3
-                            _scene_ema[scene_id] = (ema_alpha * env_rewards[i]
-                                                    + (1 - ema_alpha) * _scene_ema[scene_id])
-                            _scene_counts[scene_id] += 1
-                            if _scene_counts.min() >= 1:
-                                ema = _scene_ema.copy()
-                                ema_min = ema.min()
-                                ema_max = ema.max()
-                                if ema_max > ema_min:
-                                    norm = (ema - ema_min) / (ema_max - ema_min + 1e-8)
-                                else:
-                                    norm = np.ones_like(ema) * 0.5
-                                weights = np.maximum(0.01, 1.0 - norm)
-                                weights = weights / weights.sum()
-                                if _scene_lock is not None:
-                                    _scene_lock.acquire()
-                                for s in range(len(weights)):
-                                    _scene_weights[s] = weights[s]
-                                if _scene_lock is not None:
-                                    _scene_lock.release()
-
-                        # Track success for logging window (every episode)
-                        if ep_success:
-                            _log_success_count += 1
-
-                        if episode % args.log_every == 0:
-                            rp = reward_print_values(avg_r)
-                            print(f"{episode:>8d}  {env_steps[i]:>8d}  {env_rewards[i]:>10.3f}  "
-                                  f"{REWARD_FORMAT.format(**rp)}  "
-                                  f"{last_critic or 0:>8.4f}  {last_scritic or 0:>8.4f}  "
-                                  f"{avg_l_actor:>10.4f}  {avg_l_dyn:>9.4f}  {avg_l_lag:>9.4f}  {min_d_obs:>8.3f}  "
-                                  f"s={scene_id}  suc={_log_success_count}")
-                            _log_success_count = 0
-
-                        logger.log_episode_summary(
-                            step=total_steps, episode=episode,
-                            total_reward=env_rewards[i], min_d_obs=min_d_obs,
-                            avg_actor_loss=avg_l_actor, avg_physics_loss=avg_l_dyn,
-                            ep_step=env_steps[i],
-                            alpha=last_alpha,
-                            avg_critic_loss=last_critic,
-                            avg_safety_critic_loss=last_scritic,
-                            avg_actor_total_loss=last_actor_total,
-                            avg_w=avg_w,
-                            collision_penalty=avg_collision_penalty,
-                            success=int(ep_success),
-                            ever_collided=int(env_ever_collided[i]),
-                            **avg_r,
-                        )
-
-                        ckpt_meta = {
-                            "step":        total_steps,
-                            "episode":     episode,
-                            "best_reward": best_reward,
-                            "hyperparams": hyperparams,
-                            "csv_path":    logger.csv_path,
-                            "scene_ema":   _scene_ema.tolist() if _scene_ema is not None else None,
-                            "scene_counts": _scene_counts.tolist() if _scene_counts is not None else None,
-                        }
-
-                        if episode % args.checkpoint_every == 0:
-                            agent.save(
-                                logger.checkpoint_path(f"ep{episode:05d}"),
-                                metadata=ckpt_meta
-                            )
-
-                        if env_rewards[i] > best_reward:
-                            best_reward = env_rewards[i]
-                            ckpt_meta["best_reward"] = best_reward
-                            agent.save(
-                                logger.checkpoint_path("best"),
-                                metadata=ckpt_meta
-                            )
-
-                        # Validation evaluation (only once per val_every boundary)
-                        if val_set is not None and episode > 0 and episode % args.val_every == 0 and episode != _last_val_ep:
-                            _last_val_ep = episode
-                            print(f"\n{'='*60}")
-                            print(f"Validation at episode {episode}")
-                            print(f"{'='*60}")
-                            val_results = evaluate_on_validation_set(
-                                agent, ref_env, val_set,
-                                num_scenes=args.val_scenes, max_steps=ref_env.episode_len
-                            )
-                            print(f"Success Rate:      {val_results['success_rate']*100:.1f}%")
-                            print(f"Avg Reward:        {val_results['avg_reward']:.3f}")
-                            print(f"Avg Track Error:   {val_results['avg_tracking_error']:.4f}m")
-                            print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
-                            print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
-                            print(f"{'='*60}\n")
-                            logger.log_validation(episode, val_results)
-
-                        # Reset per-env tracking
-                        env_rewards[i] = 0.0
-                        env_d_obs[i]   = []
-                        env_w[i]       = []
-                        env_r_acc[i] = reward_accumulators()
-                        env_collision_penalty[i] = []
-                        env_ever_collided[i] = False
-                        env_steps[i]   = 0
-                obs = result["obs"]  # auto-reset obs for done envs
-
-                # Training update (one batch update per iteration)
-                if total_steps >= args.start_steps and len(buffer) >= args.batch_size:
-                    for _ in range(args.grad_steps):
-                        batch = buffer.sample(args.batch_size)
-                        losses, td_errors = agent.update(batch)
-                        if args.per:
-                            buffer.update_priorities(batch["indices"], td_errors)
-                        logger.log_update(losses)
-                        last_losses = losses
-
-    # -------- Cleanup --------
-    logger.close()
-    if args.render and hasattr(env, '_viewer'):
-        env._viewer.close()
-    if not args.render:
         pool.close()
+
+    logger.close()
     print(f"\nTraining done. Best reward: {best_reward:.3f}")
     print(f"Run directory: {run_dir}")
     print(f"CSV log: {logger.csv_path}")

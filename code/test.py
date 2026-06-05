@@ -299,7 +299,7 @@ def run_rl(env, args, agent):
         else:
             print(f"[SAC] Using default hidden_dims={hidden_dims}")
         # Sync env params with training config for consistent behavior
-        cli = cfg.get("cli_args", cfg)
+        cli = cfg.get("cli_args", {})
         for key, attr in [("d_safe", "d_safe"),
                            ("path_deadzone", "path_deadzone"),
                            ("lr_lag", "lr_lag"),
@@ -1040,7 +1040,7 @@ def run_eval_all(args):
     if os.path.exists(config_path):
         with open(config_path) as f:
             cfg = json.load(f)
-        cli = cfg.get("cli_args", cfg)
+        cli = cfg.get("cli_args", {})
         hd = cli.get("hidden_dims", None)
         if hd is not None:
             hidden_dims = tuple(hd) if isinstance(hd, list) else (hd,)

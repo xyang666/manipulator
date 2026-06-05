@@ -1,0 +1,37 @@
+python -u code/train.py \
+  --steps 5000000 --n_envs 512 \
+  --batch_size 512 --buffer_size 500000 --start_steps 10000 --grad_steps 1 \
+  --lambda_dyn 3.0 --alpha 0.05 --lr 3e-4 \
+  --w_track 1.0 --w_obs 5.0 --w_collision 10.0 --success_bonus 500.0 \
+  --w_manip 0 --w_energy 0 --w_action 0 \
+  --d_safe 0.01 --episode_len 100 \
+  --val_every 1000 --val_scenes 100 --checkpoint_every 1000 \
+  --run_name stage3 \
+  --scene_json results/challenge_stage3.json \
+  --val_json results/challenge_stage3.json \
+  --no_collision_term \
+  --reward_min -10 \
+  --reward_scale 100 \
+  --obs_scene_embed 5 \
+  --obs_waypoint_steps 10,20,30 \
+  --critic_warmup 50000 \
+  --save_path /root/autodl-tmp 2>&1 | tee log/stage3.log
+
+python -u code/train.py \
+  --steps 5000000 --n_envs 2 \
+  --batch_size 128 --buffer_size 100000 --start_steps 10000 --grad_steps 32 \
+  --lambda_dyn 3.0 --alpha 0.05 --lr 1e-4 \
+  --w_track 1.0 --w_obs 5.0 --w_collision 10.0 --success_bonus 500.0 \
+  --w_manip 0 --w_energy 0 --w_action 0 \
+  --d_safe 0.03 --episode_len 100 \
+  --val_every 1000 --val_scenes 100 --checkpoint_every 1000 \
+  --run_name aaa \
+  --scene_json results/challenge_stage3.json \
+  --scene_id 60 \
+  --val_json results/challenge_stage3.json \
+  --no_collision_term \
+  --reward_min -10 \
+  --reward_scale 100 \
+  --obs_scene_embed 5 \
+  --obs_waypoint_steps 10,20,30 \
+  --save_path /root/autodl-tmp 2>&1 | tee log/a.log
