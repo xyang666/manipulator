@@ -8,7 +8,7 @@ MuJoCo-based 7-DOF manipulator environment with:
   - Tracking-error-driven path progression (parameterized by s ∈ [0,1])
 
 Observation space:
-    s = [q (7), dq (7), x_ee (3), x_d (3), capsule_dists (12), path_progress (1), dq_rep (7)]  dim=40
+    s = [q (7), dq (7), x_ee (3), x_d (3), capsule_dists, self_dists, scene_embed, waypoints, path_progress, sigma]
 
 Action space (paper, Route A — position-only):
     a = [Δẋ_RL ∈ R^3, dq0 ∈ R^7]  dim=10
@@ -77,7 +77,6 @@ class ManipulatorEnv:
                  w_manip: float = 0.05,
                  w_energy: float = 0.001,
                  w_action: float = 0.5,
-                 w_apf: float = 0.0,
                  w_null: float = 0.0,
                  d_safe: float = 0.06,
                  use_cbf: bool = False,
@@ -114,8 +113,7 @@ class ManipulatorEnv:
         # Observation dimensions
         self.obs_waypoint_steps = obs_waypoint_steps or []
         self.obs_scene_embed = obs_scene_embed
-        # + n_joints for dq_rep (APF recommended joint velocity)
-        self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1 + 3 + n_joints  # +n_joints for dq_rep
+        self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1 + 3  # fallback, overwritten below
         self.act_dim = n_joints  # 7D: 3 (task relaxation) + 4 (nullspace, = n-3)
 
         self.kin = ManipulatorKinematics(urdf_path, n_joints,
@@ -197,7 +195,6 @@ class ManipulatorEnv:
         self.success_bonus = success_bonus
         self.reward_min = reward_min
         self.w_null = w_null
-        self.w_apf = w_apf
         self.sdf = ObstacleSDF(n_obstacles, obs_radius)
 
         # CBF safety filter (optional, post-hoc dq_cmd safety wrapper)
@@ -238,8 +235,6 @@ class ManipulatorEnv:
         self._parametric_pos_func = None   # callable(t) → position (3,)
         self._parametric_vel_func = None   # callable(t) → velocity (3,)
 
-        # APF recommended joint velocity (obs feature, updated every step)
-        self._dq_rep = np.zeros(self.n)
 
         self._reset_state()
 
@@ -422,60 +417,6 @@ class ManipulatorEnv:
             self.ee_trajectory.pop(0)
         self.ee_trajectory.append(x_ee.copy())
 
-        dq_rep = np.zeros(self.n)
-        if self.sdf.n_obs > 0:
-            capsules = self.kin.get_link_capsules(self.q)
-            link_names = [
-                "panda_link0", "panda_link1", "panda_link2", "panda_link3",
-                "panda_link4", "panda_link5", "panda_link5",
-                "panda_link6", "panda_link7", "panda_hand",
-                "panda_leftfinger", "panda_rightfinger",
-            ]
-            link_jacs = self.kin.link_jacobians_position(self.q, list(set(link_names)))
-
-            apf_d_safe = max(self.d_safe * 5, 0.15)
-            rep_gain = 0.5
-            n_active = 0
-            total_repulsion = 0.0
-
-            for ci, (p1, p2, cap_r) in enumerate(capsules):
-                link_name = link_names[ci] if ci < len(link_names) else None
-                if link_name not in link_jacs:
-                    continue
-                J_link = link_jacs[link_name]
-
-                for pt in [p1, (p1 + p2) / 2, p2]:
-                    F = np.zeros(3)
-                    for i in range(self.sdf.n_obs):
-                        diff = pt - self.sdf.centers[i]
-                        dist = np.linalg.norm(diff)
-                        if dist < 1e-8:
-                            continue
-                        d_signed = dist - self.sdf.radii[i]
-                        if 0 < d_signed < apf_d_safe:
-                            inv_d = 1.0 / d_signed
-                            inv_d0 = 1.0 / apf_d_safe
-                            magnitude = rep_gain * (inv_d - inv_d0) / (d_signed * d_signed)
-                            F += magnitude * diff / dist
-                            total_repulsion += rep_gain * (inv_d - inv_d0)
-
-                    F_norm = np.linalg.norm(F)
-                    if F_norm < 1e-6:
-                        continue
-                    if F_norm > 2.0:
-                        F = F / F_norm * 2.0
-                    Jpinv = self.kin.pseudo_inverse(J_link)
-                    dq_rep += Jpinv @ F
-                    n_active += 1
-
-            if n_active > 0:
-                dq_rep /= n_active
-
-        self._dq_rep = dq_rep.copy()
-
-        # APF obstacle avoidance reward (Khatib-style potential field)
-        r_apf = -self.w_apf * total_repulsion if self.sdf.n_obs > 0 else 0.0
-
         # Per-capsule distances for unified obstacle penalty (merged r_obs + r_null).
         # Each step, compute per-link distances once and pass to reward_fn so both
         # the dense obstacle gradient and the tight per-link penalty come from the
@@ -489,11 +430,9 @@ class ManipulatorEnv:
             action=action, prev_dq=prev_dq,
             capsule_dists=capsule_dists,
         )
-        reward += r_apf
         # Clip per-step reward to prevent Q-value divergence from collision spikes
         if self.reward_min is not None:
             reward = max(reward, self.reward_min)
-        reward_info["r_apf"] = r_apf
         # Collision detection: MuJoCo robot-obstacle + non-adjacent self-collisions.
         # Adjacent link contacts and finger-finger initial contact are excluded.
         if self.collision_detector is not None:

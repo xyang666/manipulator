@@ -362,9 +362,40 @@ def run_rl(env, args, agent):
     # Override obs_dim to match checkpoint (handles code evolution like self-pair count changes)
     ckpt_data = __import__('torch').load(args.checkpoint, map_location='cpu', weights_only=False)
     ckpt_input_dim = ckpt_data["actor"]["net.0.weight"].shape[1]
-    if env.obs_dim != ckpt_input_dim:
-        print(f"[SAC] Overriding obs_dim {env.obs_dim} -> {ckpt_input_dim} to match checkpoint")
-        env.obs_dim = ckpt_input_dim
+
+    # Sniff actual observation shape (may differ from env.obs_dim due to formula changes)
+    raw_obs = env._get_obs()
+    actual_obs_dim = len(raw_obs)
+
+    if actual_obs_dim != ckpt_input_dim:
+        print(f"[SAC] Padding obs {actual_obs_dim} -> {ckpt_input_dim} to match checkpoint")
+
+        # Compute prefix/caps/self/tail boundaries from the actual obs structure
+        _n_waypoints = len(env.obs_waypoint_steps)
+        _prefix_dim = env.n * 2 + 3 + 3 + _n_waypoints * 3      # q,dq,x_ee,x_d,waypoints
+        _cap_dim = env._capsule_dists_dim
+        _self_dim = env._self_dists_dim
+        _tail_start = _prefix_dim + _cap_dim + _self_dim
+
+        # Old dimensions this checkpoint was trained with
+        _old_caps = 12
+        _old_self = 53
+
+        def pad_obs(obs):
+            prefix = obs[:_prefix_dim]
+            caps = obs[_prefix_dim:_prefix_dim + _cap_dim]
+            self_d = obs[_prefix_dim + _cap_dim:_tail_start]
+            tail = obs[_tail_start:]
+            # Capsule: insert zero at index 6 (removed link5 second capsule)
+            caps_padded = np.insert(caps, 6, np.zeros(_old_caps - _cap_dim))
+            self_padded = np.concatenate([self_d, np.zeros(_old_self - _self_dim)])
+            return np.concatenate([prefix, caps_padded, self_padded, tail])
+
+    else:
+        pad_obs = lambda obs: obs
+
+    # Always sync to checkpoint dimension (env.obs_dim formula may have drifted)
+    env.obs_dim = ckpt_input_dim
 
     dyn = ManipulatorDynamics(args.urdf)
     agent = SACAgent(
@@ -380,7 +411,7 @@ def run_rl(env, args, agent):
     print(f"[SAC] Running policy rollouts...")
     verbose = not getattr(args, 'eval_all', False)
     return _run_env(env, args, "SAC",
-                    get_action=lambda obs: agent.select_action(obs, deterministic=True),
+                    get_action=lambda obs: agent.select_action(pad_obs(obs), deterministic=True),
                     verbose=verbose)
 
 

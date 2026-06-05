@@ -96,8 +96,7 @@ def parse_args():
                    help="Sparse success bonus upon reaching goal")
     p.add_argument("--w_action", type=float, default=0.5,
                    help="Action smoothness penalty weight (penalizes ||Δẋ_RL||² + ||z||²)")
-    p.add_argument("--w_apf", type=float, default=0.0,
-                    help="APF obstacle avoidance reward weight")
+
     p.add_argument("--w_null", type=float, default=0.0,
                    help="Per-capsule null-space proximity penalty: penalize each link entering d_safe")
     p.add_argument("--reward_min", type=float, default=None,
@@ -268,7 +267,7 @@ def main():
         w_obs=args.w_obs,
         w_collision=args.w_collision, w_track=args.w_track,
         w_manip=args.w_manip, w_energy=args.w_energy,
-        w_action=args.w_action, w_apf=args.w_apf, w_null=args.w_null,
+        w_action=args.w_action, w_null=args.w_null,
         d_safe=args.d_safe, success_bonus=args.success_bonus,
         lr_lag=args.lr_lag, lag_target=args.lag_target,
         obs_scene_embed=args.obs_scene_embed,
