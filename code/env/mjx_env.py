@@ -161,12 +161,15 @@ def extract_chain_from_mj(xml_path: str):
 
 
 def load_cached_kinematics(cache_path: str):
-    """Load cached capsule parameters and self-collision pairs."""
+    """Load cached capsule parameters, self-collision pairs, and body map."""
     data = np.load(cache_path)
-    return {
-        'capsule_params': jnp.array(data['capsule_params']),  # (n_caps, 3, 3)
-        'self_pairs': jnp.array(data['self_pairs'], dtype=jnp.int32),  # (n_self, 2)
+    result = {
+        'capsule_params': jnp.array(data['capsule_params']),
+        'self_pairs': jnp.array(data['self_pairs'], dtype=jnp.int32),
     }
+    if 'capsule_body_map' in data:
+        result['capsule_body_map'] = jnp.array(data['capsule_body_map'], dtype=jnp.int32)
+    return result
 
 
 # ========================================================================
@@ -328,37 +331,19 @@ def compute_reward(x_ee, x_d, d_obs, w, q_arm, dq_cmd, prev_dq_arm, capsule_dist
 # World-frame capsule computation
 # ========================================================================
 
-def compute_world_capsules(q, chain, capsule_params):
-    """Transform capsule endpoints from body frame to world frame.
-    Uses explicit body mapping matching collision_specs in kinematics.py:
-      caps 0→body0(world), 1→1, 2→2, 3→3, 4→4, 5→5, 6→5, 7→6, 8→7, 9→7, 10→8, 11→9"""
+def compute_world_capsules(q, chain, capsule_params, capsule_body_map=None, body_xpos_q0=None):
+    body_xpos, _, _ = forward_kinematics_chain(q, chain)
+    if capsule_body_map is not None and body_xpos_q0 is not None:
+        delta = body_xpos[capsule_body_map] - body_xpos_q0[capsule_body_map]
+        return capsule_params[:, :2, :3] + delta[:, None, :]
+    # Fallback: original body-rotation transform
     body_xpos, body_xmat, _ = forward_kinematics_chain(q, chain)
-    n_caps = capsule_params.shape[0]
-    nbody = body_xpos.shape[0]
-    # Capsule index → MuJoCo body index (matches collision_specs order)
-    # body index for capsule i: i+1 (matches MuJoCo body numbering when
-    # collision_specs order aligns with MJ body tree, verified empirically).
-    # Capsules 9+ (hand, fingers) clamp to body 7 for hand, 8/9 for fingers.
-    # Cap 0 (link0) → body 1 (panda_link1 in MJ ≈ Pinocchio link0 frame)
-    # Cap 1..6 (link1..link5 x2) → body 2..6
-    # Cap 7 (link6) → body 7
-    # Cap 8 (link7) → body 8? No, MJ body 7 = panda_link7
-    # Actually: just use min(i+1, nbody-1) which was verified correct
-    # Correct mapping: capsule for collision_specs link i → body index i in MuJoCo
-    # (body 0=world/panda_link0, body 1=link1, ..., body 7=link7, 8=leftfinger, 9=rightfinger)
-    # Hand map to body 7 (link7, same frame in MJ).
+    n_caps, nbody = capsule_params.shape[0], body_xpos.shape[0]
     cap_to_body = jnp.array([0, 1, 2, 3, 4, 5, 6, 7, 7, 8, 9], dtype=jnp.int32)
-
     def transform(i, carry):
-        cw = carry
-        bid = cap_to_body[i]
-        bid = jnp.minimum(bid, nbody - 1)
+        cw = carry; bid = cap_to_body[i]; bid = jnp.minimum(bid, nbody - 1)
         R, t = body_xmat[bid], body_xpos[bid]
-        p1 = R @ capsule_params[i, 0] + t
-        p2 = R @ capsule_params[i, 1] + t
-        cw = cw.at[i, 0].set(p1)
-        cw = cw.at[i, 1].set(p2)
-        return cw
+        return cw.at[i, 0].set(R @ capsule_params[i, 0] + t).at[i, 1].set(R @ capsule_params[i, 1] + t)
     return lax.fori_loop(0, n_caps, transform, jnp.zeros((n_caps, 2, 3)))
 
 
@@ -369,7 +354,7 @@ def compute_world_capsules(q, chain, capsule_params):
 def build_observation_v3(
     q_arm, dq_arm, x_ee, x_d,
     capsule_dists, self_dists, scene_embed, waypoints,
-    path_param, sigma, n_caps=11, n_self=45, n_obs_embed=5, n_wp=3,
+    path_param, sigma, n_caps=11, n_self=43, n_obs_embed=5, n_wp=3,
 ):
     """Build observation matching ManipulatorEnv scene_embed format (dq_rep removed).
 
@@ -431,7 +416,7 @@ class SceneManager:
 
 EnvState = Dict[str, jnp.ndarray]
 
-def init_state(n_envs: int, nv: int, n_self: int = 45) -> EnvState:
+def init_state(n_envs: int, nv: int, n_self: int = 43) -> EnvState:
     return {
         'q': jnp.zeros((n_envs, nv)),
         'dq': jnp.zeros((n_envs, nv)),
@@ -462,7 +447,7 @@ def _single_env_step(
     env_state, action, obs_centers, obs_radii, capsule_params, self_pairs, chain,
     ee_site_id, nv_arm, n_caps, max_obs, n_self, n_obs_embed, n_wp, wp_steps,
     dt, d_safe, lr_lag, lag_target, path_deadzone, episode_len, reward_params,
-    self_mask_init, obs_coll_tol,
+    self_mask_init, obs_coll_tol, cap_body_map, body_q0, caps_world, collision_term,
 ):
     q = env_state['q']; dq = env_state['dq']; x_d = env_state['x_d']
     path_param = env_state['path_param']; step_count = env_state['step_count']
@@ -481,7 +466,7 @@ def _single_env_step(
     x_ee = site_xpos[ee_site_id]
 
     # 2. SDF: per-capsule distances
-    caps_world = compute_world_capsules(q, chain, capsule_params)
+    # caps_world is pre-computed by Pinocchio, passed in as function arg
     p1s = caps_world[:, 0, :]; p2s = caps_world[:, 1, :]; crs = capsule_params[:, 2, 0]
 
     def per_capsule(ci):
@@ -577,7 +562,7 @@ def _single_env_step(
     reward_scaled = (reward_raw + bonus) / reward_params['reward_scale']
     # Cost: continuous violation (matches CPU ManipulatorEnv)
     cost = jnp.maximum(0.0, d_safe - d_obs) / jnp.maximum(d_safe, 1e-6)
-    done = episode_done
+    done = episode_done | (collided & collision_term)
 
     # 18. Observation (v3 format, no dq_rep)
     obs = build_observation_v3(
@@ -627,16 +612,17 @@ def _single_env_step(
 
 def _make_batched_step_fn(ee_site_id, nv_arm, n_caps, max_obs, n_self, n_obs_embed, n_wp, wp_steps,
                            dt, d_safe, lr_lag, lag_target, path_deadzone, episode_len, reward_params,
-                           self_mask_init, obs_coll_tol):
-    def env_step(s, a, obs_c, obs_r, capsule_params, self_pairs, chain):
+                           self_mask_init, obs_coll_tol, cap_body_map, body_q0,
+                           collision_term):
+    def env_step(s, a, obs_c, obs_r, capsule_params, self_pairs, chain, caps_world):
         return _single_env_step(
             s, a, obs_c, obs_r, capsule_params, self_pairs, chain,
             ee_site_id, nv_arm, n_caps, max_obs, n_self, n_obs_embed, n_wp, wp_steps,
             dt, d_safe, lr_lag, lag_target, path_deadzone, episode_len, reward_params,
-            self_mask_init, obs_coll_tol)
+            self_mask_init, obs_coll_tol, cap_body_map, body_q0, caps_world, collision_term)
 
     _step_batch = jax.jit(
-        jax.vmap(env_step, in_axes=(0, 0, 0, 0, None, None, None)),
+        jax.vmap(env_step, in_axes=(0, 0, 0, 0, None, None, None, 0)),
         static_argnums=()
     )
     return _step_batch
@@ -667,6 +653,7 @@ class MJXManipulatorEnv:
         reward_params: Optional[Dict] = None,
         n_obs_embed: int = 5,
         obs_waypoint_steps: Optional[List[int]] = None,
+        collision_term: bool = True,
     ):
         self.n_envs = n_envs
         self.dt = dt
@@ -678,6 +665,7 @@ class MJXManipulatorEnv:
         self.max_obs = max_obs
         self.n_obs_embed = n_obs_embed
         self.n_arm = 7
+        self.collision_term = collision_term
         self._rng = np.random.RandomState(42)
 
         # Waypoints
@@ -724,6 +712,16 @@ class MJXManipulatorEnv:
         self.n_caps = self.capsule_params.shape[0]
         self.n_self = self.self_pairs.shape[0]
 
+        # Precompute body positions at q=0 for delta FK
+        q0_arr = jnp.zeros(self.nv)
+        self.body_xpos_q0, _, _ = forward_kinematics_chain(q0_arr, self.chain)
+        # Load capsule body mapping from cache
+        if os.path.exists(cache_path):
+            c = np.load(cache_path)
+            self.capsule_body_map = jnp.array(c.get('capsule_body_map', np.zeros(self.n_caps, dtype=np.int32)), dtype=jnp.int32)
+        else:
+            self.capsule_body_map = jnp.zeros(self.n_caps, dtype=jnp.int32)
+
         # Obs dim (matches v3 format)
         self.obs_dim_ = (self.n_arm * 2 + 3 + 3 + self.n_wp * 3 +
                           self.n_caps + self.n_self + self.n_obs_embed * 4 + 1 + 1)
@@ -745,9 +743,9 @@ class MJXManipulatorEnv:
             if 'self_mask_home' in cached:
                 self.self_mask_init = jnp.array(cached['self_mask_home'], dtype=jnp.bool_)
             else:
-                self.self_mask_init = jnp.ones(n_self, dtype=jnp.bool_)
+                self.self_mask_init = jnp.ones(self.n_self, dtype=jnp.bool_)
         else:
-            self.self_mask_init = jnp.ones(n_self, dtype=jnp.bool_)
+            self.self_mask_init = jnp.ones(self.n_self, dtype=jnp.bool_)
         self.obs_coll_tol = jnp.array(-0.01)  # small tolerance for init-time edge cases
 
         # JIT step function
@@ -758,7 +756,9 @@ class MJXManipulatorEnv:
             n_obs_embed=n_obs_embed, n_wp=self.n_wp, wp_steps=self.wp_steps,
             dt=dt, d_safe=d_safe, lr_lag=lr_lag, lag_target=lag_target,
             path_deadzone=path_deadzone, episode_len=episode_len, reward_params=rp,
-            self_mask_init=self.self_mask_init, obs_coll_tol=self.obs_coll_tol)
+            self_mask_init=self.self_mask_init, obs_coll_tol=self.obs_coll_tol,
+            cap_body_map=self.capsule_body_map, body_q0=self.body_xpos_q0,
+            collision_term=self.collision_term)
         self._warmup_done = False
 
     # ------------------------------------------------------------------
@@ -796,10 +796,24 @@ class MJXManipulatorEnv:
         or_ = jnp.tile(self.obs_radii[None], (self.n_envs, 1))
         return oc, or_
 
+    def _compute_caps_world(self, state):
+        """Compute world-space capsules via Pinocchio for all envs."""
+        import numpy as np
+        from env.kinematics import ManipulatorKinematics
+        kin = ManipulatorKinematics()
+        qs = np.array(state['q'][:, :self.n_arm])
+        caps_list = []
+        for i in range(self.n_envs):
+            caps = kin.get_link_capsules(qs[i])
+            arr = np.array([[p1, p2] for p1, p2, r in caps])
+            caps_list.append(arr)
+        return jnp.array(caps_list)
+
     def _step_batch_wrapper(self, state, actions, caps, pairs, chain):
-        """obs_centers/radii are already per-env (n_envs, ...). Pass directly."""
+        """Pre-compute capsules via Pinocchio, then run JIT step."""
+        caps_world = self._compute_caps_world(state)
         return self._step_jit(state, actions, self.obs_centers, self.obs_radii,
-                              caps, pairs, chain)
+                              caps, pairs, chain, caps_world)
 
     def _warmup(self):
         if self._warmup_done:

@@ -11,13 +11,13 @@ dependencies = [
     "scipy>=1.12",
     "example-robot-data>=4.4.0",
     "cvxpy>=1.8.2",
-    "jax[cuda12]",
 ]
 
 [project.optional-dependencies]
 # pinocchio (pin) only available on Linux/macOS
 # On Linux: uv pip install pin
 pinocchio = ["pin>=2.7.0"]
+jax = ["jax[cuda12]"]
 dev = [
     "pytest>=8.0",
     "matplotlib>=3.8",

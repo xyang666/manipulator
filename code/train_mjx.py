@@ -25,7 +25,7 @@ import jax.numpy as jnp
 
 jax.config.update('jax_enable_x64', True)
 
-from env.mjx_env import MJXManipulatorEnv
+from env.mjx_env import MJXManipulatorEnv, forward_kinematics_chain
 from env.dynamics import ManipulatorDynamics
 from agent.sac_agent import SACAgent
 from utils.replay_buffer import ReplayBuffer
@@ -86,6 +86,10 @@ def parse_args():
     # Observation
     p.add_argument("--obs_scene_embed", type=int, default=5)
     p.add_argument("--obs_waypoint_steps", type=str, default="10,20,50")
+    p.add_argument("--scene_id", type=int, default=-1,
+                   help="Fixed scene ID (>=0). -1 = cycle through all")
+    p.add_argument("--no_collision_term", action="store_true",
+                   help="Collision does NOT terminate episode")
 
     # Validation
     p.add_argument("--val_json", type=str, default=None,
@@ -159,10 +163,29 @@ def main():
         reward_params=reward_params,
         n_obs_embed=args.obs_scene_embed,
         obs_waypoint_steps=obs_waypoint_steps,
+        collision_term=not args.no_collision_term,
     )
 
     # Reset env (loads scenes, triggers JIT warmup)
     obs = env.reset()
+    if args.scene_id >= 0 and env.scene_manager is not None:
+        env.set_scene(np.arange(args.n_envs), np.full(args.n_envs, args.scene_id))
+        starts, goals, start_qs, goal_qs, obs_c, obs_r, n_obs_vals = env.scene_manager.get_scene_data(
+            env.scene_manager.env_scene_ids)
+        env.obs_centers = jnp.array(obs_c)
+        env.obs_radii = jnp.array(obs_r)
+        env.state['n_obs'] = jnp.array(n_obs_vals, dtype=jnp.int32)
+        start_q_pad = np.concatenate([start_qs, np.zeros((env.n_envs, env.nv - env.n_arm))], axis=1)
+        env.state['q'] = jnp.array(start_q_pad)
+        bx, _, sx = jax.vmap(forward_kinematics_chain, in_axes=(0, None))(env.state['q'], env.chain)
+        ee_starts = sx[:, env.ee_site_id]
+        env.state['x_start'] = ee_starts
+        env.state['x_goal'] = jnp.array(goals)
+        env.state['x_d'] = ee_starts
+        env.state['ever_collided'] = jnp.zeros(env.n_envs, dtype=jnp.bool_)
+        env.state['path_param'] = jnp.zeros(env.n_envs)
+        obs = env._compute_obs(env.state)
+        print(f"[train_mjx] Fixed scene mode: scene_id={args.scene_id}")
     obs_dim = obs.shape[1]
     action_dim = env.n_arm  # 7
     print(f"[train_mjx] obs_dim={obs_dim}, action_dim={action_dim}, "

@@ -310,22 +310,13 @@ class ManipulatorKinematics:
     # they are mechanically connected and cannot collide.
     _ADJACENT_LINK_PAIRS = {
         (0, 1), (1, 2), (2, 3), (3, 4), (4, 5),
-        (5, 6), (6, 7), (7, 8), (8, 9), (8, 10),
+        (5, 6), (6, 7), (7, 8), (8, 9), (8, 10), (9, 10),
     }
 
     def _get_capsule_link_indices(self) -> list[int]:
-        """Return link index for each capsule (same length as get_link_capsules)."""
-        capsule_to_link = []
-        link_idx = 0
-        for link_name in [
-            "panda_link0", "panda_link1", "panda_link2", "panda_link3",
-            "panda_link4", "panda_link5", "panda_link6", "panda_link7",
-            "panda_hand", "panda_leftfinger", "panda_rightfinger",
-        ]:
-            # Each link has 1 capsule (link5 previously had 2, now 1)
-            capsule_to_link.append(link_idx)
-            link_idx += 1
-        return capsule_to_link
+        """Return link index for each capsule.
+        Caps 5 and 6 both → link5 (link5 has 2 collision capsules in URDF)."""
+        return [0, 1, 2, 3, 4, 5, 5, 6, 7, 8, 9, 10][:11]
 
     def get_self_collision_pairs(self) -> list[tuple[int, int]]:
         """Return list of (i, j) capsule index pairs that can self-collide."""
