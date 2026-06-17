@@ -319,9 +319,17 @@ class ManipulatorEnv:
                 # Compute current d_obs for constraint violation (before integration)
                 x_ee_cur, _ = self.kin.forward_kinematics(self.q)
                 d_obs_cur = self.sdf.min_distance(x_ee_cur, self.q, kinematics=self.kin)
-                violation = max(0.0, self.d_safe - d_obs_cur) / self.d_safe
-                self._lag_lambda = max(0.0, self._lag_lambda + self.lr_lag * (violation - self.lag_target))
-                sigma = float(np.clip(self._lag_lambda, 0.0, 1.0))
+                # Immediate sigma response: no slow Lagrangian accumulation.
+                # d_obs ≥ 2*d_safe → sigma=0  (pure tracking, safe)
+                # d_obs ≤ 0       → sigma=1  (full RL emergency)
+                # In between → smoothstep blend
+                if d_obs_cur >= 2.0 * self.d_safe:
+                    sigma = 0.0
+                elif d_obs_cur <= 0.0:
+                    sigma = 1.0
+                else:
+                    t = 1.0 - d_obs_cur / (2.0 * self.d_safe)
+                    sigma = float(t * t * (3.0 - 2.0 * t))  # smoothstep
             delta_x_gated = sigma * delta_x_rl  # diag(σ) · Δẋ_RL
 
             # Reconstruct 7D nullspace velocity from 4D coefficients via SVD basis
@@ -466,9 +474,12 @@ class ManipulatorEnv:
         reward = reward / self.reward_scale
 
         tracking_error = float(np.linalg.norm(x_ee - self.x_d))
-        # Safety cost: normalized constraint violation ∈ [0, ∞)
-        # d_obs < d_safe → cost > 0, proportional to penetration depth
-        cost = float(max(0.0, self.d_safe - d_obs) / max(self.d_safe, 1e-6))
+        # Safety cost: MuJoCo collision flag (binary).
+        # 0/1 per-step cost gives the safety critic a clean signal tied to what
+        # we actually care about, avoiding calibration issues between capsule
+        # SDF and real collision geometry.
+        cost = 1.0 if collision else 0.0
+
         info = {"d_obs": d_obs, "w": w, "success": path_complete and not self._ever_collided,
                 "collision": collision, "cost": cost,
                 "path_param": self.path_param, "tracking_error": tracking_error,

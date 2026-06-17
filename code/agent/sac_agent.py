@@ -123,14 +123,17 @@ class SACAgent:
         self.log_alpha = torch.tensor(initial_log_alpha, requires_grad=True, device=self.device)
         self.alpha_opt = optim.Adam([self.log_alpha], lr=lr)
 
-        # Learnable Lagrange multiplier for safety constraint
-        # λ = exp(log_lag), updated via dual gradient descent on λ only
-        # λ_loss = -λ * (Q_c - cost_limit), pushes λ up when constraint violated
-        # NOTE: λ update gated behind update(is_last=True) to avoid over-acceleration
-        # when grad_steps > 1 (single scalar gradient-stomping).
-        self.log_lag = torch.tensor(np.log(0.1), requires_grad=True, device=self.device)
-        self.lag_opt = optim.Adam([self.log_lag], lr=lr_lag)
-        self._lambda_max = 100.0  # cap λ to prevent exponential runaway
+        # Lagrange multiplier for safety constraint: softplus parameterization.
+        # λ = λ_max * σ(λ_raw) where σ is the sigmoid function.
+        # This keeps λ ∈ (0, λ_max) with non-zero gradient everywhere.
+        # The actor loss term is λ * Q_c, and λ is updated via dual gradient:
+        #   Lagrangian: L(λ) = -λ * (Q_c - limit)
+        #   ∇_{λ_raw} L = -(Q_c - limit) * λ_max * σ(λ_raw) * (1 - σ(λ_raw))
+        # which is always non-zero for any finite λ_raw, avoiding the "dead λ"
+        # trap that affects both exp and clamp parameterizations when λ → 0.
+        self._lag_raw = torch.tensor(0.0, device=self.device, requires_grad=True)
+        self.lag_opt = optim.Adam([self._lag_raw], lr=lr_lag)
+        self._lambda_max = 100.0
 
         # Observation normalization
         self.obs_normalizer = RunningMeanStd(shape=(state_dim,))
@@ -243,13 +246,25 @@ class SACAgent:
             a_, log_pi_, _ = self.actor.sample(s_)
             q_targets = self.critic_target(s_critic_, a_)  # tuple of N
             q_target = torch.min(torch.cat(q_targets, dim=-1), dim=-1, keepdim=True).values
-            q_backup = r + self.gamma * (1 - d) * (q_target - self.alpha * log_pi_)
+            # Clip the bootstrap term only (γ·Q_target), not the reward r.
+            # This preserves terminal-bonus learning (q_backup=r when done=1)
+            # while preventing bootstrap-diffused Q inflation from the large
+            # success_bonus (=500) propagating backward through γ·Q.
+            boot = self.gamma * (1 - d) * (q_target - self.alpha * log_pi_)
+            q_backup = r + boot.clamp(-100.0, 100.0)
 
         q_values = self.critic(s_critic, a)  # tuple of N
         critic_loss = 0.0
         td_errors = []
         for q in q_values:
-            per_sample_loss = F.mse_loss(q, q_backup, reduction='none')
+            per_sample_loss = F.huber_loss(q, q_backup, reduction='none', delta=100.0)
+            # Clamp per-sample loss to prevent any single OOD sample (e.g. a
+            # terminal transition with success_bonus=500) from dominating the
+            # gradient.  Without this, an episode where Q-error = 500 produces
+            # per-sample loss ≈ 45000, which at batch_size=512 averages to ~88
+            # per critic → ×5 ensemble ≈ 440 — enough to swing the critic
+            # weights significantly away from the non-terminal distribution.
+            per_sample_loss = per_sample_loss.clamp(max=5000.0)
             critic_loss += (per_sample_loss * is_weights.unsqueeze(-1)).mean()
             td_errors.append((q - q_backup).abs())
 
@@ -288,14 +303,13 @@ class SACAgent:
             a_new, log_pi, _ = self.actor.sample(s)
             q_min = self.critic.q_min(s_critic, a_new)
             q_c_max = self.safety_critic.q_max(s_critic, a_new)
-            lag = self.log_lag.exp()
+            lag = self._lambda_max * torch.sigmoid(self._lag_raw)
 
             # Constrained RL: maximize reward - λ * cost + entropy
             # λ is learned via dual gradient descent (see lag update below)
             # detach() λ in actor loss: λ gradient only comes from dual objective
             # Use q_max for cost critic (pessimistic) and q_min for reward critic (optimistic)
-            # actor_rl_loss = (self.alpha * log_pi - q_min + lag.detach() * q_c_max).mean()
-            actor_rl_loss = (self.alpha * log_pi - q_min).mean()
+            actor_rl_loss = (self.alpha * log_pi - q_min + lag.detach() * q_c_max).mean()
 
             # Differentiable physics regularization
             q_t  = self._to_tensor(batch["q"])
@@ -313,8 +327,7 @@ class SACAgent:
             if torch.isnan(physics_loss) or torch.isinf(physics_loss):
                 physics_loss = torch.tensor(0.0, device=self.device)
 
-            # actor_loss = actor_rl_loss + physics_loss
-            actor_loss = actor_rl_loss
+            actor_loss = actor_rl_loss + physics_loss
 
             # Chunk smoothness regularization (transformer only)
             if self._backbone == "transformer" and self._frame_stack > 1:
@@ -344,9 +357,9 @@ class SACAgent:
                 alpha_loss = torch.tensor(0.0, device=self.device)
 
             # -------- Lagrange multiplier λ update (once per env step) --------
-            # λ_loss = -λ * (Q_c - cost_limit)
-            # When Q_c > cost_limit, gradient pushes log_lag up → λ increases.
-            # When Q_c < cost_limit, gradient pushes log_lag down → λ decreases.
+            # λ_loss = -λ * (Q_c - cost_limit) → ∇_λ = -(Q_c - limit)
+            # Gradient is independent of λ — no vanishing gradient at λ=0.
+            # Clamp λ to [0, λ_max] after each step.
             if is_last:
                 with torch.no_grad():
                     q_c_max_detach = self.safety_critic.q_max(s_critic, a_new)
@@ -354,7 +367,7 @@ class SACAgent:
                 self.lag_opt.zero_grad()
                 lag_loss.backward()
                 self.lag_opt.step()
-                self.log_lag.data.clamp_(min=np.log(1e-6), max=np.log(self._lambda_max))
+                # sigmoid already bounds λ to (0, λ_max), no clamp needed
             else:
                 lag_loss = torch.tensor(0.0, device=self.device)
 
@@ -372,7 +385,7 @@ class SACAgent:
             "actor_loss":   actor_loss.item() if not doing_warmup else 0.0,
             "lag_loss":     lag_loss.item() if not doing_warmup else 0.0,
             "alpha":        self.alpha,
-            "lag":          self.log_lag.exp().item(),
+            "lag":          (self._lambda_max * torch.sigmoid(self._lag_raw)).item(),
             "td_error":     float(td_error_avg.mean()),
         }, td_error_avg
 
@@ -387,7 +400,7 @@ class SACAgent:
             "alpha_opt":      self.alpha_opt.state_dict(),
             "lag_opt":        self.lag_opt.state_dict(),
             "log_alpha":      self.log_alpha.item(),
-            "log_lag":        self.log_lag.item(),
+            "lag_raw":        self._lag_raw.item(),
             "obs_normalizer": self.obs_normalizer.state_dict(),
             "metadata":       metadata or {},
         }
@@ -430,6 +443,9 @@ class SACAgent:
             self.safety_critic.load_state_dict(ckpt["safety_critic"], strict=False)
             if load_optimizers and "safety_critic_opt" in ckpt:
                 self.safety_critic_opt.load_state_dict(ckpt["safety_critic_opt"])
-        if "log_lag" in ckpt:
-            self.log_lag.data.fill_(ckpt["log_lag"])
+        if "lag_raw" in ckpt:
+            self._lag_raw.data.fill_(ckpt["lag_raw"])
+        elif "log_lag" in ckpt:
+            # Backward compat: old checkpoint used exp param → convert to direct
+            self._lag_raw.data.fill_(np.exp(ckpt["log_lag"]))
         return ckpt.get("metadata", {})

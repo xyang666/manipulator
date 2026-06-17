@@ -282,6 +282,12 @@ class TrainingLogger:
         if alpha is not None:
             row["alpha"] = alpha
 
+        # lag_loss and lag come from **avg_reward_kwargs (not in REWARD_COMPONENTS)
+        for extra_key in ("lag_loss", "lag"):
+            val = avg_reward_kwargs.get(extra_key)
+            if val is not None:
+                row[extra_key] = val
+
         for _, csv_col, _, _ in REWARD_COMPONENTS:
             if csv_col in avg_reward_kwargs and avg_reward_kwargs[csv_col] is not None:
                 row[csv_col] = avg_reward_kwargs[csv_col]

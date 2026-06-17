@@ -230,8 +230,11 @@ class PhysicsRegularizer:
 
         for i in range(B):
             M_i, C_i, g_i = self.dynamics.compute(q_np[i], dq_np[i])
-            # h = C·dq + g  (Coriolis/centrifugal + gravity)
-            h_i = C_i @ dq_np[i] + g_i
+            # h = C·dq  (Coriolis/centrifugal only, NO gravity)
+            # Gravity is excluded because the low-level controller handles
+            # gravity compensation — penalizing gravity torques would pull the
+            # policy toward unnatural joint configurations for no benefit.
+            h_i = C_i @ dq_np[i]
             M_list.append(M_i)
             h_list.append(h_i)
 

@@ -1,37 +1,160 @@
 python -u code/train.py \
-  --steps 5000000 --n_envs 512 \
-  --batch_size 512 --buffer_size 500000 --start_steps 10000 --grad_steps 1 \
+  --steps 5000000 --n_envs 1 \
+  --batch_size 512 --buffer_size 500000 --start_steps 5000 --grad_steps 1 \
   --lambda_dyn 3.0 --alpha 0.05 --lr 3e-4 \
-  --w_track 1.0 --w_obs 5.0 --w_collision 10.0 --success_bonus 500.0 \
+  --w_track 1.0 --w_obs 1.0 --w_collision 10.0 --success_bonus 5.0 \
   --w_manip 0 --w_energy 0 --w_action 0 \
   --d_safe 0.01 --episode_len 100 \
   --val_every 1000 --val_scenes 100 --checkpoint_every 1000 \
-  --run_name stage3 \
-  --scene_json results/challenge_stage3.json \
-  --val_json results/challenge_stage3.json \
   --no_collision_term \
   --reward_min -10 \
-  --reward_scale 100 \
+  --reward_scale 1 \
+  --nullspace_scale 5 \
+  --cost_scale 100 \
+  --cost_limit 50 \
+  --task_scale 1 \
   --obs_scene_embed 5 \
-  --obs_waypoint_steps 10,20,30 \
+  --obs_waypoint_steps 10,20,50 \
   --critic_warmup 50000 \
-  --save_path /root/autodl-tmp 2>&1 | tee log/stage3.log
+  --scene_json results/challenge_stage3.json \
+  --val_json results/challenge_stage3.json \
+  --save_path /root/autodl-tmp 2>&1 | tee log/stage3_V1.log
 
 python -u code/train.py \
-  --steps 5000000 --n_envs 2 \
-  --batch_size 128 --buffer_size 100000 --start_steps 10000 --grad_steps 32 \
-  --lambda_dyn 3.0 --alpha 0.05 --lr 1e-4 \
-  --w_track 1.0 --w_obs 5.0 --w_collision 10.0 --success_bonus 500.0 \
+  --steps 5000000 --n_envs 1 \
+  --batch_size 1024 --buffer_size 500000 --start_steps 5000 --grad_steps 1 \
+  --lambda_dyn 3.0 --alpha 0.05 --lr 3e-4 \
+  --w_track 1.0 --w_obs 1.0 --w_collision 10.0 --success_bonus 5.0 \
   --w_manip 0 --w_energy 0 --w_action 0 \
-  --d_safe 0.03 --episode_len 100 \
+  --d_safe 0.01 --episode_len 100 \
   --val_every 1000 --val_scenes 100 --checkpoint_every 1000 \
-  --run_name aaa \
-  --scene_json results/challenge_stage3.json \
-  --scene_id 60 \
-  --val_json results/challenge_stage3.json \
   --no_collision_term \
   --reward_min -10 \
-  --reward_scale 100 \
+  --reward_scale 1 \
+  --cost_scale 100 \
+  --cost_limit 50 \
+  --nullspace_scale 1 \
+  --task_scale 1 \
   --obs_scene_embed 5 \
-  --obs_waypoint_steps 10,20,30 \
-  --save_path /root/autodl-tmp 2>&1 | tee log/a.log
+  --obs_waypoint_steps 10,20,50 \
+  --critic_warmup 50000 \
+  --hidden_dims 512,256 \
+  --n_critics 2 \
+  --scene_json results/challenge_stage3.json \
+  --val_json results/challenge_stage3.json \
+  --resume /root/autodl-tmp/sac_20260615_215701/ckpt_ep02000.pt \
+  --save_path /root/autodl-tmp 2>&1 | tee log/stage3_V2.log
+
+# ====================================================================
+# 实验 A: costfix（已跑完，参见日志）
+#   - cost 从 SDF 距离 → MuJoCo 碰撞旗标（0/1）
+#   - 从 V2 best 续训，重置 critic + alpha
+# ====================================================================
+code/.venv/bin/python -u code/train.py \
+  --resume /root/autodl-tmp/sac_20260616_163332/ckpt_best.pt \
+  --reset_critic --reset_alpha \
+  --steps 5000000 --n_envs 1 \
+  --batch_size 1024 --buffer_size 500000 --start_steps 5000 --grad_steps 1 \
+  --lambda_dyn 3.0 --alpha 0.05 --lr 3e-4 \
+  --w_track 1.0 --w_obs 1.0 --w_collision 10.0 --success_bonus 5.0 \
+  --w_manip 0 --w_energy 0 --w_action 0 \
+  --d_safe 0.01 --episode_len 100 \
+  --val_every 50 --val_scenes 100 --checkpoint_every 1000 \
+  --no_collision_term \
+  --reward_min -10 --reward_scale 1 \
+  --cost_scale 1 --cost_limit 1 \
+  --nullspace_scale 1 --task_scale 1 \
+  --obs_scene_embed 5 --obs_waypoint_steps 10,20,50 \
+  --critic_warmup 50000 \
+  --hidden_dims 512,256 --n_critics 2 \
+  --scene_json results/challenge_stage3.json \
+  --val_json results/challenge_stage3.json \
+  --save_path /root/autodl-tmp \
+  2>&1 | tee log/stage3_costfix.log
+
+# ====================================================================
+# 实验 B: λ 参数化修复 + safety critic 续训（已跑完，参见日志）
+# ====================================================================
+code/.venv/bin/python -u code/train.py \
+  --resume /root/autodl-tmp/sac_20260616_224225/ckpt_ep03000.pt \
+  --steps 5000000 --n_envs 1 \
+  --batch_size 1024 --buffer_size 500000 --start_steps 5000 --grad_steps 1 \
+  --lambda_dyn 3.0 --alpha 0.05 --lr 3e-4 \
+  --w_track 1.0 --w_obs 1.0 --w_collision 10.0 --success_bonus 5.0 \
+  --w_manip 0 --w_energy 0 --w_action 0 \
+  --d_safe 0.01 --episode_len 100 \
+  --val_every 50 --val_scenes 100 --checkpoint_every 1000 \
+  --no_collision_term \
+  --reward_min -10 --reward_scale 1 \
+  --cost_scale 1 --cost_limit 1 \
+  --nullspace_scale 1 --task_scale 1 \
+  --obs_scene_embed 5 --obs_waypoint_steps 10,20,50 \
+  --critic_warmup 50000 \
+  --hidden_dims 512,256 --n_critics 2 \
+  --scene_json results/challenge_stage3.json \
+  --val_json results/challenge_stage3.json \
+  --save_path /root/autodl-tmp \
+  2>&1 | tee log/stage3_lambda_fix.log
+
+# ====================================================================
+# 实验 C: 核心改动——无 collision_term + 强成功奖励 + binary cost
+#   - 去 --no_collision_term：碰撞 = 回合结束，game over
+#   - success_bonus=20：成功奖励更强（原来是5）
+#   - w_obs=2.0, d_safe=0.03：避障稍微提前
+#   - w_collision=10 保持不变（碰撞终止已经够了）
+#   - 重置 critic（新 cost 信号），保留 V2 actor
+#   - 不重置 alpha（保留已学的熵温度）
+#   - cost_scale=1, cost_limit=1（binary cost，已改）
+# ====================================================================
+code/.venv/bin/python -u code/train.py \
+  --resume /root/autodl-tmp/sac_20260616_163332/ckpt_best.pt \
+  --reset_critic \
+  --steps 5000000 --n_envs 1 \
+  --batch_size 1024 --buffer_size 500000 --start_steps 5000 --grad_steps 1 \
+  --lambda_dyn 3.0 --alpha 0.05 --lr 3e-4 \
+  --w_track 1.0 --w_obs 2.0 --w_collision 10.0 --success_bonus 20.0 \
+  --w_manip 0 --w_energy 0 --w_action 0 \
+  --d_safe 0.03 --episode_len 100 \
+  --val_every 50 --val_scenes 100 --checkpoint_every 1000 \
+  --reward_min -10 --reward_scale 1 \
+  --cost_scale 1 --cost_limit 1 \
+  --nullspace_scale 1 --task_scale 1 \
+  --obs_scene_embed 5 --obs_waypoint_steps 10,20,50 \
+  --critic_warmup 50000 \
+  --hidden_dims 512,256 --n_critics 2 \
+  --scene_json results/challenge_stage3.json \
+  --val_json results/challenge_stage3.json \
+  --save_path /root/autodl-tmp \
+  2>&1 | tee log/stage3_terminal.log
+
+# ====================================================================
+# 实验 D: 瞬时 sigma + 碰撞终止 + 强成功奖励（关键改动）
+#   manipulator_env.py:319-324 已改：sigma 从 Lagrangian 积累 → d_obs 瞬时计算
+#   - d_obs >= 2*d_safe：sigma=0（纯跟踪，安全）
+#   - d_obs <= 0：sigma=1（完全 RL 控制）
+#   - 中间：smoothstep 渐变
+#   - 这解决了 RL 的 Δẋ_RL（任务空间扰动）一直被 sigma≈0 锁死的结构性瓶颈
+#   - 保持碰撞终止 + success_bonus=20
+#   - 重置 critic（旧的 Q 值建立在 sigma≈0 的动力学上，已失效）
+#   - 保留 V2 actor 的跟踪能力和动作先验
+# ====================================================================
+code/.venv/bin/python -u code/train.py \
+  --resume /root/autodl-tmp/sac_20260616_163332/ckpt_best.pt \
+  --reset_critic \
+  --steps 5000000 --n_envs 1 \
+  --batch_size 1024 --buffer_size 500000 --start_steps 5000 --grad_steps 1 \
+  --lambda_dyn 3.0 --alpha 0.05 --lr 3e-4 \
+  --w_track 1.0 --w_obs 2.0 --w_collision 10.0 --success_bonus 20.0 \
+  --w_manip 0 --w_energy 0 --w_action 0 \
+  --d_safe 0.03 --episode_len 100 \
+  --val_every 50 --val_scenes 100 --checkpoint_every 1000 \
+  --reward_min -10 --reward_scale 1 \
+  --cost_scale 1 --cost_limit 1 \
+  --nullspace_scale 1 --task_scale 1 \
+  --obs_scene_embed 5 --obs_waypoint_steps 10,20,50 \
+  --critic_warmup 50000 \
+  --hidden_dims 512,256 --n_critics 2 \
+  --scene_json results/challenge_stage3.json \
+  --val_json results/challenge_stage3.json \
+  --save_path /root/autodl-tmp \
+  2>&1 | tee log/stage3_immediate_sigma.log

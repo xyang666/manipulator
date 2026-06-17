@@ -163,6 +163,9 @@ class PrioritizedReplayBuffer:
         priorities = (np.abs(td_errors) + self.eps) ** self.alpha_prio
         self.tree.update_batch(indices, priorities)
 
+    def clear(self):
+        self.tree = SumTree(self.capacity)
+
     def __len__(self):
         return self.tree.size
 
@@ -215,6 +218,11 @@ class ReplayBuffer:
             self.dx_nom[i] = dx_nom
         self.ptr  = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
+
+    def clear(self):
+        """Clear all data (reset ptr and size) to discard random-exploration buffer."""
+        self.ptr = 0
+        self.size = 0
 
     def sample(self, batch_size: int):
         idx = np.random.choice(self.size, batch_size, replace=False)

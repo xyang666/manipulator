@@ -84,7 +84,7 @@ def parse_args():
     p.add_argument("--cost_scale",    type=float, default=1.0)
 
     # --- Reward ---
-    p.add_argument("--w_track",      type=float, default=12.0)
+    p.add_argument("--w_track",      type=float, default=1.0)
     p.add_argument("--w_obs",        type=float, default=5.0)
     p.add_argument("--w_collision",  type=float, default=100.0)
     p.add_argument("--w_manip",      type=float, default=0.05)
@@ -318,20 +318,26 @@ def handle_resume(args, agent, scene_ema, scene_counts, scene_weights, logger):
 def _run_render_loop(agent, env, buffer, args, hyperparams, logger, val_set,
                      total_steps=0, episode=0, best_reward=-np.inf):
     """Single-environment training loop with MuJoCo viewer."""
-    reward_scale = args.reward_scale
 
+    print(f"Run directory: {logger.run_dir}")
     print(f"{'Episode':^8}  {'Steps':^8}  {'Reward':^10}  {REWARD_HEADER}  "
-          f"{'L_actor':^10}  {'L_dyn':^9}  {'L_lag':^9}  {'d_obs':^8}")
-    print("-" * 150)
+          f"{'L_critic':^8}  {'L_scritic':^8}  "
+          f"{'L_actor':^10}  {'L_dyn':^9}  {'L_lag':^9}  {'d_obs':^8}  {'suc':^5}")
+    print("-" * 175)
+
+    last_losses = {"actor_rl_loss": 0.0, "physics_loss": 0.0}
+    log_success_count = 0
+    scene_id = getattr(env, '_current_scene_id', -1)
 
     while total_steps < args.steps:
         obs = env.reset()
         agent.obs_normalizer.update(obs)
         ep_reward = 0.0
-        ep_l_actor = ep_l_dyn = ep_l_lag = 0.0
         ep_d_obs = []
         ep_r_acc = reward_accumulators()
         ep_steps = 0
+        ep_success = False
+        ep_ever_collided = False
         done = False
 
         while not done:
@@ -349,7 +355,6 @@ def _run_render_loop(agent, env, buffer, args, hyperparams, logger, val_set,
             if args.render:
                 env.render()
 
-            logger.log_step(total_steps, episode, ep_steps, reward, info)
             dq_next = env.dq.copy()
             agent.obs_normalizer.update(next_obs)
 
@@ -362,6 +367,8 @@ def _run_render_loop(agent, env, buffer, args, hyperparams, logger, val_set,
             ep_reward += reward
             ep_d_obs.append(info["d_obs"])
             accumulate_rewards(info, ep_r_acc)
+            ep_ever_collided = ep_ever_collided or info.get("collision", False)
+            ep_success = ep_success or info.get("success", False)
             total_steps += 1
             ep_steps += 1
 
@@ -373,30 +380,49 @@ def _run_render_loop(agent, env, buffer, args, hyperparams, logger, val_set,
                     if args.per:
                         buffer.update_priorities(batch["indices"], td_errors)
                     logger.log_update(losses)
-                    ep_l_actor += losses["actor_rl_loss"]
-                    ep_l_dyn += losses["physics_loss"]
-                    ep_l_lag += losses.get("lag_loss", 0.0)
+                    last_losses = losses
 
         episode += 1
-        ep_summary = logger.end_episode(episode, total_steps)
         min_d_obs = min(ep_d_obs) if ep_d_obs else 0.0
-        avg_l_actor = ep_l_actor / max(ep_steps, 1)
-        avg_l_dyn = ep_l_dyn / max(ep_steps, 1)
-        avg_l_lag = ep_l_lag / max(ep_steps, 1)
+        avg_r = avg_rewards(ep_r_acc)
+
+        if ep_success:
+            log_success_count += 1
 
         if episode % args.log_every == 0:
-            rp = reward_print_values(avg_rewards(ep_r_acc))
+            rp = reward_print_values(avg_r)
             print(f"{episode:>8d}  {total_steps:>8d}  {ep_reward:>10.3f}  "
                   f"{REWARD_FORMAT.format(**rp)}  "
-                  f"{avg_l_actor:>10.4f}  {avg_l_dyn:>9.4f}  {avg_l_lag:>9.4f}  {min_d_obs:>8.3f}")
+                  f"{last_losses.get('critic_loss', 0):>8.4f}  {last_losses.get('safety_critic_loss', 0):>8.4f}  "
+                  f"{last_losses.get('actor_rl_loss', 0):>10.4f}  {last_losses.get('physics_loss', 0):>9.4f}  "
+                  f"{last_losses.get('lag_loss', 0):>9.4f}  {min_d_obs:>8.3f}  "
+                  f"s={scene_id}  suc={log_success_count}")
+            log_success_count = 0
+
+        logger.log_episode_summary(
+            step=total_steps, episode=episode,
+            total_reward=ep_reward, min_d_obs=min_d_obs,
+            avg_actor_loss=last_losses.get("actor_rl_loss", 0.0),
+            avg_physics_loss=last_losses.get("physics_loss", 0.0),
+            ep_step=ep_steps,
+            alpha=last_losses.get("alpha"),
+            avg_critic_loss=last_losses.get("critic_loss"),
+            avg_safety_critic_loss=last_losses.get("safety_critic_loss"),
+            avg_actor_total_loss=last_losses.get("actor_loss"),
+            lag_loss=last_losses.get("lag_loss"),
+            lag=last_losses.get("lag"),
+            success=int(ep_success),
+            ever_collided=int(ep_ever_collided),
+            **avg_r,
+        )
 
         ckpt_meta = {"step": total_steps, "episode": episode, "best_reward": logger.best_reward,
                      "hyperparams": hyperparams, "csv_path": logger.csv_path}
 
         if episode % args.checkpoint_every == 0:
             agent.save(logger.checkpoint_path(f"ep{episode:05d}"), metadata=ckpt_meta)
-        if ep_summary["total_reward"] > logger.best_reward:
-            logger.best_reward = ep_summary["total_reward"]
+        if ep_reward > logger.best_reward:
+            logger.best_reward = ep_reward
             best_reward = logger.best_reward
             ckpt_meta["best_reward"] = best_reward
             agent.save(logger.checkpoint_path("best"), metadata=ckpt_meta)
@@ -548,6 +574,8 @@ def _train_sac_parallel(agent, buffer, pool, ref_env, args, hyperparams, logger,
                     avg_critic_loss=last_losses.get("critic_loss"),
                     avg_safety_critic_loss=last_losses.get("safety_critic_loss"),
                     avg_actor_total_loss=last_losses.get("actor_loss"),
+                    lag_loss=last_losses.get("lag_loss"),
+                    lag=last_losses.get("lag"),
                     avg_w=avg_w,
                     collision_penalty=avg_collision_penalty,
                     success=int(ep_success),
