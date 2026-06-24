@@ -51,7 +51,7 @@ def parse_args():
     p.add_argument("--update_every", type=int,   default=1)
     p.add_argument("--buffer_size",  type=int,   default=500_000)
     p.add_argument("--n_envs",       type=int,   default=16)
-    p.add_argument("--episode_len",  type=int,   default=400)
+    p.add_argument("--episode_len",  type=int,   default=100)
 
     # --- Policy / action ---
     p.add_argument("--task_scale",       type=float, default=1.0)

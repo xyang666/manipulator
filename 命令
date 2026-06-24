@@ -218,6 +218,5 @@ python -u code/train.py \
   --w_track 1.0 --w_obs 2.0 --w_collision 10.0 --success_bonus 20.0 \
   --w_manip 0 --w_energy 0 --w_action 0 \
   --d_safe 0.03 --episode_len 100 \
-  --no_collision_term \
   --hidden_dims 256,256 --n_critics 2 \
   2>&1 | tee log/2.log
