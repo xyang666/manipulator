@@ -56,8 +56,10 @@ class SACAgent:
                  n_dec_layers: int   = 2,
                  dropout:      float = 0.1,
                  grad_steps:   int   = 1,
-                 lr_lag:       float = 0.01):
+                 lr_lag:       float = 0.01,
+                 use_safety_critic: bool = True):
         self.gamma       = gamma
+        self.use_safety_critic = use_safety_critic
         self.tau         = tau
         self.alpha       = alpha
         self.lambda_dyn  = lambda_dyn
@@ -102,14 +104,24 @@ class SACAgent:
                                      n_critics=n_critics).to(self.device)
         self.critic_target = copy.deepcopy(self.critic).to(self.device)
 
-        # Safety Critic (constrained RL): predicts expected cumulative cost
-        self.safety_critic = SoftmaxCritic(critic_state_dim, action_dim, list(hidden_dims),
-                                           n_critics=n_critics).to(self.device)
-        self.safety_critic_target = copy.deepcopy(self.safety_critic).to(self.device)
+        # Safety Critic (optional — disable via use_safety_critic=False for standard SAC)
+        self.safety_critic = None
+        self.safety_critic_target = None
+        self.safety_critic_opt = None
+        self._lag_raw = None
+        self.lag_opt = None
+        self._lambda_max = 100.0
+        if self.use_safety_critic:
+            self.safety_critic = SoftmaxCritic(critic_state_dim, action_dim, list(hidden_dims),
+                                               n_critics=n_critics).to(self.device)
+            self.safety_critic_target = copy.deepcopy(self.safety_critic).to(self.device)
+            self.safety_critic_opt = optim.Adam(self.safety_critic.parameters(), lr=lr)
+            # Lagrange multiplier — sigmoid param avoids dead λ
+            self._lag_raw = torch.tensor(0.0, device=self.device, requires_grad=True)
+            self.lag_opt = optim.Adam([self._lag_raw], lr=lr_lag)
 
         self.actor_opt  = optim.Adam(self.actor.parameters(),  lr=lr)
         self.critic_opt = optim.Adam(self.critic.parameters(), lr=lr)
-        self.safety_critic_opt = optim.Adam(self.safety_critic.parameters(), lr=lr)
 
         # Differentiable physics regularizer (Plan B: pure torch, preserves grad)
         self.physics = PhysicsRegularizer(dynamics, lambda_dyn=lambda_dyn,
@@ -123,17 +135,6 @@ class SACAgent:
         self.log_alpha = torch.tensor(initial_log_alpha, requires_grad=True, device=self.device)
         self.alpha_opt = optim.Adam([self.log_alpha], lr=lr)
 
-        # Lagrange multiplier for safety constraint: softplus parameterization.
-        # λ = λ_max * σ(λ_raw) where σ is the sigmoid function.
-        # This keeps λ ∈ (0, λ_max) with non-zero gradient everywhere.
-        # The actor loss term is λ * Q_c, and λ is updated via dual gradient:
-        #   Lagrangian: L(λ) = -λ * (Q_c - limit)
-        #   ∇_{λ_raw} L = -(Q_c - limit) * λ_max * σ(λ_raw) * (1 - σ(λ_raw))
-        # which is always non-zero for any finite λ_raw, avoiding the "dead λ"
-        # trap that affects both exp and clamp parameterizations when λ → 0.
-        self._lag_raw = torch.tensor(0.0, device=self.device, requires_grad=True)
-        self.lag_opt = optim.Adam([self._lag_raw], lr=lr_lag)
-        self._lambda_max = 100.0
 
         # Observation normalization
         self.obs_normalizer = RunningMeanStd(shape=(state_dim,))
@@ -275,41 +276,40 @@ class SACAgent:
         if self.critic_scheduler is not None:
             self.critic_scheduler.step()
 
-        # -------- Safety Critic update (independent of task critic) --------
-        with torch.no_grad():
-            a_, log_pi_, _ = self.actor.sample(s_)
-            qc_targets = self.safety_critic_target(s_critic_, a_)
-            qc_target = torch.min(torch.cat(qc_targets, dim=-1), dim=-1, keepdim=True).values
-            qc_backup = cost * self.cost_scale + self.gamma * (1 - d) * qc_target
-
-        qc_values = self.safety_critic(s_critic, a)
+        # -------- Safety Critic update (optional) --------
         safety_critic_loss = 0.0
-        for qc in qc_values:
-            safety_critic_loss += F.mse_loss(qc, qc_backup)
-
-        self.safety_critic_opt.zero_grad()
-        safety_critic_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.safety_critic.parameters(), max_norm=1.0)
-        self.safety_critic_opt.step()
+        if self.use_safety_critic:
+            with torch.no_grad():
+                a_, log_pi_, _ = self.actor.sample(s_)
+                qc_targets = self.safety_critic_target(s_critic_, a_)
+                qc_target = torch.min(torch.cat(qc_targets, dim=-1), dim=-1, keepdim=True).values
+                qc_backup = cost * self.cost_scale + self.gamma * (1 - d) * qc_target
+            for qc in self.safety_critic(s_critic, a):
+                safety_critic_loss += F.mse_loss(qc, qc_backup)
+            self.safety_critic_opt.zero_grad()
+            safety_critic_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.safety_critic.parameters(), max_norm=1.0)
+            self.safety_critic_opt.step()
 
         # Average TD-errors across N critics for PER priority update
         td_error_avg = torch.stack(td_errors, dim=-1).mean(dim=-1).detach().cpu().numpy().flatten()
 
         self._update_count += 1
         doing_warmup = self._update_count < self.critic_warmup
+        lag_loss = torch.tensor(0.0, device=self.device)
 
         if not doing_warmup:
             # -------- Actor update (with differentiable physics loss) --------
             a_new, log_pi, _ = self.actor.sample(s)
             q_min = self.critic.q_min(s_critic, a_new)
-            q_c_max = self.safety_critic.q_max(s_critic, a_new)
-            lag = self._lambda_max * torch.sigmoid(self._lag_raw)
 
-            # Constrained RL: maximize reward - λ * cost + entropy
-            # λ is learned via dual gradient descent (see lag update below)
-            # detach() λ in actor loss: λ gradient only comes from dual objective
-            # Use q_max for cost critic (pessimistic) and q_min for reward critic (optimistic)
-            actor_rl_loss = (self.alpha * log_pi - q_min + lag.detach() * q_c_max).mean()
+            # Standard SAC objective or constrained RL (with safety critic)
+            if self.use_safety_critic:
+                q_c_max = self.safety_critic.q_max(s_critic, a_new)
+                lag = self._lambda_max * torch.sigmoid(self._lag_raw)
+                actor_rl_loss = (self.alpha * log_pi - q_min + lag.detach() * q_c_max).mean()
+            else:
+                actor_rl_loss = (self.alpha * log_pi - q_min).mean()
 
             # Differentiable physics regularization
             q_t  = self._to_tensor(batch["q"])
@@ -356,36 +356,33 @@ class SACAgent:
             else:
                 alpha_loss = torch.tensor(0.0, device=self.device)
 
-            # -------- Lagrange multiplier λ update (once per env step) --------
-            # λ_loss = -λ * (Q_c - cost_limit) → ∇_λ = -(Q_c - limit)
-            # Gradient is independent of λ — no vanishing gradient at λ=0.
-            # Clamp λ to [0, λ_max] after each step.
-            if is_last:
+            # -------- Lagrange multiplier λ update (safety critic only) --------
+            if self.use_safety_critic and is_last:
                 with torch.no_grad():
                     q_c_max_detach = self.safety_critic.q_max(s_critic, a_new)
                 lag_loss = -lag * (q_c_max_detach - self.cost_limit * self.cost_scale).detach().mean()
                 self.lag_opt.zero_grad()
                 lag_loss.backward()
                 self.lag_opt.step()
-                # sigmoid already bounds λ to (0, λ_max), no clamp needed
             else:
                 lag_loss = torch.tensor(0.0, device=self.device)
 
         # -------- Soft update target critics (task + safety) --------
         for p, p_t in zip(self.critic.parameters(), self.critic_target.parameters()):
             p_t.data.copy_(self.tau * p.data + (1 - self.tau) * p_t.data)
-        for p, p_t in zip(self.safety_critic.parameters(), self.safety_critic_target.parameters()):
-            p_t.data.copy_(self.tau * p.data + (1 - self.tau) * p_t.data)
+        if self.use_safety_critic:
+            for p, p_t in zip(self.safety_critic.parameters(), self.safety_critic_target.parameters()):
+                p_t.data.copy_(self.tau * p.data + (1 - self.tau) * p_t.data)
 
         return {
             "critic_loss":  critic_loss.item(),
-            "safety_critic_loss": safety_critic_loss.item(),
+            "safety_critic_loss": safety_critic_loss.item() if isinstance(safety_critic_loss, torch.Tensor) else safety_critic_loss,
             "actor_rl_loss": actor_rl_loss.item() if not doing_warmup else 0.0,
             "physics_loss": physics_loss.item() if not doing_warmup else 0.0,
             "actor_loss":   actor_loss.item() if not doing_warmup else 0.0,
-            "lag_loss":     lag_loss.item() if not doing_warmup else 0.0,
+            "lag_loss":     lag_loss.item() if isinstance(lag_loss, torch.Tensor) else lag_loss,
             "alpha":        self.alpha,
-            "lag":          (self._lambda_max * torch.sigmoid(self._lag_raw)).item(),
+            "lag":          (self._lambda_max * torch.sigmoid(self._lag_raw)).item() if self.use_safety_critic else 0.0,
             "td_error":     float(td_error_avg.mean()),
         }, td_error_avg
 
@@ -393,17 +390,19 @@ class SACAgent:
         state = {
             "actor":          self.actor.state_dict(),
             "critic":         self.critic.state_dict(),
-            "safety_critic":  self.safety_critic.state_dict(),
             "actor_opt":      self.actor_opt.state_dict(),
             "critic_opt":     self.critic_opt.state_dict(),
-            "safety_critic_opt": self.safety_critic_opt.state_dict(),
             "alpha_opt":      self.alpha_opt.state_dict(),
-            "lag_opt":        self.lag_opt.state_dict(),
             "log_alpha":      self.log_alpha.item(),
-            "lag_raw":        self._lag_raw.item(),
             "obs_normalizer": self.obs_normalizer.state_dict(),
             "metadata":       metadata or {},
         }
+        if self.use_safety_critic:
+            state["safety_critic"] = self.safety_critic.state_dict()
+            state["safety_critic_target"] = self.safety_critic_target.state_dict()
+            state["safety_critic_opt"] = self.safety_critic_opt.state_dict()
+            state["lag_raw"] = self._lag_raw.item()
+            state["lag_opt"] = self.lag_opt.state_dict()
         if self.actor_scheduler is not None:
             state["actor_scheduler"] = self.actor_scheduler.state_dict()
         if self.critic_scheduler is not None:
@@ -439,13 +438,14 @@ class SACAgent:
                 self.alpha = self.log_alpha.exp().item()
         if "obs_normalizer" in ckpt:
             self.obs_normalizer.load_state_dict(ckpt["obs_normalizer"])
-        if "safety_critic" in ckpt:
+        if self.use_safety_critic and "safety_critic" in ckpt:
             self.safety_critic.load_state_dict(ckpt["safety_critic"], strict=False)
+            if "safety_critic_target" in ckpt:
+                self.safety_critic_target.load_state_dict(ckpt["safety_critic_target"], strict=False)
             if load_optimizers and "safety_critic_opt" in ckpt:
                 self.safety_critic_opt.load_state_dict(ckpt["safety_critic_opt"])
-        if "lag_raw" in ckpt:
+        if self.use_safety_critic and "lag_raw" in ckpt:
             self._lag_raw.data.fill_(ckpt["lag_raw"])
-        elif "log_lag" in ckpt:
-            # Backward compat: old checkpoint used exp param → convert to direct
+        elif self.use_safety_critic and "log_lag" in ckpt:
             self._lag_raw.data.fill_(np.exp(ckpt["log_lag"]))
         return ckpt.get("metadata", {})

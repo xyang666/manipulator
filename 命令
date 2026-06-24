@@ -158,3 +158,66 @@ code/.venv/bin/python -u code/train.py \
   --val_json results/challenge_stage3.json \
   --save_path /root/autodl-tmp \
   2>&1 | tee log/stage3_immediate_sigma.log
+
+# ====================================================================
+# 实验 F: 标准 SAC（--no_safety_critic）+ MuJoCo 碰撞几何 + 从头训
+#   manipulator_env.py 改动：
+#     - sigma 瞬时计算（Lagrangian 积累 → 实时 d_obs 响应）
+#     - cost 为 MuJoCo 碰撞旗标 0/1
+#     - d_obs / per-capsule 全用 MuJoCo 实际碰撞几何（非 SDF 胶囊体近似）
+#     - 碰撞 = 回合结束（collision_term 默认 true）
+#   sac_agent.py 改动：
+#     - --no_safety_critic 关闭安全 critic + λ，标准 SAC
+#   train.py:
+#     --no_safety_critic 参数
+# ====================================================================
+code/.venv/bin/python -u code/train.py \
+  --no_safety_critic \
+  --steps 5000000 --n_envs 1 \
+  --batch_size 1024 --buffer_size 500000 --start_steps 5000 --grad_steps 1 \
+  --lambda_dyn 3.0 --alpha 0.05 --lr 3e-4 \
+  --w_track 1.0 --w_obs 2.0 --w_collision 10.0 --success_bonus 20.0 \
+  --w_manip 0 --w_energy 0 --w_action 0 \
+  --d_safe 0.03 --episode_len 100 \
+  --val_every 50 --val_scenes 100 --checkpoint_every 1000 \
+  --reward_min -10 --reward_scale 1 \
+  --cost_scale 1 --cost_limit 1 \
+  --nullspace_scale 1 --task_scale 1 \
+  --obs_scene_embed 5 --obs_waypoint_steps 10,20,50 \
+  --critic_warmup 50000 \
+  --hidden_dims 512,256 --n_critics 2 \
+  --scene_json results/challenge_stage3.json \
+  --val_json results/challenge_stage3.json \
+  --save_path /root/autodl-tmp \
+  2>&1 | tee log/stage3_mj_geo.log
+
+python -u code/train.py \
+  --steps 5000000 --n_envs 1 \
+  --no_safety_critic \
+  --batch_size 512 --buffer_size 500000 --start_steps 0 --grad_steps 1 \
+  --nullspace_scale 5 \
+  --task_scale 0.0 \
+  --obs_scene_embed 5 --obs_waypoint_steps 10,20,50 \
+  --scene_json results/challenge_stage3.json \
+  --scene_id 80 \
+  --w_track 1.0 --w_obs 2.0 --w_collision 10.0 --success_bonus 20.0 \
+  --w_manip 0 --w_energy 0 --w_action 0 \
+  --d_safe 0.03 --episode_len 100 \
+  --no_collision_term \
+  --hidden_dims 256,256 --n_critics 2 \
+  2>&1 | tee log/1.log
+
+python -u code/train.py \
+  --steps 5000000 --n_envs 1 \
+  --batch_size 512 --buffer_size 500000 --start_steps 0 --grad_steps 1 \
+  --nullspace_scale 5 \
+  --task_scale 0.0 \
+  --obs_scene_embed 5 --obs_waypoint_steps 10,20,50 \
+  --scene_json results/challenge_stage3.json \
+  --scene_id 80 \
+  --w_track 1.0 --w_obs 2.0 --w_collision 10.0 --success_bonus 20.0 \
+  --w_manip 0 --w_energy 0 --w_action 0 \
+  --d_safe 0.03 --episode_len 100 \
+  --no_collision_term \
+  --hidden_dims 256,256 --n_critics 2 \
+  2>&1 | tee log/2.log

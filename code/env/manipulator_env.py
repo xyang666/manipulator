@@ -122,12 +122,43 @@ class ManipulatorEnv:
         # Sync env DOF with actual model loaded by Pinocchio (may differ from n_joints)
         self.n = self.kin.n
 
-        # Per-capsule obstacle distances for observations (n_capsules scalars)
+        # MuJoCo setup (must come before obs_dim — MuJoCo geom count determines
+        # capsule dimension when available; also needed for _robot_geom_ids)
+        self.mj_model = None
+        self.mj_data = None
+        if HAS_MUJOCO and xml_path is not None:
+            self.mj_model = mujoco.MjModel.from_xml_path(xml_path)
+            self.mj_data = mujoco.MjData(self.mj_model)
+            print(f"[env] MuJoCo model loaded: {xml_path}")
+
+        # Trajectory generator (placeholder — set below after full init)
+        self.traj_gen = None
+
+        # Collision detector
+        self.collision_detector = CollisionDetector(self.mj_model, self.mj_data)
+
+        # Identify robot geom IDs from MuJoCo model (for per-capsule distances).
+        # When MuJoCo is available, use its actual geom count for obs dimension.
+        self._robot_geom_ids = []
+        if HAS_MUJOCO and self.mj_model is not None:
+            for i in range(self.mj_model.ngeom):
+                body_id = self.mj_model.geom_bodyid[i]
+                body_name = mujoco.mj_id2name(self.mj_model,
+                                               mujoco.mjtObj.mjOBJ_BODY, body_id)
+                if body_name and ("panda" in body_name.lower()
+                                  or "link" in body_name.lower()):
+                    self._robot_geom_ids.append(i)
+
+        # Per-capsule obstacle distances for observations — use MuJoCo geom count
+        # when available (exact) else fall back to Pinocchio capsule model.
         zero_q = np.zeros(self.n)
-        try:
-            self._capsule_dists_dim = len(self.kin.get_link_capsules(zero_q))
-        except Exception:
-            self._capsule_dists_dim = 0
+        if self._robot_geom_ids:
+            self._capsule_dists_dim = len(self._robot_geom_ids)
+        else:
+            try:
+                self._capsule_dists_dim = len(self.kin.get_link_capsules(zero_q))
+            except Exception:
+                self._capsule_dists_dim = 0
 
         # Self-collision distances (non-adjacent capsule pairs)
         try:
@@ -171,18 +202,6 @@ class ManipulatorEnv:
                 obstacle_radius_range=(obs_radius * 0.5, obs_radius * 1.5)
             )
             print(f"[env] TrajectoryGenerator enabled with manip_threshold={manipulability_threshold}")
-
-        # MuJoCo setup
-        self.mj_model = None
-        self.mj_data = None
-        if HAS_MUJOCO and xml_path is not None:
-            self.mj_model = mujoco.MjModel.from_xml_path(xml_path)
-            self.mj_data = mujoco.MjData(self.mj_model)
-            print(f"[env] MuJoCo model loaded: {xml_path}")
-
-        # Collision detector (also share with trajectory generator for scene validation)
-        self.collision_detector = CollisionDetector(self.mj_model, self.mj_data)
-        if self.traj_gen is not None:
             self.traj_gen.collision_detector = self.collision_detector
 
         # Reward function with collision detection
@@ -318,7 +337,7 @@ class ManipulatorEnv:
             else:
                 # Compute current d_obs for constraint violation (before integration)
                 x_ee_cur, _ = self.kin.forward_kinematics(self.q)
-                d_obs_cur = self.sdf.min_distance(x_ee_cur, self.q, kinematics=self.kin)
+                d_obs_cur = self._mujoco_min_distance()
                 # Immediate sigma response: no slow Lagrangian accumulation.
                 # d_obs ≥ 2*d_safe → sigma=0  (pure tracking, safe)
                 # d_obs ≤ 0       → sigma=1  (full RL emergency)
@@ -418,7 +437,7 @@ class ManipulatorEnv:
         self.step_count += 1
 
         # Compute reward (use cached FK from progression step)
-        d_obs = self.sdf.min_distance(self._cached_x_ee, self.q, kinematics=self.kin)
+        d_obs = self._mujoco_min_distance()
         d_obs = float(np.clip(d_obs, -0.5, 0.5))  # cap inf for numerical stability
         w = self._manipulability()
         self._cached_w = w
@@ -428,11 +447,8 @@ class ManipulatorEnv:
             self.ee_trajectory.pop(0)
         self.ee_trajectory.append(x_ee.copy())
 
-        # Per-capsule distances for unified obstacle penalty (merged r_obs + r_null).
-        # Each step, compute per-link distances once and pass to reward_fn so both
-        # the dense obstacle gradient and the tight per-link penalty come from the
-        # same signal at the same d_safe threshold.
-        capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
+        # Per-capsule distances (MuJoCo geometry).
+        capsule_dists = self._mujoco_per_capsule_distances()
         self._cached_capsule_dists = capsule_dists
 
         reward, reward_info = self.reward_fn.compute(
@@ -517,53 +533,16 @@ class ManipulatorEnv:
         scene = self._viewer.user_scn
         scene.ngeom = 0  # Clear previous geometries
 
-        # 1. Draw link capsules (semi-transparent blue)
-        capsules = self.kin.get_link_capsules(self.q)
-        for p1, p2, cap_radius in capsules:
-        # for p1, p2, cap_radius in [capsules[-1]]:
+        # 1. Draw robot collision geometry (from MuJoCo, semi-transparent blue spheres)
+        for gid in self._robot_geom_ids:
             if scene.ngeom >= scene.maxgeom:
                 break
-
-            # Capsule center and orientation
-            center = (p1 + p2) / 2
-            length = np.linalg.norm(p2 - p1)
-
-            if length > 1e-6:
-                # Compute rotation matrix to align z-axis with capsule direction
-                direction = (p2 - p1) / length
-                z_axis = np.array([0, 0, 1])
-
-                # Rotation axis: cross product
-                rot_axis = np.cross(z_axis, direction)
-                rot_axis_norm = np.linalg.norm(rot_axis)
-
-                if rot_axis_norm > 1e-6:
-                    rot_axis = rot_axis / rot_axis_norm
-                    # Rotation angle
-                    cos_angle = np.dot(z_axis, direction)
-                    angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
-
-                    # Rodrigues' rotation formula
-                    K = np.array([
-                        [0, -rot_axis[2], rot_axis[1]],
-                        [rot_axis[2], 0, -rot_axis[0]],
-                        [-rot_axis[1], rot_axis[0], 0]
-                    ])
-                    rot_mat = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
-                else:
-                    # Already aligned or opposite
-                    rot_mat = np.eye(3) if np.dot(z_axis, direction) > 0 else np.diag([1, 1, -1])
-            else:
-                rot_mat = np.eye(3)
-                length = 0.001  # Avoid zero length
-
-            # MuJoCo capsule size: [radius, half_length, 0]
-            size = np.array([cap_radius, length / 2, 0])
-
+            pos = self.mj_data.geom_xpos[gid]
+            radius = self.mj_model.geom_size[gid, 0]  # collision radius
             mujoco.mjv_initGeom(
                 scene.geoms[scene.ngeom],
-                mujoco.mjtGeom.mjGEOM_CAPSULE,
-                size, center, rot_mat.flatten(),
+                mujoco.mjtGeom.mjGEOM_SPHERE,
+                np.array([radius, 0, 0]), pos, np.eye(3).flatten(),
                 np.array([0.0, 0.5, 1.0, 0.3])  # Blue, semi-transparent
             )
             scene.ngeom += 1
@@ -838,6 +817,95 @@ class ManipulatorEnv:
 
         return np.linalg.norm(point - projection)
 
+    # ------------------------------------------------------------------
+    # MuJoCo-based distance computation (replaces capsule SDF)
+    # ------------------------------------------------------------------
+
+    def _mujoco_obstacle_geom_ids(self):
+        """Return list of obstacle geom IDs currently in the scene."""
+        ids = []
+        for i in range(20):  # generous upper bound
+            gid = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_GEOM, f"obs{i}")
+            if gid < 0:
+                break
+            ids.append(gid)
+        return ids
+
+    def _mujoco_min_distance(self) -> float:
+        """
+        Minimum signed distance from any robot geom to any obstacle
+        using MuJoCo's actual geometry positions and sizes.
+        """
+        if self.mj_data is None or not self._robot_geom_ids:
+            return np.inf
+
+        obs_ids = self._mujoco_obstacle_geom_ids()
+        if not obs_ids:
+            return np.inf
+
+        min_dist = np.inf
+        for rgid in self._robot_geom_ids:
+            # Capsule centre and axis
+            pos = self.mj_data.geom_xpos[rgid]
+            r = self.mj_model.geom_size[rgid, 0]      # capsule radius
+            h = self.mj_model.geom_size[rgid, 1]      # half-height
+            mat = self.mj_data.geom_xmat[rgid].reshape(3, 3)
+            z = mat[:, 2]                               # capsule direction
+
+            p1 = pos - h * z
+            p2 = pos + h * z
+
+            for ogid in obs_ids:
+                opos = self.mj_data.geom_xpos[ogid]
+                orad = self.mj_model.geom_size[ogid, 0]
+
+                # Project obstacle onto capsule axis
+                t = np.dot(opos - pos, z)
+                t = np.clip(t, -h, h)
+                closest = pos + t * z
+                d = np.linalg.norm(opos - closest) - r - orad
+                if d < min_dist:
+                    min_dist = d
+        return float(min_dist)
+
+    def _mujoco_per_capsule_distances(self) -> np.ndarray:
+        """
+        Per-capsule (per-robot-geom) minimum signed distance to nearest
+        obstacle, computed from MuJoCo geometry.
+        """
+        if self.mj_data is None or not self._robot_geom_ids:
+            return np.array([], dtype=np.float32)
+
+        obs_ids = self._mujoco_obstacle_geom_ids()
+        if not obs_ids:
+            return np.full(len(self._robot_geom_ids), 0.5, dtype=np.float32)
+
+        n_caps = len(self._robot_geom_ids)
+        dists = np.full(n_caps, 0.5, dtype=np.float32)
+
+        for j, rgid in enumerate(self._robot_geom_ids):
+            pos = self.mj_data.geom_xpos[rgid]
+            r = self.mj_model.geom_size[rgid, 0]
+            h = self.mj_model.geom_size[rgid, 1]
+            mat = self.mj_data.geom_xmat[rgid].reshape(3, 3)
+            z = mat[:, 2]
+
+            p1 = pos - h * z
+            p2 = pos + h * z
+            d_min = np.inf
+            for ogid in obs_ids:
+                opos = self.mj_data.geom_xpos[ogid]
+                orad = self.mj_model.geom_size[ogid, 0]
+                t = np.dot(opos - pos, z)
+                t = np.clip(t, -h, h)
+                closest = pos + t * z
+                d = np.linalg.norm(opos - closest) - r - orad
+                if d < d_min:
+                    d_min = d
+            dists[j] = float(np.clip(d_min, -0.5, 0.5))
+
+        return dists
+
     def _sync_obstacles_to_mujoco(self):
         """Sync SDF obstacle centers and radius to MuJoCo mocap bodies and geoms."""
         if self.mj_data is None:
@@ -938,11 +1006,10 @@ class ManipulatorEnv:
                 scene_embed[i*4+3] = self.sdf.radii[i]
 
             # Per-capsule minimum distances to nearest obstacle
-            # (n_capsules scalars — direct collision signal for each link)
             if self._cached_capsule_dists is not None:
                 capsule_dists = self._cached_capsule_dists
             else:
-                capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
+                capsule_dists = self._mujoco_per_capsule_distances()
 
             # Per-capsule-pair self-collision distances
             # (n_self_pairs scalars — direct signal for link-to-link proximity)
@@ -962,7 +1029,7 @@ class ManipulatorEnv:
             if self._cached_capsule_dists is not None:
                 capsule_dists = self._cached_capsule_dists
             else:
-                capsule_dists = self.sdf.per_capsule_distances(self.q, self.kin)
+                capsule_dists = self._mujoco_per_capsule_distances()
             self_dists = self.kin.compute_self_distances(self.q)
 
             obs = np.concatenate([

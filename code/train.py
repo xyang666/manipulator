@@ -57,7 +57,7 @@ def parse_args():
     p.add_argument("--task_scale",       type=float, default=1.0)
     p.add_argument("--nullspace_scale",  type=float, default=0.5)
     p.add_argument("--hidden_dims",      type=str,   default="256,256")
-    p.add_argument("--n_critics",        type=int,   default=5)
+    p.add_argument("--n_critics",        type=int,   default=2)
     p.add_argument("--backbone",         type=str,   default="mlp", choices=["mlp", "transformer"])
     p.add_argument("--frame_stack",      type=int,   default=1)
     p.add_argument("--action_horizon",   type=int,   default=1)
@@ -68,6 +68,7 @@ def parse_args():
     p.add_argument("--dropout",          type=float, default=0.1)
     p.add_argument("--use_cbf",          action="store_true")
     p.add_argument("--cbf_alpha",        type=float, default=1.0)
+    p.add_argument("--no_safety_critic", action="store_true")
 
     # --- Physics regularization ---
     p.add_argument("--lambda_dyn",  type=float, default=1.0)
@@ -233,6 +234,7 @@ def setup_agent_and_buffer(args, state_dim, action_dim, dyn, ref_env, device):
         dropout=args.dropout,
         grad_steps=args.grad_steps,
         lr_lag=args.lr_lag,
+        use_safety_critic=not args.no_safety_critic,
     )
     if args.per:
         from utils.replay_buffer import PrioritizedReplayBuffer
