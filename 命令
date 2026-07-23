@@ -204,6 +204,7 @@ python -u code/train.py \
   --w_manip 0 --w_energy 0 --w_action 0 \
   --d_safe 0.03 --episode_len 100 \
   --no_collision_term \
+  --render \
   --hidden_dims 256,256 --n_critics 2 \
   2>&1 | tee log/1.log
 

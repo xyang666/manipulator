@@ -504,7 +504,7 @@ class ManipulatorEnv:
 
         return self._get_obs(), reward, done, info
 
-    def render(self, show_robot: bool = True):
+    def render(self, show_robot: bool = False):
         """Launch or sync the passive MuJoCo viewer and draw end-effector trajectory.
 
         Parameters

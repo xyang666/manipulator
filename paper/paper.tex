@@ -28,7 +28,7 @@
 % IROS 推荐：IEEEtran的参考样式
 \bibliographystyle{IEEEtran}
 
-\title{物理信息增强的零空间策略学习：\\冗余机械臂高效安全避障方法}
+\title{面向空间在轨服务的冗余机械臂结构化零空间反应式避障控制}
 % \title{Learning Null-space Policies for Redundant Manipulators via Reinforcement Learning}
 \author{
   \IEEEauthorblockN{Xie Yang}
@@ -41,49 +41,59 @@
 
 \begin{abstract}
 \noindent
-冗余机械臂在复杂操作任务中需同时满足末端轨迹跟踪精度与多重物理约束。传统零空间控制依赖人工设计的次任务目标函数，难以有效处理多约束耦合优化问题；纯强化学习方法虽具备自适应能力，却面临样本效率低下和物理约束违反的双重困境。本文提出一种物理信息增强的零空间策略学习方法，通过力矩约束正则化引导策略输出物理可行的控制指令，并引入主任务松弛机制在碰撞风险下动态协调跟踪精度与安全性。实验结果表明，该方法在稀疏静态、密集窄通道和动态障碍三类场景下均取得优异的成功率与安全性能。\textcolor{red}{[待填：具体实验结果数据]}
+空间在轨服务任务中，冗余机械臂需在执行预设任务轨迹的同时，利用冗余自由度实现在线避障。传统零空间方法依赖手工设计的势函数梯度，在多约束耦合场景下面临权值整定困难和局部极小值问题；纯强化学习样本效率低且频繁输出物理不可行的关节力矩。本文提出面向空间机械臂的反应式冗余分辨控制方法，工作在控制器层级：将策略输出显式分解为任务空间参考修正项与零空间自运动项，由可微力矩约束正则化将执行器极限嵌入策略优化，并由Lagrangian门控在碰撞风险下动态权衡跟踪精度与安全性。方法无需全局轨迹重规划，在自由空间跟踪、整臂避障、狭小空间操作、对接、动态目标及泛化六类空间场景下验证了有效性。\textcolor{red}{[待填：具体实验结果数据]}
 \end{abstract}
 
 \begin{IEEEkeywords}
-冗余机械臂; 零空间策略; 强化学习; 约束优化; 轨迹规划
+空间机械臂; 零空间策略; 强化学习; 反应式避障; 在轨服务
 \end{IEEEkeywords}
 
 \section{引言}
 
-冗余机械臂凭借其运动学冗余特性，能够在完成末端主任务的同时利用零空间自由度优化避障、奇异性规避、能耗抑制等次任务目标，已广泛应用于人机协作、空间在轨操作和医疗手术等场景。零空间控制是实现冗余自由度利用的经典范式，其核心思想是在不影响末端运动的零空间子空间内施加控制输入，实现主次任务的运动学解耦。
+空间在轨服务（On-Orbit Servicing, OOS）——包括卫星在轨检测、维护、燃料加注和部件更换等任务——是当前航天领域的重要发展方向。OOS任务中，机械臂需在卫星表面、太阳翼间或桁架结构等受限环境中执行操作，同时避免与航天器结构的碰撞。此类任务通常由全局任务规划器预先指定末端执行器的期望轨迹（如检测路径、对接路径），而机械臂的在线控制系统需在尽可能保持任务轨迹的前提下，利用运动学冗余度实时规避障碍。
 
-传统零空间控制依赖人工设计的梯度场或势函数\cite{siciliano1991general}，在静态简单环境下表现良好，但面临两个关键瓶颈：（1）多约束耦合优化时，不同次任务之间的权重需反复人工调试，缺乏自适应调节能力；（2）复杂障碍环境下，势函数的局部极小值问题导致控制器陷入次优甚至不可行解。近年来，深度强化学习（DRL）在机械臂控制中展现出强大的自适应能力\cite{levine2016end}。然而，直接将DRL应用于关节空间控制面临样本效率低下和物理约束违反的固有问题——策略可能输出导致关节力矩突变或趋近奇异位形的动作，难以直接部署于真实硬件。
+冗余机械臂利用其运动学冗余特性，在完成末端主任务的同时可借助零空间自由度优化避障、奇异性规避和能耗抑制等次任务目标。零空间控制是实现冗余自由度利用的经典范式：在不影响末端运动的零空间子空间内施加控制输入，实现主次任务的运动学解耦。
 
-针对上述问题，本文提出一种物理信息增强的零空间策略学习方法，在强化学习框架中嵌入运动学结构先验和动力学约束，实现高效、安全、物理可行的冗余机械臂控制。主要贡献如下：
+传统零空间方法依赖手工设计的梯度场或势函数\cite{siciliano1991general}，在静态简单环境下表现良好，但面临两个核心瓶颈。其一，多约束耦合优化时，不同次任务的权重需反复人工调试，缺乏自适应调节能力。其二，复杂障碍环境下势函数的局部极小值导致控制器收敛至次优甚至不可行解。深度强化学习（DRL）近年来在机械臂控制中展现出较强的自适应能力\cite{levine2016end}，但直接将其用于关节空间控制面临样本效率低和物理约束违反的固有问题——策略可能输出导致关节力矩突变或趋近奇异位形的动作，难以部署于真实硬件。
+
+需要强调的是，本文方法并非全局运动规划器。与RRT$^*$、CHOMP等规划方法不同，本方法不涉及从头生成全局轨迹，而是面向空间冗余机械臂设计的一种在线反应式控制器——在预设任务轨迹的基础上，通过局部参考修正和零空间自运动调整来适应环境变化，始终工作在控制器层级。核心研究问题为：冗余空间机械臂如何在无需全局重规划的前提下，利用零空间冗余度实时安全执行预设任务轨迹？基于该定位，本文提出物理信息增强的零空间策略学习方法，在强化学习框架中嵌入运动学结构先验和动力学约束，实现高效、安全且物理可行的空间机械臂反应式避障控制。主要贡献如下：
 
 \begin{itemize}
-\item \textbf{结构化动作空间。}将策略输出显式分解为任务空间松弛项与零空间自运动项：前者通过门控算子动态调制末端跟踪精度，后者经零空间投影保证不干扰末端位置。该分解将探索空间约束在具有明确物理意义的子空间内，从根本上降低无效探索的维度。
+\item \textbf{结构化动作空间。}将策略输出显式分解为任务空间参考修正项与零空间自运动项：前者通过门控算子动态调节末端跟踪参考，后者经零空间投影保证不干扰末端位置。该分解将探索约束在具有明确物理意义的子空间内，压缩了无效探索的维度。
 
-\item \textbf{力矩约束正则化。}引入可微的关节力矩限幅损失函数，利用逆动力学模型将执行器物理约束直接嵌入策略优化目标。该损失与策略梯度解耦，力矩未超限时梯度为零，不改变可行域内的正常学习，避免了奖励函数工程化中多目标权重的反复调试。
+\item \textbf{力矩约束正则化。}引入可微的关节力矩限幅损失函数，利用逆动力学模型将执行器物理约束直接嵌入策略优化目标。该损失与策略梯度解耦——力矩未超限时梯度为零，不干扰可行域内的正常学习——避免了奖励函数中多目标权重的反复调试。
 
-\item \textbf{主任务松弛机制。}设计基于在线对偶上升的 Lagrangian 门控算子，在碰撞风险下允许策略有节制地牺牲跟踪精度以换取安全性，并给出该松弛策略的输入-状态稳定性理论保证。任务优先级的动态切换在控制层独立完成，无需修改奖励函数结构。
+\item \textbf{任务参考自适应修正。}设计基于在线对偶上升的 Lagrangian 门控算子，在碰撞风险下允许策略有节制地调整跟踪参考以兼顾安全性，并给出该修正策略的输入-状态稳定性（ISS）理论保证。任务优先级的动态调节在控制层独立完成，不依赖奖励函数的权重调整。
 \end{itemize}
+
+%\begin{figure}[htbp]
+%\centering
+%\includegraphics[width=0.95\columnwidth]{pipeline.pdf}
+%\caption{本文方法在空间在轨服务任务中的定位。任务规划器（Mission Planner）生成预设末端轨迹，本文的反应式控制器（Ours）通过在线参考修正与结构化零空间策略生成关节速度指令，实现预设轨迹下的整臂安全避障。}
+%\label{fig:pipeline}
+%\end{figure}
+\textcolor{red}{[待补充：Figure 1——任务规划器→反应式控制器pipeline图]}
 
 \section{相关工作}
 
-\subsection{冗余机械臂零空间控制}
-冗余机械臂的逆运动学求解存在无穷多组可行解，经典方法包括基于伪逆的数值迭代法\cite{siciliano1991general}和加权优化法\cite{chan1995weighted}。零空间控制通过投影矩阵 $N(q) = I - J^\dagger J$ 将次任务映射至不影响末端运动的子空间，其零化特性 $J N(q) = 0$ 保证了主次任务的运动学解耦。该方法已广泛应用于避障\cite{flacco2012motion}、奇异性规避\cite{chiaverini1997review}和关节限位回避等任务。然而，传统零空间方法依赖人工设计的势函数梯度，在多约束耦合场景下权重整定困难，且势函数的局部极小值问题在密集障碍环境中尤为突出。
+\subsection{空间冗余机械臂控制}
+空间机械臂控制研究可追溯至航天飞机的遥操作机械臂系统。与地面机械臂不同，空间机械臂工作在微重力环境，基座可浮动且动力学模型存在不确定性\cite{yoshida2009space}。零空间控制通过投影矩阵 $N(q) = I - J^\dagger J$ 将次任务映射至不影响末端运动的子空间——其零化特性 $J N(q) = 0$ 保证主次任务的运动学解耦——在空间机械臂中已有应用\cite{flacco2012motion, chiaverini1997review}。然而，传统方法依赖手工设计的势函数梯度，在多约束耦合场景下权重整定困难，且势函数的局部极小值问题在密集障碍环境中尤为突出。此外，空间任务中末端执行器的期望轨迹通常由全局任务规划器预先指定，机械臂控制系统需在预设轨迹约束下在线规避动态环境中的障碍，这对传统零空间方法的自适应能力提出了更高要求。
 
 \subsection{强化学习与残差强化学习}
-深度强化学习在机械臂操作任务中取得了显著进展。Levine 等\cite{levine2016end}提出端到端视觉伺服学习框架，但需大量真实交互数据。为提升样本效率，研究者相继引入基于模型的预测控制\cite{nagabandi2018neural}和模仿学习\cite{rajeswaran2017learning}等范式。
+深度强化学习在机械臂操作中取得了重要进展。Levine 等\cite{levine2016end}提出端到端视觉伺服学习框架，但需大量真实交互数据。为提升样本效率，研究者相继引入基于模型的预测控制\cite{nagabandi2018neural}和模仿学习\cite{rajeswaran2017learning}等范式。
 
-残差强化学习（Residual RL）通过在名义控制器上叠加 RL 修正项，融合传统控制的稳定性与 RL 的自适应能力。Johannink 等\cite{johannink2019residual}提出在 PD 跟踪控制器上叠加 RL 残差项以实现接触式操作：
+残差强化学习（Residual RL）在名义控制器上叠加 RL 修正项，融合传统控制的稳定性与 RL 的自适应能力。Johannink 等\cite{johannink2019residual}在 PD 跟踪控制器上叠加 RL 残差项实现接触式操作：
 \begin{equation}
 a_{\text{final}} = a_{\text{prior}}(s) + \pi_{\text{RL}}(s)
 \end{equation}
-其中 $a_{\text{prior}}$ 为基线控制器输出，$\pi_{\text{RL}}$ 为 RL 策略学习的残差修正。Silver 等\cite{silver2018residual}进一步提出残差策略学习，将基线控制器纳入端到端可微训练。该方法已推广至零样本迁移\cite{cheng2019zero}和灵巧操作\cite{xie2020residual}等任务。
+其中 $a_{\text{prior}}$ 为基线控制器输出，$\pi_{\text{RL}}$ 为 RL 策略学习的残差修正。Silver 等\cite{silver2018residual}进一步将基线控制器纳入端到端可微训练，该方法已推广至零样本迁移\cite{cheng2019zero}和灵巧操作\cite{xie2020residual}等任务。
 
-然而，Residual RL 将 RL 视为名义控制器的通用"补差器"，残差项不具有显式的物理语义分割。本文与之存在本质差异：通过零空间投影 $N_{\text{pos}}(q)$ 和门控算子 $\sigma$，策略输出的每个子分量承担明确的物理角色——$\Delta\dot{x}_{\text{RL}} \in \mathbb{R}^3$ 负责任务空间松弛决策，零空间系数 $z \in \mathbb{R}^4$ 负责构型优化。这种结构化设计将探索空间严格限定在具有物理意义的子空间内，而非产生通用的非结构化"补差"信号。
+Residual RL 将 RL 视为名义控制器的通用修正项，残差不具有显式的物理语义分割。本文与之存在本质差异：通过零空间投影 $N_{\text{pos}}(q)$ 和门控算子 $\sigma$，策略输出的每个子分量承担明确的物理角色——$\Delta\dot{x}_{\text{RL}} \in \mathbb{R}^3$ 负责任务空间参考修正决策，零空间系数 $z \in \mathbb{R}^4$ 负责构型优化。该结构化设计将探索限定在具有物理意义的子空间内，而非产生通用的非结构化修正信号。
 
 \subsection{物理信息增强学习}
-将物理先验嵌入学习框架已成为提升样本效率和安全性的有效途径。Lutter 等\cite{lutter2019deep}提出深度拉格朗日网络，利用能量守恒约束提升动力学模型的泛化能力。Sanchez-Gonzalez 等\cite{sanchez2020learning}采用图神经网络学习粒子系统的物理交互。本文继承这一思路，但将物理先验的注入点从"学习什么物理模型"转变为"约束策略采样的可行域"——通过力矩上限的软约束直接引导策略远离物理不可行的动作区域，而非尝试学习环境动力学。
+将物理先验嵌入学习框架是提升样本效率和安全性的有效途径。Lutter 等\cite{lutter2019deep}提出深度拉格朗日网络，利用能量守恒约束提升动力学模型的泛化能力。Sanchez-Gonzalez 等\cite{sanchez2020learning}采用图神经网络学习粒子系统的物理交互。本文遵循同一思路，但将物理先验的注入点从"学习物理模型"转向"约束策略采样的可行域"：通过力矩上限的软约束引导策略远离物理不可行的动作区域，而非学习环境动力学本身。
 
-\textbf{与现有工作的区别：}现有 RL 方法多直接学习关节空间或末端空间控制，缺乏对冗余自由度结构特性的显式利用。本文通过零空间投影将动作空间解耦为主任务分量与零空间分量，同时引入力矩约束正则化和主任务松弛机制，在保证末端跟踪精度的前提下协同优化避障与可操作度，兼具传统零空间控制的结构严谨性和 RL 的自适应灵活性。
+现有 RL 方法多直接学习关节空间或末端空间控制，未显式利用冗余自由度的结构特性。本文通过零空间投影将动作空间解耦为参考修正分量与零空间分量，同时引入力矩约束正则化和参考修正门控机制，在保证末端跟踪精度的前提下协同优化避障与可操作度——兼具传统零空间控制的结构严谨性和 RL 的自适应灵活性。
 
 \section{方法}
 
@@ -91,32 +101,41 @@ a_{\text{final}} = a_{\text{prior}}(s) + \pi_{\text{RL}}(s)
 \label{sec:problem_def}
 
 \subsubsection{任务目标}
-给定末端执行器期望位置轨迹 $x_d(t) \in \mathbb{R}^3$ 和障碍物集合 $\mathcal{O}$，本文目标为学习策略网络 $\pi: \mathcal{S} \rightarrow \mathbb{R}^{7}$，使机械臂在名义末端轨迹跟踪的基础上，具备动态调整任务优先级和自适应避障的能力。具体优化目标包括：
+考虑空间在轨服务场景：任务规划器已生成末端执行器期望轨迹 $x_d(t) \in \mathbb{R}^3$（如卫星表面扫描路径或对接路径），机械臂需在执行该轨迹的过程中应对障碍物集合 $\mathcal{O}$（卫星天线、太阳翼、桁架等结构）。目标是学习策略网络 $\pi: \mathcal{S} \rightarrow \mathbb{R}^{7}$，在预设任务轨迹的基础上，通过任务参考修正与零空间自运动的协同在线调节实现反应式避障。本文方法属于反应式控制器层级——不涉及全局轨迹重规划，仅通过局部参考调整和冗余自由度优化实时响应环境变化。优化目标包括：
 \begin{itemize}
-\item \textbf{安全性}：实现全面避障，确保关节位置、速度和力矩均满足物理执行极限。
-\item \textbf{跟踪鲁棒性}：在安全区域保持高精度末端跟踪；在极端碰撞风险下实现合理的轨迹让步，避免"刚性"跟踪导致碰撞。
+\item \textbf{安全性}：全程避障，关节位置、速度和力矩均满足物理执行极限。
+\item \textbf{跟踪鲁棒性}：安全区域保持高精度末端跟踪；极端碰撞风险下允许合理的参考让步，避免刚性跟踪导致碰撞。
 \item \textbf{运动学与动力学优化}：远离奇异位形，抑制力矩突变，最小化能耗。
 \end{itemize}
 
 \subsubsection{控制结构}
-本文采用解耦的任务空间-零空间分层控制架构：
+采用解耦的任务空间-零空间分层反应式控制架构，策略输出作为名义控制器的在线参考修正：
 \begin{equation}
-\dot{q} = J_{\text{pos}}^\dagger(q) \left( \underbrace{\dot{x}_d + K_p(x_d - x) + K_i \int (x_d - x) dt}_{\text{名义PID跟踪}} + \underbrace{\sigma \cdot \Delta \dot{x}_{\text{RL}}}_{\text{RL松弛项}} \right) + N_{\text{pos}}(q)\dot{q}_0
+\begin{aligned}
+\dot{q} &= J_{\text{pos}}^\dagger(q) \bigl( \underbrace{\dot{x}_d + K_p(x_d - x) + K_i \int (x_d - x) dt}_{\text{名义PID跟踪}} \\
+&\quad + \underbrace{\sigma \cdot \Delta \dot{x}_{\text{RL}}}_{\text{RL参考修正项}} \bigr) + N_{\text{pos}}(q)\dot{q}_0
+\end{aligned}
 \label{eq:control_structure}
 \end{equation}
-其中名义 PID 跟踪项（自适应比例增益 $K_p = 4.0 \cdot (1 + \tanh(\|x_d - x\| / 0.05))$，泄漏积分增益 $K_i = 0.5$）维持基础跟踪精度；RL 松弛项 $\Delta \dot{x}_{\text{RL}} \in \mathbb{R}^3$ 在复杂环境下主动调制任务空间速度；门控算子 $\sigma \in [0,1]$ 通过在线 Lagrangian 对偶上升学习得到（详见第\ref{sec:relaxation}节）：
+名义 PID 跟踪项采用自适应比例增益 $K_p = 4.0 \cdot (1 + \tanh(\|x_d - x\| / 0.05))$ 和泄漏积分增益 $K_i = 0.5$，维持基础跟踪精度。RL 参考修正项 $\Delta \dot{x}_{\text{RL}} \in \mathbb{R}^3$ 在复杂环境下主动调制任务空间参考速度，实现控制器层级的局部轨迹调整。门控算子 $\sigma \in [0,1]$ 通过在线 Lagrangian 对偶上升学习得到（详见第\ref{sec:relaxation}节）：
 \begin{equation}
-\lambda_{t+1} = \max\left(0, \lambda_t + \eta \cdot \left(\frac{\max(0, d_{\text{safe}} - d_{\text{obs}})}{d_{\text{safe}}} - \epsilon_{\text{target}}\right)\right), \quad \sigma = \text{clip}(\lambda, 0, 1)
+\begin{aligned}
+\lambda_{t+1} &= \max\left(0, \lambda_t + \eta \cdot \left(\frac{\max(0, d_{\text{safe}} - d_{\text{obs}})}{d_{\text{safe}}} - \epsilon_{\text{target}}\right)\right) \\
+\sigma &= \text{clip}(\lambda, 0, 1)
+\end{aligned}
 \label{eq:gate_operator}
 \end{equation}
-其中 $\eta=0.01$ 为对偶上升步长，$\epsilon_{\text{target}}=0.05$ 为归一化约束违反容忍度，$d_{\text{safe}}=0.06$~m 为安全距离阈值，$d_{\text{obs}}$ 为全局最小 SDF 距离。$\lambda$ 为回合级持久变量（每回合初始化 0），回合内递推累积。与固定距离阈值的门控相比，Lagrangian 门控根据约束违反的累积历史自适应调节，避免了临界距离附近的抖振问题。
+其中 $\eta=0.01$ 为对偶上升步长，$\epsilon_{\text{target}}=0.05$ 为归一化约束违反容忍度，$d_{\text{safe}}=0.06$~m 为安全距离阈值，$d_{\text{obs}}$ 为全局最小 SDF 距离。$\lambda$ 为回合级持久变量，每回合初始化为 0，回合内递推累积。与固定距离阈值的门控相比，Lagrangian 门控根据约束违反的累积历史自适应调节，避免了临界距离附近的抖振。
 
 \subsubsection{强化学习形式化}
 将问题建模为马尔可夫决策过程 $\langle \mathcal{S}, \mathcal{A}, \mathcal{P}, \mathcal{R}, \gamma \rangle$。状态空间定义为：
 \begin{equation}
-s_t = [q_t, \dot{q}_t, x_t, x_d, d_{\text{obs}}^{(1:N_{\text{caps}})}, d_{\text{self}}^{(1:N_{\text{self}})}, s, \dot{q}_{\text{rep}}] \in \mathbb{R}^{40}
+\begin{aligned}
+s_t = [&q_t, \dot{q}_t, x_t, x_d, d_{\text{obs}}^{(1:N_{\text{caps}})}, \\
+&d_{\text{self}}^{(1:N_{\text{self}})}, s, \dot{q}_{\text{rep}}] \in \mathbb{R}^{40}
+\end{aligned}
 \end{equation}
-其中 $d_{\text{obs}}^{(i)}$ 为第 $i$ 个连杆胶囊体到最近障碍物的有符号距离（共 $N_{\text{caps}}=12$），提供连杆级细粒度障碍接近信号；$d_{\text{self}}^{(j)}$ 为第 $j$ 对非相邻胶囊体之间的自碰撞距离；$s \in [0,1]$ 为轨迹进度标量；$\dot{q}_{\text{rep}} \in \mathbb{R}^7$ 为人工势场法推荐的自运动方向，作为零空间探索的初始化参考。动作空间为 7 维连续向量 $a_t = [\Delta \dot{x}_{\text{RL}}^T, z^T]^T \in \mathbb{R}^{7}$，其中 $\Delta \dot{x}_{\text{RL}} \in \mathbb{R}^3$ 为任务空间松弛项，$z \in \mathbb{R}^{4}$ 为零空间系数，经可微 SVD 零空间基 $B(q) \in \mathbb{R}^{7 \times 4}$ 提升为自运动速度 $\dot{q}_0 = B(q)z$。奖励函数 $r_t = r_{\text{track}} + r_{\text{obs}} + r_{\text{manip}} + r_{\text{energy}} + r_{\text{collision}} + r_{\text{action}}$，详见第\ref{sec:reward}节。
+其中 $d_{\text{obs}}^{(i)}$ 为第 $i$ 个连杆胶囊体到最近障碍物的有符号距离（共 $N_{\text{caps}}=12$），提供连杆级细粒度障碍接近信号；$d_{\text{self}}^{(j)}$ 为第 $j$ 对非相邻胶囊体之间的自碰撞距离；$s \in [0,1]$ 为轨迹进度标量；$\dot{q}_{\text{rep}} \in \mathbb{R}^7$ 为人工势场法推荐的自运动方向，用作零空间探索的初始化参考。动作空间为 7 维连续向量 $a_t = [\Delta \dot{x}_{\text{RL}}^T, z^T]^T \in \mathbb{R}^{7}$，其中 $\Delta \dot{x}_{\text{RL}} \in \mathbb{R}^3$ 为任务空间参考修正项，$z \in \mathbb{R}^{4}$ 为零空间系数，经可微 SVD 零空间基 $B(q) \in \mathbb{R}^{7 \times 4}$ 提升为自运动速度 $\dot{q}_0 = B(q)z$。奖励函数 $r_t = r_{\text{track}} + r_{\text{obs}} + r_{\text{manip}} + r_{\text{energy}} + r_{\text{collision}} + r_{\text{action}}$，详见第\ref{sec:reward}节。
 
 \subsection{机械臂运动学与动力学基础}
 \label{sec:preliminaries}
@@ -128,7 +147,10 @@ s_t = [q_t, \dot{q}_t, x_t, x_d, d_{\text{obs}}^{(1:N_{\text{caps}})}, d_{\text{
 \end{equation}
 冗余性体现在 $J_{\text{pos}}$ 的零空间维数 $\dim(\mathcal{N}(J_{\text{pos}})) = 7 - 3 = 4$，即存在 4 个自由度的关节运动不影响末端位置。零空间投影矩阵及逆运动学通解为：
 \begin{equation}
-N_{\text{pos}}(q) = I_7 - J_{\text{pos}}^\dagger J_{\text{pos}}, \quad J_{\text{pos}}N_{\text{pos}} = 0, \quad N_{\text{pos}}^2 = N_{\text{pos}}, \quad \dot{q} = J_{\text{pos}}^\dagger \dot{x} + N_{\text{pos}}(q)\dot{q}_0
+\begin{aligned}
+N_{\text{pos}}(q) &= I_7 - J_{\text{pos}}^\dagger J_{\text{pos}}, \quad J_{\text{pos}}N_{\text{pos}} = 0, \\
+N_{\text{pos}}^2 &= N_{\text{pos}}, \quad \dot{q} = J_{\text{pos}}^\dagger \dot{x} + N_{\text{pos}}(q)\dot{q}_0
+\end{aligned}
 \label{eq:nullspace}
 \end{equation}
 其中 $J_{\text{pos}}^\dagger = J_{\text{pos}}^T(J_{\text{pos}}J_{\text{pos}}^T)^{-1}$ 为伪逆矩阵，$\dot{q}_0 \in \mathbb{R}^7$ 为任意自运动速度。$N_{\text{pos}}$ 的幂等性和零化特性保证了零空间分量不影响末端运动。
@@ -143,19 +165,19 @@ M(q)\ddot{q} + C(q,\dot{q})\dot{q} + G(q) = \tau
 \subsection{结构化动作空间与约束 SAC 框架}
 \label{sec:policy_network}
 
-本文采用约束 SAC（Constrained SAC, CSAC）作为强化学习框架，在 SAC 基础上引入独立安全评判器（Safety Critic）和 Lagrange 乘子，实现奖励最大化与约束满足的端到端联合优化。
+本文采用约束 SAC（Constrained SAC, CSAC）作为强化学习框架，在 SAC 基础上引入独立的安全评判器（Safety Critic）和 Lagrange 乘子，实现奖励最大化与约束满足的端到端联合优化。
 
 \subsubsection{结构化动作空间}
-策略网络的输出由任务空间松弛项 $\Delta \dot{x}_{\text{RL}} \in \mathbb{R}^3$ 和零空间系数 $z \in \mathbb{R}^4$ 拼接而成：
+策略网络的输出由任务空间参考修正项 $\Delta \dot{x}_{\text{RL}} \in \mathbb{R}^3$ 和零空间系数 $z \in \mathbb{R}^4$ 拼接而成：
 \begin{equation}
 a_t \sim \pi(\cdot|s_t) = \left[ \Delta \dot{x}_{\text{RL}}^T,\ z^T \right]^T \in \mathbb{R}^{7}
 \label{eq:action}
 \end{equation}
-其中 $z$ 通过可微 SVD 零空间基 $B(q) \in \mathbb{R}^{7 \times 4}$ 提升为自运动速度 $\dot{q}_0 = B(q)z$。策略网络（PhysicsInformedActor）以状态 $s_t$ 为输入，经两个全连接 Tanh 隐藏层输出均值 $\mu(s_t)$ 和对数标准差 $\log\sigma(s_t)$，通过重参数化技巧采样并经 $\tanh$ 激活压缩至 $[-1,1]$ 后按各自比例缩放：前 3 维乘以 $\texttt{task\_scale}=1.0$，后 4 维乘以 $\texttt{nullspace\_scale}=0.5$。
+其中 $z$ 通过可微 SVD 零空间基 $B(q) \in \mathbb{R}^{7 \times 4}$ 提升为自运动速度 $\dot{q}_0 = B(q)z$。策略网络（PhysicsInformedActor）以状态 $s_t$ 为输入，经两个全连接 Tanh 隐藏层输出均值 $\mu(s_t)$ 和对数标准差 $\log\sigma(s_t)$；采样通过重参数化技巧完成，经 $\tanh$ 压缩至 $[-1,1]$ 后按各子空间缩放：前 3 维乘以 $\texttt{task\_scale}=1.0$，后 4 维乘以 $\texttt{nullspace\_scale}=0.5$。
 
-\textbf{动作维度分析。}零空间的本质维数为 4（$\dim(\mathcal{N}(J_{\text{pos}})) = 7 - 3 = 4$）。策略输出 4 维零空间系数 $z$，经 $B(q)$ 提升为 7 维自运动速度 $\dot{q}_0$，再经 $N_{\text{pos}}(q)$ 投影后实际有效自由度仍为 4。该表示的几何意义在于：$B(q)$ 构成 $J_{\text{pos}}(q)$ 零空间的一组标准正交基，$z$ 的各分量即为在该组基下的坐标。相比直接输出 $\dot{q}_0 \in \mathbb{R}^7$，SVD 系数表示的优势在于：（1）策略输出维度最小化（7 维降至 4 维），降低探索复杂度；（2）$B(q)$ 的正交性保证 $z$ 各通道解耦，有利于深度网络的特征学习；（3）SVD 基在 Pinocchio 框架下通过可微操作实现，支持完整梯度回传。
+\textbf{动作维度分析。}零空间的本质维数为 4（$\dim(\mathcal{N}(J_{\text{pos}})) = 7 - 3 = 4$）。策略输出 4 维零空间系数 $z$，经 $B(q)$ 提升为 7 维自运动速度 $\dot{q}_0$，再经 $N_{\text{pos}}(q)$ 投影后实际有效自由度仍为 4。$B(q)$ 构成 $J_{\text{pos}}(q)$ 零空间的一组标准正交基，$z$ 的各分量为在该基下的坐标。相比直接输出 $\dot{q}_0 \in \mathbb{R}^7$，SVD 系数表示有三点优势：（1）策略输出维度最小化（7 维降至 4 维），降低探索复杂度；（2）$B(q)$ 的正交性保证 $z$ 各通道解耦，有利于特征学习；（3）SVD 基在 Pinocchio 框架下通过可微操作实现，支持完整梯度回传。
 
-与非结构化的全关节空间控制相比，该设计实现两个关键优势：（1）\textbf{探索空间解耦}——$\dot{q}_0$ 经零空间投影后不影响末端跟踪，从结构上滤除了破坏末端精度的无效动作；（2）\textbf{基础性能保障}——RL 探索始终附加在名义控制律之上，即使策略输出存在噪声，末端跟踪仍由 PD 项的主导增益保障。
+与非结构化的全关节空间控制相比，该设计实现两个优势：（1）\textbf{探索空间解耦}——$\dot{q}_0$ 经零空间投影后不影响末端跟踪，从结构上滤除破坏末端精度的无效动作；（2）\textbf{基础性能保障}——RL 探索始终附加在名义控制律之上，即使策略输出存在噪声，末端跟踪仍由 PD 项的主导增益保障。
 
 \subsubsection{网络架构与安全评判器}
 \label{sec:critic_arch}
@@ -168,22 +190,29 @@ c_t = \frac{\max(0, d_{\text{safe}} - d_{\text{obs}})}{d_{\text{safe}}}
 \end{equation}
 安全评判器与任务评判器具有相同的网络结构，但维护独立参数 $\psi$ 和目标网络 $\psi'$，其 Bellman 更新为：
 \begin{equation}
-y_i^{(c)} = c_i + \gamma \min_{k=1,\dots,N} Q_{c,\psi'_k}(s'_i, a'_i), \quad
-\mathcal{L}_{Q_c} = \frac{1}{B}\sum_{i=1}^{B} \left( Q_{c,\psi_k}(s_i,a_i) - y_i^{(c)} \right)^2
+\begin{aligned}
+y_i^{(c)} &= c_i + \gamma \min_{k=1,\dots,N} Q_{c,\psi'_k}(s'_i, a'_i), \\
+\mathcal{L}_{Q_c} &= \frac{1}{B}\sum_{i=1}^{B} \left( Q_{c,\psi_k}(s_i,a_i) - y_i^{(c)} \right)^2
+\end{aligned}
 \label{eq:safety_critic_loss}
 \end{equation}
 
 \paragraph{集成评判器（Ensemble Critic）。}为缓解多场景训练中 Q 值过估计问题，任务评判器与安全评判器均采用 $N=5$ 个独立 Q 网络的集成结构。每个 Q 网络由输入拼接 $(s,a)$，经全连接层、LayerNorm 和 ReLU 激活后输出标量 Q 值。集成 Q 值通过取最小值抑制过估计：
 \begin{equation}
-Q_{\phi}(s,a) = \min_{k=1,\dots,N} Q_{\phi_k}(s,a), \quad
-Q_{c,\psi}(s,a) = \min_{k=1,\dots,N} Q_{c,\psi_k}(s,a)
+\begin{aligned}
+Q_{\phi}(s,a) &= \min_{k=1,\dots,N} Q_{\phi_k}(s,a), \\
+Q_{c,\psi}(s,a) &= \min_{k=1,\dots,N} Q_{c,\psi_k}(s,a)
+\end{aligned}
 \label{eq:ensemble_q}
 \end{equation}
 LayerNorm 有效缓解了不同场景间观测分布漂移导致的训练不稳定问题。
 
 \paragraph{学习率余弦退火。}采用余弦退火学习率调度，初始学习率 $3 \times 10^{-4}$，衰减至初始值的 $10\%$：
 \begin{equation}
-\text{lr}(t) = \text{lr}_{\min} + \frac{1}{2}(\text{lr}_{\text{init}} - \text{lr}_{\min})\left(1 + \cos\frac{t}{T_{\max}}\pi\right)
+\begin{aligned}
+\text{lr}(t) = \text{lr}_{\min} + \frac{1}{2}&(\text{lr}_{\text{init}} - \text{lr}_{\min}) \\
+&\times \left(1 + \cos\frac{t}{T_{\max}}\pi\right)
+\end{aligned}
 \label{eq:cosine_lr}
 \end{equation}
 
@@ -194,11 +223,11 @@ LayerNorm 有效缓解了不同场景间观测分布漂移导致的训练不稳�
 \mathcal{L}_{\text{dyn}} = \|\text{relu}(|\tau_\pi| - \tau_{\max})\|^2
 \label{eq:torque_loss}
 \end{equation}
-该损失仅在力矩超过物理上限时产生非零惩罚，且保持梯度可微。与通过奖励函数间接约束力矩的方法（reward shaping）相比，该正则化损失的优势在于：（1）与策略梯度解耦，不改变 Q 函数优化目标，避免多目标奖励权重的反复调试；（2）力矩未超限时梯度为零，不影响策略在可行域内的正常学习。力矩正则化系数 $\lambda_{\text{dyn}} = 1.0$。
+该损失仅在力矩超过物理上限时产生非零惩罚，且保持梯度可微。与通过奖励函数间接约束力矩的方法（reward shaping）相比，该正则化有两方面优势：（1）与策略梯度解耦，不改变 Q 函数优化目标，避免了多目标奖励权重的反复调试；（2）力矩未超限时梯度为零，不干扰策略在可行域内的正常学习。力矩正则化系数 $\lambda_{\text{dyn}} = 1.0$。
 
 \subsubsection{约束策略优化}
 \label{sec:constrained_actor}
-策略网络总损失由约束策略损失和力矩约束正则化两部分组成：
+策略网络总损失由约束策略损失和力矩约束正则化构成：
 \begin{equation}
 \mathcal{L}_{\text{total}} = \mathcal{L}_{\text{actor}} + \lambda_{\text{dyn}} \mathcal{L}_{\text{dyn}}
 \label{eq:total_loss}
@@ -206,18 +235,23 @@ LayerNorm 有效缓解了不同场景间观测分布漂移导致的训练不稳�
 
 \textbf{约束 SAC 策略损失。}引入熵正则化项和安全约束项：
 \begin{equation}
-\mathcal{L}_{\text{actor}} = \frac{1}{B}\sum_{i=1}^{B} \left( \alpha \log \pi_\theta(\tilde{a}_i|s_i) - \min_k Q_{\phi_k}(s_i, \tilde{a}_i) + \lambda \cdot \max_k Q_{c,\psi_k}(s_i, \tilde{a}_i) \right)
+\begin{aligned}
+\mathcal{L}_{\text{actor}} = \frac{1}{B}\sum_{i=1}^{B} \bigl( &\alpha \log \pi_\theta(\tilde{a}_i|s_i) - \min_k Q_{\phi_k}(s_i, \tilde{a}_i) \\
+&+ \lambda \cdot \max_k Q_{c,\psi_k}(s_i, \tilde{a}_i) \bigr)
+\end{aligned}
 \label{eq:actor_loss}
 \end{equation}
 其中第一项为熵正则化，第二项为集成任务评判器的最小 Q 值（抑制过估计），第三项为安全约束惩罚。熵系数初始值 $\alpha=0.1$，通过自动熵调节学习，目标熵 $\bar{\mathcal{H}} = -7$，下限 $\alpha_{\min}=0.02$。
 
 \textbf{Lagrange 乘子对偶优化。}为实现安全约束 $\mathbb{E}[Q_c(s,a)] \leq c_{\text{limit}}$，引入可学习 Lagrange 乘子 $\lambda \geq 0$（初始化 $\lambda=0.1$），通过对偶梯度下降更新：
 \begin{equation}
-\mathcal{L}_{\lambda} = -\lambda \cdot \left( \max_k Q_{c,\psi_k}(s, a) - c_{\text{limit}} \right), \quad
-\lambda_{t+1} = \max(1 \times 10^{-6}, \lambda_t + \eta_{\text{Lag}} \nabla \mathcal{L}_{\lambda})
+\begin{aligned}
+\mathcal{L}_{\lambda} &= -\lambda \cdot \left( \max_k Q_{c,\psi_k}(s, a) - c_{\text{limit}} \right), \\
+\lambda_{t+1} &= \max(1 \times 10^{-6}, \lambda_t + \eta_{\text{Lag}} \nabla \mathcal{L}_{\lambda})
+\end{aligned}
 \label{eq:lag_loss}
 \end{equation}
-其中 $c_{\text{limit}}=0.05$ 为代价上限。当安全评判器预测代价超出上限时 $\lambda$ 增大、安全惩罚权重增强；反之 $\lambda$ 衰减。该机制在奖励优化和约束满足之间实现自动权衡。
+其中 $c_{\text{limit}}=0.05$ 为代价上限。当安全评判器预测代价超出上限时 $\lambda$ 增大，安全惩罚权重增强；反之 $\lambda$ 衰减。该机制在奖励优化与约束满足之间实现自动权衡。
 
 \textbf{评判器预热（Critic Warmup）。}训练初期仅更新评判器网络，策略网络在累积 $N_{\text{warmup}}$ 次评判器更新后开始训练，确保 Q 值估计在策略学习前已具有合理精度。
 
@@ -226,17 +260,20 @@ LayerNorm 有效缓解了不同场景间观测分布漂移导致的训练不稳�
 
 奖励函数由六个子项组成：
 \begin{equation}
-r_t = r_{\text{track}} + r_{\text{obs}} + r_{\text{manip}} + r_{\text{energy}} + r_{\text{collision}} + r_{\text{action}}
+\begin{aligned}
+r_t &= r_{\text{track}} + r_{\text{obs}} + r_{\text{manip}} \\
+&\quad + r_{\text{energy}} + r_{\text{collision}} + r_{\text{action}}
+\end{aligned}
 \label{eq:reward_total}
 \end{equation}
 
 \subsubsection{末端跟踪奖励}
-采用指数形式的跟踪误差奖励，在误差较大时提供强梯度、误差趋近于零时趋于饱和：
+采用指数形式的跟踪误差奖励，在误差较大时提供强梯度，误差趋近于零时趋于饱和：
 \begin{equation}
 r_{\text{track}} = w_{\text{track}} \cdot \exp\left(-w_{\text{track}} \cdot \|x_t - x_d\|\right)
 \label{eq:track_reward}
 \end{equation}
-其中 $w_{\text{track}}=12.0$。指数形式相较于二次型的优势在于：误差大时梯度为 $w_{\text{track}}^2$ 量级，驱动快速收敛；误差趋近于零时梯度自然衰减，避免过调。跟踪权重为固定值——任务优先级切换由控制层的 Lagrangian 门控独立承担（第\ref{sec:relaxation}节），符合"奖励编码任务目标、约束由独立机制保障"的设计原则。
+其中 $w_{\text{track}}=12.0$。指数形式相较于二次型的优势在于：误差大时梯度为 $w_{\text{track}}^2$ 量级，驱动快速收敛；误差趋近于零时梯度自然衰减，避免过调。跟踪权重保持固定——任务优先级由控制层的 Lagrangian 门控独立调节（第\ref{sec:relaxation}节），符合奖励编码任务目标、约束由独立机制保障的设计原则。
 
 \subsubsection{基于距离场的避障奖励}
 采用有符号距离场计算机械臂各连杆到障碍物的逐胶囊体距离：
@@ -246,7 +283,10 @@ d_{\text{obs}}^{(i)} = \text{SDF}(\text{capsule}_i), \quad i = 1, \dots, N_{\tex
 \end{equation}
 避障奖励定义为逐胶囊体的归一化线性惩罚：
 \begin{equation}
-r_{\text{obs}} = -\frac{w_{\text{obs}}}{N_{\text{caps}}} \sum_{i=1}^{N_{\text{caps}}} \frac{\max(0, d_{\text{safe}} - d_{\text{obs}}^{(i)})}{d_{\text{safe}}}
+\begin{aligned}
+r_{\text{obs}} = -\frac{w_{\text{obs}}}{N_{\text{caps}}} \sum_{i=1}^{N_{\text{caps}}}
+\frac{\max(0, d_{\text{safe}} - d_{\text{obs}}^{(i)})}{d_{\text{safe}}}
+\end{aligned}
 \label{eq:obs_reward}
 \end{equation}
 其中 $w_{\text{obs}}=5.0$，$d_{\text{safe}}=0.06$~m。该设计的优势在于：（1）逐连杆惩罚提供细粒度空间梯度，使策略能够区分不同连杆的威胁程度；（2）以 $d_{\text{safe}}$ 归一化使惩罚量级在不同场景间保持一致；（3）线性惩罚避免指数形式在深度穿透时的梯度爆炸。
@@ -267,7 +307,7 @@ r_{\text{energy}} = -w_{\text{energy}} \sum_{j=1}^{7} \dot{q}_j^2
 其中 $w_{\text{energy}}=0.001$。
 
 \subsubsection{碰撞惩罚}
-引入基于 MuJoCo 物理引擎的接触式碰撞惩罚，作为 SDF 避障奖励的兜底信号：
+引入基于 MuJoCo 物理引擎的接触式碰撞惩罚，作为 SDF 避障奖励的补充安全信号：
 \begin{equation}
 r_{\text{collision}} = -w_{\text{collision}} \cdot \sum_{c \in \mathcal{C}} \max(0, d_{\text{ref}} - d_c)
 \label{eq:collision_reward}
@@ -281,25 +321,29 @@ r_{\text{action}} = -w_{\text{action}} \sum_{j=1}^{7} (\dot{q}_j^t - \dot{q}_j^{
 \end{equation}
 其中 $w_{\text{action}}=0.5$。该惩罚等价于对加速度施加软约束，使生成轨迹在时序上更加平滑。
 
-\subsection{主任务松弛机制}
+\subsection{任务参考自适应修正机制}
 \label{sec:relaxation}
 
-传统零空间控制在危险情况下因末端跟踪与避障约束的直接冲突可能导致控制无解。本文通过控制层的 Lagrangian 门控算子实现主任务松弛。
+传统零空间控制在危险情况下因末端跟踪与避障约束的直接冲突可能导致控制无解。本文通过控制层的 Lagrangian 门控算子实现任务参考自适应修正，在保证稳定性的前提下动态调节跟踪与避障的优先级。
 
 \textbf{Lagrangian 门控算子。}不同于基于固定距离函数的门控设计，本文采用在线对偶上升学习 Lagrangian 乘子 $\lambda \geq 0$ 作为门控变量：
 \begin{equation}
-\lambda_{t+1} = \max\left(0, \lambda_t + \eta \cdot \left(\frac{\max(0, d_{\text{safe}} - d_{\text{obs}})}{d_{\text{safe}}} - \epsilon_{\text{target}}\right)\right)
+\begin{aligned}
+\lambda_{t+1} = \max\Bigl(0,\; \lambda_t + \eta \cdot \Bigl(
+&\frac{\max(0, d_{\text{safe}} - d_{\text{obs}})}{d_{\text{safe}}} \\
+&- \epsilon_{\text{target}}\Bigr)\Bigr)
+\end{aligned}
 \label{eq:lagrangian_update}
 \end{equation}
 \begin{equation}
 \sigma = \text{clip}(\lambda, 0, 1)
 \label{eq:gate_operator2}
 \end{equation}
-其中 $\eta=0.01$，$\epsilon_{\text{target}}=0.05$。$\lambda$ 为回合级持久变量，每回合起始 $\lambda_0=0$。与固定门控函数相比，Lagrangian 门控具有两个优势：（1）门控强度根据约束违反的累积历史自适应调节，而非仅依赖当前瞬时距离；（2）对偶上升的收敛性质保证门控变量在可行域内稳定，避免了固定阈值在临界距离附近的抖振问题。
+其中 $\eta=0.01$，$\epsilon_{\text{target}}=0.05$。$\lambda$ 为回合级持久变量，每回合起始 $\lambda_0=0$。与固定门控函数相比，Lagrangian 门控有两方面优势：（1）门控强度根据约束违反的累积历史自适应调节，而非仅依赖当前瞬时距离；（2）对偶上升的收敛性质保证门控变量在可行域内稳定，避免了固定阈值在临界距离附近的抖振。
 
-\textbf{随机探索期间的门控覆盖。}训练初期（$\texttt{start\_steps}$ 步内），策略尚未收敛，强制设置 $\sigma = 1$ 使松弛项完全开启、零空间自运动主导探索。$\texttt{start\_steps}$ 结束后恢复 Lagrangian 门控的正常计算。
+\textbf{随机探索期间的门控覆盖。}训练初期（$\texttt{start\_steps}$ 步内）策略尚未收敛，强制设置 $\sigma = 1$ 使参考修正项完全开启，由零空间自运动主导探索。$\texttt{start\_steps}$ 结束后恢复 Lagrangian 门控的正常计算。
 
-门控算子在安全区域（$d_{\text{obs}} \gg d_{\text{safe}}$）中 $\lambda \to 0$、$\sigma \to 0$，名义 PID 跟踪严格主导；危险区域（$d_{\text{obs}} \to 0$）中 $\lambda$ 逐步增大、$\sigma \to 1$，RL 松弛完全开启。值得注意的是，主任务松弛仅在控制层实现——奖励函数中的跟踪权重 $w_{\text{track}}$ 保持固定，任务优先级切换完全由门控算子 $\sigma$ 在动作层面完成。\textcolor{red}{[待补充：对偶上升收敛性分析]}
+门控算子在安全区域（$d_{\text{obs}} \gg d_{\text{safe}}$）中 $\lambda \to 0$、$\sigma \to 0$，名义 PID 跟踪严格主导；危险区域（$d_{\text{obs}} \to 0$）中 $\lambda$ 逐步增大、$\sigma \to 1$，RL 参考修正完全开启。任务参考修正仅在控制层实现——奖励函数中的跟踪权重 $w_{\text{track}}$ 保持固定，优先级在线调节完全由门控算子 $\sigma$ 在动作层面完成。\textcolor{red}{[待补充：对偶上升收敛性分析]}
 
 \subsection{稳定性分析}
 \label{sec:stability}
@@ -317,7 +361,10 @@ J_{\text{pos}}\dot{q} = \dot{x}_d + K_p e + \sigma \cdot \Delta\dot{x}_{\text{RL
 
 策略输出经 $\tanh$ 限幅，$\|\Delta\dot{x}_{\text{RL}}\| \leq a_{\max}$；门控 $\sigma \in [0, 1]$。定义扰动 $d(t) = -\sigma \cdot \Delta\dot{x}_{\text{RL}}$，其范数 $\|d(t)\| \leq a_{\max} = \delta$，系统化为受扰线性系统：
 \begin{equation}
-\dot{e} = -K_p e + d(t), \quad \|d(t)\| \leq \delta
+\begin{aligned}
+\dot{e} &= -K_p e + d(t), \\
+\|d(t)\| &\leq \delta
+\end{aligned}
 \label{eq:perturbed_system}
 \end{equation}
 
@@ -336,33 +383,33 @@ J_{\text{pos}}\dot{q} = \dot{x}_d + K_p e + \sigma \cdot \Delta\dot{x}_{\text{RL
 \label{eq:uub_bound}
 \end{equation}
 
-\textbf{推论。}安全区域（$d_{\text{obs}} \gg d_{\text{safe}}$）中 $\sigma \to 0$、$\delta \to 0$，系统恢复为指数稳定的 PD 跟踪。危险区域（$d_{\text{obs}} \to 0$）中 $\sigma \to 1$、$\delta \to a_{\max}$，跟踪误差有界于 $a_{\max}/k_p$——这从理论上保证了主任务松弛的合理性：策略"有节制地牺牲精度"而非无限制发散，且误差上界可通过调节 $k_p$ 显式控制。
+\textbf{推论。}安全区域（$d_{\text{obs}} \gg d_{\text{safe}}$）中 $\sigma \to 0$、$\delta \to 0$，系统恢复为指数稳定的 PD 跟踪。危险区域（$d_{\text{obs}} \to 0$）中 $\sigma \to 1$、$\delta \to a_{\max}$，跟踪误差有界于 $a_{\max}/k_p$。这从理论上保证了参考修正的合理性：策略有节制地调整参考而非无限制发散，且误差上界可通过调节 $k_p$ 显式控制。
 
 \subsubsection{零空间稳定性}
 零空间项 $N_{\text{pos}}(q)\dot{q}_0$ 满足 $J_{\text{pos}}N_{\text{pos}} = 0$，与末端动力学严格解耦。定义可操作度 $w(q) = \sqrt{\det(JJ^T)}$，构造零空间 Lyapunov 候选函数 $V_n(q) = w_{\max} - w(q)$。策略通过奖励 $r_{\text{manip}}$ 引导 $\dot{q}_0$ 在可操作度梯度方向产生分量，使机械臂远离奇异位形。联合末端跟踪的 ISS 性质和零空间趋稳性，系统在非奇异条件下保持整体稳定。
 
 \subsection{算法实现}
 \label{sec:algorithm}
-综合上述设计，本文基于约束 SAC 框架实现物理信息增强的零空间强化学习算法。图\ref{fig:sac_architecture} 展示了整体架构，算法伪代码如算法\ref{alg:sac_nullspace} 所示。
+基于上述设计，本文在约束 SAC 框架下实现物理信息增强的零空间强化学习算法。整体架构见图\ref{fig:sac_architecture}，伪代码见算法\ref{alg:sac_nullspace}。
 
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.85\columnwidth]{sac_architecture.pdf}
-\caption{CSAC 算法架构。策略网络输出结构化动作 $a_t = [\Delta\dot{x}_{\mathrm{RL}}, z]$，其中 $z \in \mathbb{R}^4$ 经可微 SVD 基 $B(q)$ 提升为 $\dot{q}_0 = B(q)z$；环境距离 $d_{\mathrm{obs}}$ 经 Lagrangian 门控 $\sigma$ 缩放 RL 松弛项；控制律（式~\eqref{eq:control_structure}）融合 PID 跟踪、$\sigma \cdot \Delta\dot{x}_{\mathrm{RL}}$ 和零空间项 $N(q)\dot{q}_0$ 生成 $\dot{q}_{\mathrm{ref}}$；安全评判器 $Q_c$ 独立估计累积代价。}
+\caption{CSAC 算法架构。策略网络输出结构化动作 $a_t = [\Delta\dot{x}_{\mathrm{RL}}, z]$，其中 $z \in \mathbb{R}^4$ 经可微 SVD 基 $B(q)$ 提升为 $\dot{q}_0 = B(q)z$；环境距离 $d_{\mathrm{obs}}$ 经 Lagrangian 门控 $\sigma$ 缩放 RL 参考修正项；控制律（式~\eqref{eq:control_structure}）融合 PID 跟踪、$\sigma \cdot \Delta\dot{x}_{\mathrm{RL}}$ 和零空间项 $N(q)\dot{q}_0$ 生成 $\dot{q}_{\mathrm{ref}}$；安全评判器 $Q_c$ 独立估计累积代价。}
 \label{fig:sac_architecture}
 \end{figure}
 
 \begin{algorithm}[htbp]
 \caption{零空间策略的约束 SAC（CSAC）算法}
 \label{alg:sac_nullspace}
-\begin{algorithmic}[1]
-\Require 策略参数 $\theta$, 任务评判器 $\phi_{1:N}$, 安全评判器 $\psi_{1:N}$, 对应目标网络 $\phi'_{1:N},\psi'_{1:N}$; 经验回放池 $\mathcal{D}$; 熵系数 $\alpha$, Lagrange 乘子 $\lambda_{\text{Lag}}$, 力矩正则化系数 $\lambda_{\text{dyn}}$, 代价上限 $c_{\text{limit}}$, 评判器预热步数 $N_{\text{warmup}}$
+\begin{algorithmic}[1]\small
+\Require 策略参数 $\theta$, 任务评判器 $\phi_{1:N}$, 安全评判器 $\psi_{1:N}$; 目标网络 $\phi'_{1:N},\psi'_{1:N}$; 经验回放池 $\mathcal{D}$; 熵系数 $\alpha$, Lagrange 乘子 $\lambda_{\text{Lag}}$, 力矩正则化系数 $\lambda_{\text{dyn}}$, 代价上限 $c_{\text{limit}}$, 预热步数 $N_{\text{warmup}}$
 \Ensure 优化后的策略 $\pi_\theta$
 \State 初始化环境，获取初始状态 $s_0$
 \State $t \gets 0$
 \While{总步数 $<$ 预算}
     \State \textbf{// 1. 动作采样与执行}
-    \State $a_t \sim \pi_\theta(\cdot | s_t)$，其中 $a_t = [\Delta \dot{x}_{\text{RL}}^T (3), z^T (4)]^T \in \mathbb{R}^7$
+    \State $a_t \sim \pi_\theta(\cdot | s_t)$，$a_t = [\Delta \dot{x}_{\text{RL}}^T (3), z^T (4)]^T \in \mathbb{R}^7$
     \State 计算环境 Lagrangian 门控 $\sigma \gets \text{clip}(\lambda_{\text{Lag}}^{\text{(env)}}, 0, 1)$
     \State 执行 $\dot{q}_{\text{ref}} = J^\dagger(\dot{x}_d + K_p e + \sigma \cdot \Delta\dot{x}_{\text{RL}}) + B(q)z$
     \State 获取 $r_t$, $c_t$（式\eqref{eq:cost}）和 $s_{t+1}$，存入 $\mathcal{D}$
@@ -371,32 +418,39 @@ J_{\text{pos}}\dot{q} = \dot{x}_d + K_p e + \sigma \cdot \Delta\dot{x}_{\text{RL
         \State 从 $\mathcal{D}$ 采样批量 $\{(s_i, a_i, r_i, c_i, s'_i, \dots)\}$
 
         \State \textbf{// 2. 集成任务评判器更新}
-        \State $a'_i \sim \pi_\theta(\cdot|s'_i)$; $y_i \gets r_i + \gamma(\min_k Q_{\phi'_k}(s'_i, a'_i) - \alpha \log \pi_\theta(a'_i|s'_i))$
+        \State $a'_i \sim \pi_\theta(\cdot|s'_i)$
+        \State $y_i \gets r_i + \gamma(\min_k Q_{\phi'_k}(s'_i, a'_i) - \alpha \log \pi_\theta(a'_i|s'_i))$
         \State $\forall k: \mathcal{L}_{Q_k} \gets \frac{1}{B}\sum (Q_{\phi_k}(s_i,a_i) - y_i)^2$
         \State 更新所有 $\phi_k$ 最小化 $\sum_k \mathcal{L}_{Q_k}$
 
         \State \textbf{// 3. 集成安全评判器更新}
-        \State $a'_i \sim \pi_\theta(\cdot|s'_i)$; $y_i^{(c)} \gets c_i + \gamma \min_k Q_{c,\psi'_k}(s'_i, a'_i)$
+        \State $a'_i \sim \pi_\theta(\cdot|s'_i)$
+        \State $y_i^{(c)} \gets c_i + \gamma \min_k Q_{c,\psi'_k}(s'_i, a'_i)$
         \State $\forall k: \mathcal{L}_{Q_{c,k}} \gets \frac{1}{B}\sum (Q_{c,\psi_k}(s_i,a_i) - y_i^{(c)})^2$
         \State 更新所有 $\psi_k$ 最小化 $\sum_k \mathcal{L}_{Q_{c,k}}$
 
         \If{累积更新步数 $> N_{\text{warmup}}$}
             \State \textbf{// 4. 约束策略更新}
             \State $\tilde{a}_i \sim \pi_\theta(\cdot|s_i)$
-            \State $\mathcal{L}_{\text{actor}} \gets \frac{1}{B}\sum \big( \alpha \log \pi_\theta(\tilde{a}_i|s_i) - \min_k Q_{\phi_k}(s_i,\tilde{a}_i) + \lambda_{\text{Lag}} \cdot \max_k Q_{c,\psi_k}(s_i,\tilde{a}_i) \big)$
+            \State $\mathcal{L}_{\text{actor}} \gets \frac{1}{B}\sum \big( \alpha \log \pi_\theta(\tilde{a}_i|s_i) - \min_k Q_{\phi_k}(s_i,\tilde{a}_i)$
+            \State $\qquad +\; \lambda_{\text{Lag}} \cdot \max_k Q_{c,\psi_k}(s_i,\tilde{a}_i) \big)$
             \State $\mathcal{L}_{\text{dyn}} \gets \|\text{relu}(|\tau_\pi| - \tau_{\max})\|^2$
-            \State 更新 $\pi_\theta$ 最小化 $\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{actor}} + \lambda_{\text{dyn}} \mathcal{L}_{\text{dyn}}$
+            \State $\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{actor}} + \lambda_{\text{dyn}} \mathcal{L}_{\text{dyn}}$
+            \State 更新 $\pi_\theta$ 最小化 $\mathcal{L}_{\text{total}}$
 
             \State \textbf{// 5. 熵系数更新}
-            \State $\alpha \gets \alpha - \eta_\alpha \nabla_\alpha (\alpha \cdot (\log \pi_\theta + \bar{\mathcal{H}}))$，$\alpha \gets \max(\alpha, 0.02)$
+            \State $\alpha \gets \alpha - \eta_\alpha \nabla_\alpha (\alpha \cdot (\log \pi_\theta + \bar{\mathcal{H}}))$
+            \State $\alpha \gets \max(\alpha, 0.02)$
 
             \State \textbf{// 6. Lagrange 乘子对偶更新}
             \State $\mathcal{L}_{\lambda} \gets -\lambda_{\text{Lag}} \cdot \big( \max_k Q_{c,\psi_k}(s_i,\tilde{a}_i) - c_{\text{limit}} \big)$
-            \State $\lambda_{\text{Lag}} \gets \max(1\times10^{-6}, \lambda_{\text{Lag}} + \eta_{\text{Lag}} \nabla_{\lambda_{\text{Lag}}} \mathcal{L}_{\lambda})$
+            \State $\lambda_{\text{Lag}} \gets \lambda_{\text{Lag}} + \eta_{\text{Lag}} \nabla_{\lambda_{\text{Lag}}} \mathcal{L}_{\lambda}$
+            \State $\lambda_{\text{Lag}} \gets \max(1\times10^{-6}, \lambda_{\text{Lag}})$
         \EndIf
 
         \State \textbf{// 7. 目标网络软更新}
-        \State $\forall k: \phi'_k \gets \tau \phi_k + (1-\tau)\phi'_k$, $\psi'_k \gets \tau \psi_k + (1-\tau)\psi'_k$
+        \State $\forall k: \phi'_k \gets \tau \phi_k + (1-\tau)\phi'_k$
+        \State $\forall k: \psi'_k \gets \tau \psi_k + (1-\tau)\psi'_k$
     \EndIf
 \EndWhile
 \end{algorithmic}
@@ -408,195 +462,279 @@ J_{\text{pos}}\dot{q} = \dot{x}_d + K_p e + \sigma \cdot \Delta\dot{x}_{\text{RL
 \subsection{实验设置}
 
 \subsubsection{仿真平台}
-基于 MuJoCo 物理引擎和 Panda 7 自由度机械臂模型，使用 Pinocchio 库计算运动学和动力学，控制频率 50~Hz（$\Delta t = 0.02$~s）。
+仿真基于 MuJoCo 物理引擎和 7 自由度空间机械臂模型，运动学和动力学由 Pinocchio 库计算，控制频率 50~Hz（$\Delta t = 0.02$~s）。空间环境模拟微重力条件，忽略重力项 $G(q)=0$。
 
 \subsubsection{对比方法}
 选取以下基线方法：
 
-\textbf{传统方法：}
+\textbf{经典零空间方法：}
 \begin{itemize}
-\item \textbf{NS-Gradient}\cite{khatib1986real}：基于人工势场的零空间控制，通过手工设计势函数梯度 $\dot{q}_0 = -k_0\nabla h(q)$ 在零空间内优化，使用与本文相同的 PD 跟踪控制器作为主任务基准。
-\item \textbf{CHOMP}\cite{chomp2009ratliff}：协变哈密顿量优化轨迹规划，通过最小化平滑代价与障碍代价的泛函生成离线轨迹。
+\item \textbf{Gradient Projection}\cite{khatib1986real}：基于人工势场的零空间控制，$\dot{q}_0 = -k_0\nabla h(q)$，使用PD跟踪控制器作为主任务基准。
+\item \textbf{Weighted Least Norm (WLN)}\cite{chan1995weighted}：加权最小范数法，通过权重矩阵调节关节运动分配。
+\item \textbf{SNS}：Saturation in the Null Space方法，在关节接近限位时主动缩减任务空间速度以规避饱和。
 \end{itemize}
 
-\textbf{零空间策略方法：}
+\textbf{安全控制方法：}
 \begin{itemize}
-\item \textbf{SAC-Nullspace}：零空间策略学习，无物理约束（$\lambda_{\text{dyn}}=0$），无安全评判器。
-\item \textbf{Ours-Physics}：零空间策略 + 力矩约束正则化（$\lambda_{\text{dyn}}=1.0$），无安全评判器。
-\item \textbf{Ours-Relax}：完整方法（含力矩正则化、安全评判器和 Lagrangian 门控主任务松弛）。
+\item \textbf{CBF-QP}\cite{ames2017control}：基于控制障碍函数的二次规划方法，将安全约束编码为CBF条件，通过QP求解最小干预控制输入。使用与本文相同的PD跟踪控制器作为名义控制律。
 \end{itemize}
 
-\subsubsection{测试场景与轨迹设计}
-设计三类具有递进难度的测试场景，所有场景初始关节配置均为 home pose $q_0 = [0, -\pi/4, 0, -3\pi/4, 0, \pi/2, \pi/4]$，每种轨迹重复 100 次测试。
-
-\textbf{场景1：稀疏静态障碍——验证基线跟踪性能。}
+\textbf{纯RL方法：}
 \begin{itemize}
-\item \textbf{轨迹}：60 条直线轨迹，从起点 $p_{\text{start}}$ 沿 $y$ 轴运动至终点 $p_{\text{goal}}$（$x$、$z$ 坐标保持不变），每场景的起止关节构型各不相同。
-\item \textbf{障碍}：静态球形障碍（半径 0.01--0.02~m），紧贴轨迹布置（最小间隙 0.002~m）。场景 $0$--$19$ 含 1 个障碍，$20$--$39$ 含 2 个，$40$--$59$ 含 3 个，要求策略通过零空间自运动主动规避。
-\item \textbf{指标}：任务成功率、末端跟踪误差 RMS、最小障碍距离 $d_{\text{obs}}^{\min}$。
+\item \textbf{SAC-Joint}：标准SAC直接学习7维关节速度控制，无零空间约束。
+\item \textbf{Constrained SAC (CSAC)}\cite{achiam2017constrained}：带安全约束的SAC变体，使用Lagrange乘子约束代价上限。
 \end{itemize}
 
-\textbf{场景2：密集窄通道——考验避障与松弛机制。}
+\textbf{残差强化学习：}
 \begin{itemize}
-\item \textbf{轨迹}：直线运动 $x_{\text{start}} = [0.4, -0.2, 0.4]$~m $\to$ $x_{\text{goal}} = [0.4, 0.2, 0.4]$~m，速度 0.08~m/s。
-\item \textbf{障碍}：14 个静态球形障碍（半径 0.06~m），两排交错排列形成宽度 0.14~m 的狭窄通道，间距 0.10~m。
-\item \textbf{指标}：成功率、最小障碍距离、跟踪误差峰值。
+\item \textbf{SAC-Residual}：在PD跟踪控制器上叠加SAC残差修正项，输出7维关节速度残差 $\Delta\dot{q}_{\text{RL}} \in \mathbb{R}^7$，不区分任务空间和零空间。
 \end{itemize}
 
-\textbf{场景3：动态障碍——检验在线自适应能力。}
+\textbf{消融实验：}
 \begin{itemize}
-\item \textbf{轨迹}：直线运动 $x_{\text{start}} = [0.5, 0.0, 0.5]$~m $\to$ $x_{\text{goal}} = [0.2, 0.0, 0.5]$~m，速度 0.1~m/s。
-\item \textbf{障碍}：3 个运动球形障碍（半径 0.08~m），速度 0.1~m/s 沿 $y$ 向往复运动，轨迹与末端路径交叉。
-\item \textbf{指标}：动态避障成功率、最大跟踪误差、力矩突变次数。
+\item \textbf{Ours-Physics}：完整结构化动作空间 + 力矩约束正则化（$\lambda_{\text{dyn}}=1.0$），不含Lagrangian门控。
+\item \textbf{Ours-Full}：完整方法（含结构化动作空间 + 力矩约束正则化 + Lagrangian门控参考修正）。
+\end{itemize}
+
+\subsubsection{实验场景设计}
+设计6类空间在轨服务场景，难度递进，每类重复100次独立测试。所有场景初始关节配置均为 $q_0 = [0, -\pi/4, 0, -3\pi/4, 0, \pi/2, \pi/4]$。
+
+\paragraph{实验1：自由空间跟踪（Free-space Inspection）。}验证控制器基本跟踪性能。末端执行器沿卫星表面扫描路径运动：
+\begin{itemize}
+\item \textbf{轨迹}：8字形Lemniscate曲线，$y = 0.15\sin(t)$，$z = 0.4 + 0.1\sin(2t)$，$t \in [0, 2\pi]$，周期4~s。
+\item \textbf{障碍}：无障碍物。
+\item \textbf{指标}：跟踪误差RMS、关节速度平滑度、力矩变化率。
+\end{itemize}
+
+\paragraph{实验2：整臂避障（Whole-body Obstacle Avoidance）。}核心实验——验证零空间策略的有效性。扫描轨迹上增加卫星部件障碍：
+\begin{itemize}
+\item \textbf{轨迹}：与实验1相同。
+\item \textbf{障碍}：2个卫星天线模型（圆柱体，$\phi=0.06$~m，高0.15~m）和1个传感器箱体（$0.08\times0.08\times0.10$~m），布置于轨迹附近。
+\item \textbf{指标}：成功率、碰撞率、最小间距 $d_{\text{obs}}^{\min}$、跟踪误差峰值、零空间利用度 $\|N(q)\dot{q}\|$。
+\end{itemize}
+
+\paragraph{实验3：狭小空间操作（Confined-space Inspection）。}论文亮点——模拟太阳翼间或卫星桁架间的受限空间操作：
+\begin{itemize}
+\item \textbf{轨迹}：直线运动 $x_{\text{start}} = [0.4, -0.15, 0.4]$~m $\to$ $x_{\text{goal}} = [0.4, 0.15, 0.4]$~m，速度0.08~m/s。
+\item \textbf{障碍}：上下两块平行平板（模拟太阳翼），间距0.16~m，长度0.30~m；两侧各3个球形障碍（$\phi=0.06$~m）模拟支撑结构。
+\item \textbf{指标}：通过率、碰撞率、最小间距、跟踪误差、参考修正幅度 $\|\Delta\dot{x}_{\text{RL}}\|$。
+\end{itemize}
+
+\paragraph{实验4：狭小空间对接（Docking in Confined Space）。}验证同时维持末端姿态与整臂避障的能力：
+\begin{itemize}
+\item \textbf{轨迹}：直线运动 $x_{\text{start}} = [0.5, 0.0, 0.4]$~m $\to$ $x_{\text{goal}} = [0.3, 0.0, 0.4]$~m，末端保持向下俯仰姿态，速度0.06~m/s。
+\item \textbf{障碍}：卫星主体结构（$0.15\times0.10\times0.20$~m），对接端口周围有传感器阵列（4个小型圆柱体）。
+\item \textbf{指标}：对接成功率、位置误差、姿态误差、碰撞率、力矩变化率。
+\end{itemize}
+
+\paragraph{实验5：动态目标（Dynamic Target）。}验证反应式能力——目标对接端口发生微小漂移或太阳翼缓慢展开：
+\begin{itemize}
+\item \textbf{轨迹}：直线运动至动态对接端口，端口在$y$方向做幅值0.05~m、周期6~s的正弦运动。
+\item \textbf{障碍}：太阳翼结构在5~s内从初始位置旋转15$^\circ$，模拟展开过程。
+\item \textbf{指标}：跟踪误差、恢复时间、成功率、碰撞率。
+\end{itemize}
+
+\paragraph{实验6：泛化能力（Generalization）。}验证策略不是记忆特定障碍布局：
+\begin{itemize}
+\item \textbf{训练}：单个障碍物场景（实验2的简化版）。
+\item \textbf{测试}：3个障碍物场景、不同尺寸卫星模型、不同对接端口位置。
+\item \textbf{指标}：零样本迁移成功率、跟踪误差。
 \end{itemize}
 
 \subsubsection{评价指标}
 \begin{itemize}
-\item \textbf{任务成功率：}100 次独立测试中成功到达目标且全程无碰撞的比例。
-\item \textbf{样本效率：}达到 80\% 成功率所需的环境交互步数（场景2下评估）。
-\item \textbf{末端跟踪误差：}位置误差的 RMS 和峰值。
-\item \textbf{物理可行性：}关节力矩平滑度 $\|\tau_{t+1} - \tau_t\|/\Delta t$。
-\item \textbf{安全性：}全程机械臂与障碍物的最小距离 $d_{\text{obs}}^{\min}$。
+\item \textbf{任务指标：}成功率（100次测试中成功到达目标且无碰撞的比例）、完成时间。
+\item \textbf{跟踪指标：}末端位置误差RMS和峰值、姿态误差（实验4）。
+\item \textbf{安全指标：}碰撞率、最小间距 $d_{\text{obs}}^{\min}$、安全约束违反次数。
+\item \textbf{控制指标：}关节速度平滑度、力矩变化率 $\|\tau_{t+1}-\tau_t\|/\Delta t$、能耗 $\sum\dot{q}_j^2$。
+\item \textbf{冗余利用指标（特色）：}零空间利用度 $\|N(q)\dot{q}\|$（统计策略对零空间的利用程度）、参考修正幅度 $\|\Delta\dot{x}_{\text{RL}}\|$（说明任务参考是否尽量保持）、修正触发频率（证明门控仅在必要时干预）。
 \end{itemize}
 
 \subsubsection{超参数设置}
-所有 RL 方法共享以下超参数：学习率 $3 \times 10^{-4}$（余弦退火至 $3 \times 10^{-5}$），折扣因子 $\gamma=0.99$，批量大小 512，回放缓冲区 $5 \times 10^5$，目标网络软更新系数 $\tau=0.005$。策略网络和价值网络均为 2 层 MLP（隐藏层维度 256），集成评判器 $N=5$。熵系数 $\alpha=0.1$，目标熵 $\bar{\mathcal{H}}=-7$，下限 $\alpha_{\min}=0.02$。Lagrange 乘子 $\lambda_{\text{Lag}}=0.1$，代价上限 $c_{\text{limit}}=0.05$。评判器预热 $N_{\text{warmup}}=5000$。奖励权重：$w_{\text{track}}=12.0$，$w_{\text{obs}}=5.0$，$w_{\text{manip}}=0.05$，$w_{\text{energy}}=0.001$，$w_{\text{collision}}=100.0$，$w_{\text{action}}=0.5$。$d_{\text{safe}}=0.06$~m，$\lambda_{\text{dyn}}=1.0$，每回合最大步数 $T=400$，随机探索步数 $10^4$，路径死区 $d_{\text{deadzone}}=0.20$~m，稀疏成功奖励 $r_{\text{bonus}}=50.0$。
+所有RL方法共享：学习率 $3\times10^{-4}$（余弦退火至$3\times10^{-5}$），$\gamma=0.99$，批量大小512，回放缓冲区$5\times10^5$，$\tau=0.005$。策略/价值网络均为2层MLP（256维），集成评判器$N=5$。熵系数$\alpha=0.1$，目标熵$\bar{\mathcal{H}}=-7$，$\alpha_{\min}=0.02$。Lagrange乘子$\lambda_{\text{Lag}}=0.1$，$c_{\text{limit}}=0.05$。评判器预热$N_{\text{warmup}}=5000$。奖励权重：$w_{\text{track}}=12.0$，$w_{\text{obs}}=5.0$，$w_{\text{manip}}=0.05$，$w_{\text{energy}}=0.001$，$w_{\text{collision}}=100.0$，$w_{\text{action}}=0.5$。$d_{\text{safe}}=0.06$~m，$\lambda_{\text{dyn}}=1.0$，每回合最大步数$T=500$，随机探索步数$10^4$。
 
-\subsection{实验结果}
+\subsection{实验结果与分析}
 
-\subsubsection{成功率对比}
-表\ref{tab:success_rate} 展示了各方法在三类场景下的任务成功率。
+\subsubsection{实验1：基本跟踪性能}
+表\ref{tab:exp1} 报告了各方法在自由空间中的跟踪精度和控制平滑度。
 
 \begin{table}[htbp]
 \centering
-\caption{不同方法在三类场景下的成功率 (\%)}
-\label{tab:success_rate}
+\caption{实验1：自由空间跟踪性能对比}
+\label{tab:exp1}
 \begin{tabular}{lccc}
 \toprule
-方法 & 稀疏静态(场景1) & 密集窄通道(场景2) & 动态障碍(场景3) \\
+方法 & 位置误差RMS (mm) & 力矩变化率 (Nm/s) & 能耗 \\
 \midrule
-NS-Gradient & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
-CHOMP & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
-SAC-Nullspace & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
-Ours-Physics & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
-\textbf{Ours-Relax} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+Gradient Projection & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+WLN & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+SNS & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+CBF-QP & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+SAC-Joint & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+CSAC & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+SAC-Residual & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+\textbf{Ours-Full} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\textbf{预期分析：}
-\begin{itemize}
-\item \textbf{场景1（稀疏）：}所有方法成功率应普遍较高。Ours-Relax 不应低于 SAC-Nullspace——若精度下降，说明松弛机制在非必要区域被误激活。
-\item \textbf{场景2（密集）：}最具区分度的场景。NS-Gradient 因手工势函数易陷入局部最优；CHOMP 缺乏在线重规划；SAC-Nullspace 通过零空间探索应优于前两者但极限场景仍可能碰撞；Ours-Relax 预计达到最高成功率。
-\item \textbf{场景3（动态）：}传统方法和 CHOMP 因缺乏在线自适应能力显著下降。Ours-Relax 通过门控算子的实时响应，预期保持较高的动态避障成功率。
-\end{itemize}
+\textbf{预期分析。}无障碍条件下，所有方法应保持低跟踪误差。经典方法和CBF-QP因结构化的控制律应达到最高精度。Ours-Full的参考修正门控在安全区域（$d_{\text{obs}}\gg d_{\text{safe}}$）应保持$\sigma\to0$，跟踪精度接近纯PD控制器。SAC-Joint和CSAC因在关节空间直接探索可能引入微小振荡。
 
-\subsubsection{训练效率分析}
-\textcolor{red}{[待填：训练收敛曲线图，待实验完成后绘制]}
-
-\begin{itemize}
-\item \textbf{样本效率（场景2下达到 80\% 成功率所需样本数）：}
-  \begin{itemize}
-  \item SAC-Nullspace: \textcolor{red}{[待填]} $\times 10^6$
-  \item Ours-Physics: \textcolor{red}{[待填]} $\times 10^6$
-  \item Ours-Relax: \textcolor{red}{[待填]} $\times 10^6$
-  \end{itemize}
-\item \textbf{收敛稳定性：}\textcolor{red}{[待填]}。预期 SAC-Nullspace 及以上利用零空间约束加速收敛；Ours-Physics 和 Ours-Relax 因力矩正则化进一步稳定训练过程。
-\end{itemize}
-
-\subsubsection{物理可行性验证}
-表\ref{tab:physical_feasibility} 量化了各方法生成轨迹的物理可行性。
+\subsubsection{实验2：整臂避障}
+表\ref{tab:exp2} 报告了各方法的整臂避障性能。
 
 \begin{table}[htbp]
 \centering
-\caption{物理可行性指标对比}
-\label{tab:physical_feasibility}
-\begin{tabular}{lcc}
+\caption{实验2：整臂避障性能对比}
+\label{tab:exp2}
+\begin{tabular}{lcccc}
 \toprule
-方法 & 力矩变化率 (Nm/s) & 最小可操作度 $w_{\min}$ \\
+方法 & 成功率(\%) & 最小间距(cm) & 跟踪误差RMS(mm) & 零空间利用度 \\
 \midrule
-NS-Gradient & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
-CHOMP & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
-SAC-Nullspace & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
-Ours-Physics & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
-\textbf{Ours-Relax} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+Gradient Projection & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+WLN & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+SNS & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+CBF-QP & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+SAC-Joint & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & --- \\
+CSAC & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & --- \\
+SAC-Residual & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+Ours-Physics & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+\textbf{Ours-Full} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=\columnwidth]{fig_physical_feasibility.pdf}
-\caption{物理可行性对比。左：力矩变化率（越低越平滑）；右：最小可操作度 $w_{\min}$（越高越远离奇异位形）。}
-\label{fig:physical_feasibility}
-\end{figure}
+\textbf{预期分析。}Gradient Projection因手工势函数可能在多障碍场景下陷入局部最优。CBF-QP提供安全保证但过于保守，在障碍密集区可能过度减速。SAC-Residual的非结构化残差可能干扰PD跟踪。Ours-Full通过结构化零空间策略在保持跟踪精度的同时实现高效避障，零空间利用度应显著高于经典方法，表明RL策略主动利用冗余自由度。
 
-\textbf{预期分析：}
-\begin{itemize}
-\item \textbf{力矩平滑度：}CHOMP 作为离线优化方法力矩变化率可能最低。Ours-Physics 和 Ours-Relax 通过力矩约束正则化应接近 CHOMP 水平。\item \textbf{奇异性规避：}零空间策略（SAC-Nullspace 及以上）通过在零空间中学习可操作度优化，应保持更高的最小可操作度。\end{itemize}
-
-\subsubsection{安全性分析}
-表\ref{tab:safety} 展示了各方法的最小障碍距离统计。
+\subsubsection{实验3：狭小空间操作}
+表\ref{tab:exp3} 报告了狭小空间下的通过能力。本实验为论文亮点场景。
 
 \begin{table}[htbp]
 \centering
-\caption{安全性指标：最小障碍距离 (m)}
-\label{tab:safety}
+\caption{实验3：狭小空间通过性能对比}
+\label{tab:exp3}
 \begin{tabular}{lccc}
 \toprule
-方法 & 稀疏静态(场景1) & 密集窄通道(场景2) & 动态障碍(场景3) \\
+方法 & 通过率(\%) & 最小间距(cm) & 参考修正幅度 \\
 \midrule
-NS-Gradient & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
-CHOMP & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
-SAC-Nullspace & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+Gradient Projection & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & --- \\
+WLN & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & --- \\
+SNS & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & --- \\
+CBF-QP & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & --- \\
+SAC-Joint & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & --- \\
+CSAC & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & --- \\
+SAC-Residual & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
 Ours-Physics & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
-\textbf{Ours-Relax} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+\textbf{Ours-Full} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsubsection{消融实验分析}
-为验证各模块的贡献度，设计以下消融对比：
+\textbf{预期分析。}本实验是区分方法能力的关键场景。经典方法（GP、WLN）因手工势函数局部极小值在狭小空间中容易卡死。SNS在关节限位处有效但仅处理限位问题。CBF-QP因安全约束的保守性在窄通道中频繁触发干预导致通过率低。SAC-Joint因无结构约束而碰撞率高。Ours-Full通过参考修正与零空间自运动的协同调节，应在保持高通过率的同时最小间距最大。参考修正幅度指标可证明Ours-Full仅在必要时修正跟踪参考。
+
+\subsubsection{实验4：狭小空间对接}
+表\ref{tab:exp4} 报告了对接任务性能。
+
+\begin{table}[htbp]
+\centering
+\caption{实验4：对接任务性能对比}
+\label{tab:exp4}
+\begin{tabular}{lcccc}
+\toprule
+方法 & 成功率(\%) & 位置误差(cm) & 姿态误差($^\circ$) & 碰撞率(\%) \\
+\midrule
+Gradient Projection & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+WLN & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+SNS & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+CBF-QP & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+SAC-Joint & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+CSAC & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+SAC-Residual & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+Ours-Physics & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+\textbf{Ours-Full} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{预期分析。}本实验要求同时维持末端任务（位置+姿态跟踪）与整臂避障。力矩约束正则化确保接近对接端口时关节力矩平滑。Ours-Full应在保持高对接成功率的同时碰撞率最低。
+
+\subsubsection{实验5：动态环境}
+表\ref{tab:exp5} 报告了动态场景下的自适应能力。
+
+\begin{table}[htbp]
+\centering
+\caption{实验5：动态环境性能对比}
+\label{tab:exp5}
+\begin{tabular}{lcccc}
+\toprule
+方法 & 成功率(\%) & 跟踪误差RMS(mm) & 恢复时间(s) & 碰撞率(\%) \\
+\midrule
+Gradient Projection & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+WLN & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+SNS & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+CBF-QP & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+SAC-Joint & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+CSAC & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+SAC-Residual & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+Ours-Physics & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+\textbf{Ours-Full} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{预期分析。}本实验验证反应式控制的本质优势。经典方法因无预测能力，动态场景中性能显著下降。CBF-QP在动态障碍下需频繁求解QP，保守性可能导致任务失败。Ours-Full通过Lagrangian门控的实时响应，应保持最高成功率。恢复时间指标证明策略的在线自适应能力。
+
+\subsubsection{实验6：泛化能力}
+表\ref{tab:exp6} 报告了零样本迁移测试结果。
+
+\begin{table}[htbp]
+\centering
+\caption{实验6：泛化能力测试}
+\label{tab:exp6}
+\begin{tabular}{lccc}
+\toprule
+测试场景 & Ours-Physics (成功率\%) & \textbf{Ours-Full} (成功率\%) & 跟踪误差变化 \\
+\midrule
+3障碍物 & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+大型卫星 & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+不同对接端口 & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} & \textcolor{red}{[待填]} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{预期分析。}Ours-Full的结构化动作空间使策略学到的是零空间利用的通用规则而非特定障碍布局的记忆，因此应展现较强的泛化能力。Ours-Physics缺乏门控机制的适应性，在未见过场景中性能下降更明显。
+
+\subsubsection{消融实验}
+系统消融验证各模块贡献：
 \begin{itemize}
-\item \textbf{物理约束贡献：}SAC-Nullspace vs.\ Ours-Physics——验证力矩约束正则化对训练稳定性和力矩平滑度的影响。
-\item \textbf{主任务松弛贡献：}Ours-Physics vs.\ Ours-Relax——验证 Lagrangian 门控和安全性评判器在密集障碍场景下的安全性提升效果。
+\item \textbf{结构化动作空间贡献}：SAC-Joint vs.\ Ours-Physics——验证零空间投影对末端跟踪保持和探索效率提升的作用。
+\item \textbf{力矩正则化贡献}：Ours-Physics去掉正则化 vs.\ Ours-Physics——验证力矩约束对训练稳定性和力矩平滑度的作用。
+\item \textbf{参考修正贡献}：Ours-Physics vs.\ Ours-Full——验证Lagrangian门控在受限空间中的安全性提升。
 \end{itemize}
-\textcolor{red}{[待填：消融实验定量结果和分析]}
+\textcolor{red}{[待填：消融实验定量结果]}
 
-基于上述消融设计，预期结论如下：
-\begin{itemize}
-\item \textbf{传统方法 vs.\ 零空间策略：}NS-Gradient 在场景1中表现合理，但在场景2中因手工势函数局部最优问题性能显著下降。CHOMP 在静态场景中可达高成功率，但在场景3中因缺乏在线重规划严重受限。这验证了零空间策略方法在复杂和动态环境中的自适应优势。
-
-\item \textbf{力矩正则化贡献：}预期 Ours-Physics 的力矩变化率较 SAC-Nullspace 降低 \textcolor{red}{[待填]}\%。此外，物理约束引导策略远离不可行区域，可能间接提升任务成功率。
-
-\item \textbf{主任务松弛贡献：}预期在场景2中 Ours-Relax 的成功率显著高于 Ours-Physics，同时跟踪误差峰值暂时增大——这是主动松弛换取安全性的直接证据。场景1中两者性能应接近，验证门控在安全区域不产生非必要松弛。
-\end{itemize}
+\textbf{预期结论。}结构化动作空间贡献最大（实验2中成功率提升最显著），力矩正则化在实验4中贡献突出（确保对接过程的力矩平滑），参考修正在实验3中关键（狭小空间通过率提升）。
 
 \subsubsection{超参数敏感性分析}
-分析力矩正则化系数 $\lambda_{\text{dyn}}$ 和松弛临界距离 $d_{\text{critical}}$ 的敏感性。
-
-\textbf{正则化系数 $\lambda_{\text{dyn}}$。}在 $[0.01, 2.0]$ 范围内选取 5 个值。$\lambda_{\text{dyn}}$ 过小（$< 0.1$）时力矩约束效果不足，过大（$> 1.0$）时任务成功率开始下降。建议控制在 $[0.1, 1.0]$ 区间，本文选取 $\lambda_{\text{dyn}}=1.0$ 在安全性和任务成功率之间提供了合理权衡。
-
-\textbf{Lagrangian 门控参数 $\epsilon_{\text{target}}$。}约束违反容忍度在 $[0.01, 0.20]$ 范围内实验。$\epsilon_{\text{target}}$ 过小时门控过于敏感损害跟踪精度；过大时门控响应迟钝增大碰撞风险。本文选取 $\epsilon_{\text{target}}=0.05$ 提供合理平衡。对偶上升步长 $\eta=0.01$ 根据收敛速度和门控平滑性折衷选取。
-
-\textbf{与理论界对照。}根据 ISS 分析，稳态跟踪误差满足 $\limsup\|e(t)\| \leq a_{\max}/k_p$。实验中测量的最大跟踪误差应严格满足该理论界，验证稳定性分析的有效性。
+分析 $\lambda_{\text{dyn}}$ 和 $\epsilon_{\text{target}}$ 的敏感性。$\lambda_{\text{dyn}}$ 在$[0.01,2.0]$范围内实验，过小约束不足、过大影响任务性能，推荐$[0.1,1.0]$。$\epsilon_{\text{target}}$ 在$[0.01,0.20]$范围内，过小门控过敏感、过大响应迟钝，推荐$\epsilon_{\text{target}}=0.05$。根据ISS分析，稳态跟踪误差满足 $\limsup\|e(t)\| \leq a_{\max}/k_p$，实测最大误差应严格满足该理论界。
 
 \section{结论}
 
-本文提出了一种物理信息增强的零空间策略学习方法（Ours-Relax），通过结构化动作空间解耦、力矩约束正则化和 Lagrangian 门控主任务松弛机制，在保证末端跟踪精度的前提下优化冗余机械臂的避障与可操作度性能。主要贡献可归纳为：
+本文提出面向空间在轨服务的反应式冗余分辨控制方法，在强化学习框架中嵌入运动学结构先验和动力学约束。方法通过三个核心机制协同工作：结构化动作空间将策略输出解耦为任务空间参考修正项与零空间自运动项，实现在预设任务轨迹下的整臂避障而无需全局重规划；力矩约束正则化将执行器物理极限直接嵌入策略优化目标；Lagrangian 门控在控制层实现任务参考自适应修正，并具备 ISS 理论保证。在自由空间跟踪、整臂避障、狭小空间操作、对接、动态环境和泛化六类空间场景下验证了方法的有效性。
 
 \begin{itemize}
-\item \textbf{零空间策略学习框架：}将经典零空间控制与深度强化学习有机结合，策略输出零空间内的自运动速度，通过零空间投影保证次任务优化不干扰末端跟踪，从根本上降低了无效探索的维度。
+\item \textbf{零空间策略学习框架：}将经典零空间控制与深度强化学习结合，策略在零空间内输出自运动速度，由零空间投影保证次任务优化不干扰末端跟踪，压缩了无效探索维度。
 
-\item \textbf{力矩约束正则化：}利用可微的关节力矩限幅损失将物理约束直接嵌入策略优化目标，在保持端到端可训练性的前提下引导策略产生力矩平滑、物理可行的轨迹，显著提升训练稳定性。
+\item \textbf{力矩约束正则化：}通过可微关节力矩限幅损失将物理约束嵌入策略优化，在保持端到端可训练性的前提下引导策略产出力矩平滑、物理可行的轨迹。
 
-\item \textbf{主任务松弛机制：}设计在线对偶上升的 Lagrangian 门控算子，在控制层实现危险情况下的优先级切换，并给出基于输入-状态稳定性的理论保证。任务优先级的动态调整在控制层独立完成，无需修改奖励函数结构。
+\item \textbf{任务参考自适应修正：}基于在线对偶上升的 Lagrangian 门控在控制层实现危险情况下的优先级在线调节，任务优先级的动态调整不依赖奖励函数的权重调节。输入-状态稳定性分析给出了跟踪误差的有界性保证。
 \end{itemize}
 
-\textcolor{red}{[待填：实验结果总结，如"在稀疏静态、密集窄通道和动态障碍三类场景中，完整方法 (Ours-Relax) 成功率达到 XX\%、XX\% 和 XX\%，相比最优基线分别提升 XX\%、XX\% 和 XX\%"]}
+\textcolor{red}{[待填：实验结果总结，如"在六类空间场景中，完整方法 (Ours-Full) 在整臂避障场景成功率达到 XX\%，狭小空间通过率 XX\%，对接成功率 XX\%，相比最优基线分别提升 XX\%"]}
 
-未来工作包括：（1）在真实 Franka Panda 机械臂平台上验证硬件鲁棒性，特别是动力学模型标定误差对力矩正则化的影响；（2）将方法扩展到包含更多动态障碍物的复杂非结构化环境；（3）引入视觉感知模块实现端到端感知-控制闭环；（4）探索更紧凑的零空间动作表示（如流形参数替代 $\mathbb{R}^{n-3}$ 线性系数），进一步提升学习效率和策略可解释性。
+未来工作包括：（1）在硬件在环仿真平台验证算法的实时性，重点考察空间环境中的通信延迟对反应式控制的影响；（2）将方法扩展至多机械臂协同在轨操作场景；（3）引入视觉感知模块，构建卫星表面在线检测与避障闭环；（4）探索更紧凑的零空间动作表示（如流形参数替代$\mathbb{R}^{n-3}$线性系数）以提升学习效率。
 
 \bibliography{books}
 
 \end{document}
+
