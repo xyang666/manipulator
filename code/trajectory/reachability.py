@@ -8,6 +8,10 @@ by randomly sampling joint configurations and recording end-effector positions.
 
 Usage:
     python -m trajectory.reachability --samples 100000 --resolution 50
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import numpy as np

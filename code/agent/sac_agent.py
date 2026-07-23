@@ -8,6 +8,9 @@ Key modification over standard SAC:
 
 where L_dyn penalizes torques that exceed joint limits.
 
+Author: xie yang
+Date:   2025-06
+
 References:
     Haarnoja et al., "Soft Actor-Critic Algorithms and Applications", 2018
 """

@@ -4,6 +4,10 @@ sdf.py
 Obstacle signed distance field using spherical obstacle primitives.
 Obstacles are represented as spheres; manipulator links are modeled as capsules.
 Distance computation: capsule-to-sphere using geometric primitives.
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import numpy as np

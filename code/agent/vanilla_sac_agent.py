@@ -5,6 +5,9 @@ Standard Soft Actor-Critic (SAC) agent with simple MLP actor/critic.
 No physics-informed decomposition, no task/nullspace action split,
 no physics regularization.
 
+Author: xie yang
+Date:   2025-06
+
 This serves as a baseline comparison for the physics-informed SAC agent.
 
 Reference:
@@ -185,11 +188,21 @@ class VanillaSACAgent:
             return mean.squeeze(0).cpu().numpy()
         return action.squeeze(0).cpu().numpy()
 
+    @torch.no_grad()
+    def select_action_batch(self, states: np.ndarray,
+                            deterministic: bool = False) -> np.ndarray:
+        """Select actions for parallel environments in one actor forward pass."""
+        normalized = self.obs_normalizer.normalize(states)
+        tensor = torch.as_tensor(normalized, dtype=torch.float32, device=self.device)
+        actions, _, means = self.actor.sample(tensor)
+        selected = means if deterministic else actions
+        return selected.cpu().numpy()
+
     # ------------------------------------------------------------------
     # Training step
     # ------------------------------------------------------------------
 
-    def update(self, batch: dict, batch_size: int = 256):
+    def update(self, batch: dict, batch_size: int = 256, is_last: bool = True):
         """
         One gradient update step from a sampled batch.
 
@@ -256,12 +269,14 @@ class VanillaSACAgent:
             self.actor_scheduler.step()
             self.critic_scheduler.step()
 
-        return {
+        losses = {
             "critic_loss": critic_loss.item(),
             "actor_rl_loss": actor_rl_loss.item() if not doing_warmup else 0.0,
             "actor_loss": actor_loss.item() if not doing_warmup else 0.0,
             "alpha": self.alpha,
         }
+        td_errors = np.ones(len(batch["reward"]), dtype=np.float32)
+        return losses, td_errors
 
     # ------------------------------------------------------------------
     # Save / Load
@@ -280,7 +295,7 @@ class VanillaSACAgent:
         }, path)
 
     def load(self, path: str, load_optimizers: bool = True,
-             reset_alpha: bool = False) -> dict:
+             reset_alpha: bool = False, **_unused) -> dict:
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
         self.actor.load_state_dict(ckpt["actor"])
         self.critic.load_state_dict(ckpt["critic"])
@@ -341,7 +356,7 @@ if __name__ == "__main__":
         "reward":    np.random.randn(32).astype(np.float32),
         "done":      np.zeros(32, dtype=np.float32),
     }
-    losses = agent.update(batch)
+    losses, _ = agent.update(batch)
     print(f"update: critic_loss={losses['critic_loss']:.6f}, "
           f"actor_loss={losses['actor_rl_loss']:.6f}, "
           f"alpha={losses['alpha']:.4f}")

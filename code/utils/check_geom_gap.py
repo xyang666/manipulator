@@ -8,6 +8,10 @@ For each link, at a given joint configuration:
 
 Usage:
     code/.venv/bin/python code/utils/check_geom_gap.py
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import numpy as np

@@ -17,7 +17,11 @@
       "Bash(awk -F',' '{print NR, $2, $3, $4, $8, $9, $12, $21}')",
       "Bash(sort -t= -k2 -n)",
       "Bash(awk -F',' 'NR==1 || \\($2>=2036 && $2<=2050\\)' /root/autodl-tmp/stage3/training_log.csv)",
-      "Bash(awk -F',' '{if\\(NR==1\\) printf \"%-8s %-8s %-10s %-12s %-12s %-10s %-10s %-10s %-8s\\\\n\", \"ep\",\"step\",\"reward\",\"critic\",\"safety_c\",\"actor\",\"physics\",\"alpha\",\"lag\"; else printf \"%-8s %-8s %-10.2f %-12.2f %-12.6f %-10.4f %-10.2f %-10.6f %-8.6f\\\\n\", $2, $3, $4, $14, $15, $16, $17, $20, $21}')"
+      "Bash(awk -F',' '{if\\(NR==1\\) printf \"%-8s %-8s %-10s %-12s %-12s %-10s %-10s %-10s %-8s\\\\n\", \"ep\",\"step\",\"reward\",\"critic\",\"safety_c\",\"actor\",\"physics\",\"alpha\",\"lag\"; else printf \"%-8s %-8s %-10.2f %-12.2f %-12.6f %-10.4f %-10.2f %-10.6f %-8.6f\\\\n\", $2, $3, $4, $14, $15, $16, $17, $20, $21}')",
+      "Bash(sed -i 's/Author: RSEI Lab/Author: xie yang/g' code/agent/*.py)"
+    ],
+    "additionalDirectories": [
+      "/home/merlin/manipulator/code/agent"
     ]
   }
 }

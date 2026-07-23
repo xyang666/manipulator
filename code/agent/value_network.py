@@ -3,6 +3,9 @@ value_network.py
 ----------------
 Single-head value network V(s) for PPO.
 Returns a scalar value estimate for a given state.
+
+Author: xie yang
+Date:   2025-06
 """
 
 import torch

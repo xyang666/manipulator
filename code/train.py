@@ -13,6 +13,10 @@ Usage:
 
     # Render mode (single env):
     python train.py --render --steps 10000 --n_envs 1
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import json
@@ -29,11 +33,15 @@ sys.path.insert(0, os.path.dirname(__file__))
 from env.manipulator_env import ManipulatorEnv
 from env.dynamics import ManipulatorDynamics
 from agent.sac_agent import SACAgent
+from agent.vanilla_sac_agent import VanillaSACAgent
+from env.vanilla_env import VanillaEnv
+from env.residual_env import ResidualEnv
 from utils.replay_buffer import ReplayBuffer
 from utils.logger import (TrainingLogger, REWARD_HEADER, REWARD_FORMAT,
                            reward_accumulators, accumulate_rewards,
                            avg_rewards, reward_print_values)
 from utils.validation import ValidationSet, evaluate_on_validation_set
+from experiment_config import ALGORITHM, ENVIRONMENT
 
 
 # ========================================================================
@@ -45,19 +53,20 @@ def parse_args():
 
     # --- SAC training ---
     p.add_argument("--steps",        type=int,   default=500_000)
-    p.add_argument("--batch_size",   type=int,   default=1024)
-    p.add_argument("--start_steps",  type=int,   default=10_000)
+    p.add_argument("--batch_size",   type=int,   default=ALGORITHM.batch_size)
+    p.add_argument("--start_steps",  type=int,   default=ALGORITHM.start_steps)
     p.add_argument("--grad_steps",   type=int,   default=2)
     p.add_argument("--update_every", type=int,   default=1)
-    p.add_argument("--buffer_size",  type=int,   default=500_000)
+    p.add_argument("--buffer_size",  type=int,   default=ALGORITHM.replay_size)
     p.add_argument("--n_envs",       type=int,   default=16)
-    p.add_argument("--episode_len",  type=int,   default=100)
+    p.add_argument("--episode_len",  type=int,   default=ENVIRONMENT.episode_len)
+    p.add_argument("--seed",         type=int,   default=11)
 
     # --- Policy / action ---
-    p.add_argument("--task_scale",       type=float, default=1.0)
-    p.add_argument("--nullspace_scale",  type=float, default=0.5)
+    p.add_argument("--task_scale",       type=float, default=ALGORITHM.task_scale)
+    p.add_argument("--nullspace_scale",  type=float, default=ALGORITHM.nullspace_scale)
     p.add_argument("--hidden_dims",      type=str,   default="256,256")
-    p.add_argument("--n_critics",        type=int,   default=2)
+    p.add_argument("--n_critics",        type=int,   default=ALGORITHM.n_critics)
     p.add_argument("--backbone",         type=str,   default="mlp", choices=["mlp", "transformer"])
     p.add_argument("--frame_stack",      type=int,   default=1)
     p.add_argument("--action_horizon",   type=int,   default=1)
@@ -69,31 +78,34 @@ def parse_args():
     p.add_argument("--use_cbf",          action="store_true")
     p.add_argument("--cbf_alpha",        type=float, default=1.0)
     p.add_argument("--no_safety_critic", action="store_true")
+    p.add_argument("--disable_gate", action="store_true")
+    p.add_argument("--agent_type", choices=["structured", "joint", "residual"],
+                   default="structured")
 
     # --- Physics regularization ---
-    p.add_argument("--lambda_dyn",  type=float, default=1.0)
+    p.add_argument("--lambda_dyn",  type=float, default=ALGORITHM.lambda_dyn)
 
     # --- Learning ---
-    p.add_argument("--lr",            type=float, default=3e-4)
-    p.add_argument("--tau",           type=float, default=0.005)
-    p.add_argument("--alpha",         type=float, default=0.1)
+    p.add_argument("--lr",            type=float, default=ALGORITHM.learning_rate)
+    p.add_argument("--tau",           type=float, default=ALGORITHM.tau)
+    p.add_argument("--alpha",         type=float, default=ALGORITHM.alpha)
     p.add_argument("--target_entropy",type=float, default=None)
     p.add_argument("--critic_warmup", type=int,   default=5000)
-    p.add_argument("--lr_lag",        type=float, default=0.01)
+    p.add_argument("--lr_lag",        type=float, default=ALGORITHM.lagrange_learning_rate)
     p.add_argument("--lag_target",    type=float, default=0.05)
-    p.add_argument("--cost_limit",    type=float, default=0.05)
+    p.add_argument("--cost_limit",    type=float, default=ALGORITHM.cost_limit)
     p.add_argument("--cost_scale",    type=float, default=1.0)
 
     # --- Reward ---
-    p.add_argument("--w_track",      type=float, default=1.0)
-    p.add_argument("--w_obs",        type=float, default=5.0)
-    p.add_argument("--w_collision",  type=float, default=100.0)
-    p.add_argument("--w_manip",      type=float, default=0.05)
-    p.add_argument("--w_energy",     type=float, default=0.001)
-    p.add_argument("--w_action",     type=float, default=0.5)
+    p.add_argument("--w_track",      type=float, default=ENVIRONMENT.w_track)
+    p.add_argument("--w_obs",        type=float, default=ENVIRONMENT.w_obs)
+    p.add_argument("--w_collision",  type=float, default=ENVIRONMENT.w_collision)
+    p.add_argument("--w_manip",      type=float, default=ENVIRONMENT.w_manip)
+    p.add_argument("--w_energy",     type=float, default=ENVIRONMENT.w_energy)
+    p.add_argument("--w_action",     type=float, default=ENVIRONMENT.w_action)
     p.add_argument("--w_null",       type=float, default=0.0)
-    p.add_argument("--d_safe",       type=float, default=0.06)
-    p.add_argument("--success_bonus",type=float, default=50.0)
+    p.add_argument("--d_safe",       type=float, default=ENVIRONMENT.d_safe)
+    p.add_argument("--success_bonus",type=float, default=ENVIRONMENT.success_bonus)
     p.add_argument("--reward_min",   type=float, default=None)
     p.add_argument("--reward_scale", type=float, default=1.0)
     p.add_argument("--path_deadzone",type=float, default=0.20)
@@ -208,11 +220,26 @@ def make_env_kwargs(args, n_obs, obs_waypoint_steps):
         reward_min=args.reward_min,
         reward_scale=args.reward_scale,
         use_cbf=args.use_cbf, cbf_alpha=args.cbf_alpha,
+        gate_enabled=not args.disable_gate,
     )
 
 
 def setup_agent_and_buffer(args, state_dim, action_dim, dyn, ref_env, device):
     """Create SACAgent and ReplayBuffer."""
+    if args.agent_type != "structured":
+        agent = VanillaSACAgent(
+            state_dim=state_dim, action_dim=action_dim,
+            hidden_dims=args.hidden_dims, lr=args.lr, alpha=args.alpha,
+            tau=args.tau, device=device,
+            critic_warmup=max(1, args.critic_warmup // args.n_envs),
+            total_steps=args.steps, n_critics=2,
+        )
+        if args.per:
+            from utils.replay_buffer import PrioritizedReplayBuffer
+            buffer = PrioritizedReplayBuffer(args.buffer_size, state_dim, action_dim)
+        else:
+            buffer = ReplayBuffer(args.buffer_size, state_dim, action_dim)
+        return agent, buffer
     single_dim = getattr(ref_env, '_single_obs_dim', state_dim)
     agent = SACAgent(
         state_dim=state_dim, action_dim=action_dim, dynamics=dyn,
@@ -344,9 +371,13 @@ def _run_render_loop(agent, env, buffer, args, hyperparams, logger, val_set,
 
         while not done:
             if total_steps < args.start_steps:
-                a_task = np.random.uniform(-args.task_scale, args.task_scale, 3)
-                a_null = np.random.uniform(-args.nullspace_scale, args.nullspace_scale, env.n - 3)
-                action = np.concatenate([a_task, a_null])
+                if args.agent_type == "structured":
+                    a_task = np.random.uniform(-args.task_scale, args.task_scale, 3)
+                    a_null = np.random.uniform(
+                        -args.nullspace_scale, args.nullspace_scale, env.n - 3)
+                    action = np.concatenate([a_task, a_null])
+                else:
+                    action = np.random.uniform(-2.175, 2.175, env.n)
             else:
                 action = agent.select_action(obs)
 
@@ -489,11 +520,16 @@ def _train_sac_parallel(agent, buffer, pool, ref_env, args, hyperparams, logger,
 
         # Collect actions for all envs in parallel (batched)
         if total_steps < args.start_steps:
-            actions = np.zeros((n_envs, ref_env.act_dim), dtype=np.float32)
-            actions[:, 3:] = np.random.uniform(
-                -args.nullspace_scale, args.nullspace_scale,
-                (n_envs, ref_env.n - 3)
-            )
+            if args.agent_type == "structured":
+                actions = np.zeros((n_envs, ref_env.act_dim), dtype=np.float32)
+                actions[:, 3:] = np.random.uniform(
+                    -args.nullspace_scale, args.nullspace_scale,
+                    (n_envs, ref_env.n - 3)
+                )
+            else:
+                actions = np.random.uniform(
+                    -2.175, 2.175, (n_envs, ref_env.act_dim)
+                ).astype(np.float32)
         else:
             actions = agent.select_action_batch(obs)
 
@@ -653,6 +689,11 @@ def _train_sac_parallel(agent, buffer, pool, ref_env, args, hyperparams, logger,
 def main():
     args = parse_args()
 
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+
     # Parse hidden_dims
     if hasattr(args, 'hidden_dims') and args.hidden_dims:
         args.hidden_dims = [int(x) for x in args.hidden_dims.replace(' ', '').split(',')]
@@ -668,7 +709,12 @@ def main():
 
     # ---- Environment ----
     env_kwargs = make_env_kwargs(args, n_obs, obs_waypoint_steps)
-    ref_env = ManipulatorEnv(**env_kwargs)
+    env_class = {
+        "structured": ManipulatorEnv,
+        "joint": VanillaEnv,
+        "residual": ResidualEnv,
+    }[args.agent_type]
+    ref_env = env_class(**env_kwargs)
     state_dim = ref_env.obs_dim
     action_dim = ref_env.act_dim
 
@@ -723,7 +769,7 @@ def main():
     # ---- Launch training ----
     if args.render or args.n_envs <= 1:
         # ---- Single-env mode (render or single-process debug) ----
-        env = ManipulatorEnv(**env_kwargs)
+        env = env_class(**env_kwargs)
         if scene_data is not None:
             vs, scenes = scene_data
             if args.scene_id >= 0:
@@ -747,7 +793,7 @@ def main():
         from utils.parallel_env import ParallelEnvPool
 
         def _create_env():
-            e = ManipulatorEnv(**env_kwargs)
+            e = env_class(**env_kwargs)
             if scene_data is not None:
                 vs, scenes = scene_data
                 if args.scene_id >= 0:
@@ -802,7 +848,7 @@ def main():
                     e.reset = _reset
             return e
 
-        pool = ParallelEnvPool(args.n_envs, _create_env)
+        pool = ParallelEnvPool(args.n_envs, _create_env, base_seed=args.seed)
         print(f"[train] Parallel mode: {args.n_envs} env workers")
 
         # Override total_steps/episode from resume (may differ from scratch)

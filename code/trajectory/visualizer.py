@@ -12,6 +12,10 @@ Displays:
 Usage:
     python -m trajectory.visualizer --input trajectories.json --scene_id 0
     python -m trajectory.visualizer --input trajectories.json --random 5
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import numpy as np

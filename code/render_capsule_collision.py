@@ -1,5 +1,10 @@
 """
+render_capsule_collision.py
+---------------------------
 Launch MuJoCo viewer highlighting Link1 (red) and Link3 (blue) capsule collision.
+
+Author: xie yang
+Date:   2025-06
 """
 import sys, json, time, numpy as np
 from pathlib import Path

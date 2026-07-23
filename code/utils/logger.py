@@ -5,6 +5,10 @@ Training data logger for physics-informed SAC.
 
 Writes one CSV row per environment step and manages timestamped
 checkpoint directories for paper-quality experiment logging.
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import csv

@@ -5,6 +5,9 @@ Model Predictive Control (MPC) for manipulator trajectory tracking.
 
 Uses linearized dynamics and quadratic programming to optimize control inputs
 over a prediction horizon while respecting constraints.
+
+Author: xie yang
+Date:   2025-06
 """
 
 import numpy as np

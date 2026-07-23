@@ -3,6 +3,10 @@ generate_mpc_data.py
 --------------------
 Run MPC on a scene and collect (obs, action_rl) pairs for BC pretraining.
 Maps MPC's dq_cmd to the RL action format [delta_x_rl(3), z(4)].
+
+Author: xie yang
+Date:   2025-06
+
 """
 import numpy as np
 import argparse

@@ -22,6 +22,10 @@ Output format (JSON):
 
 Usage:
     python -m trajectory.generator --num_scenes 100 --num_obstacles 5 --output trajectories.json
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import numpy as np

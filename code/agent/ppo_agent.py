@@ -13,6 +13,9 @@ Key differences from SACAgent:
   - Clipped surrogate objective for policy update
   - Multi-epoch mini-batch updates per rollout
 
+Author: xie yang
+Date:   2025-06
+
 Reference:
     Schulman et al., "Proximal Policy Optimization Algorithms", 2017
 """

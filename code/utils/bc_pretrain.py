@@ -4,6 +4,10 @@ bc_pretrain.py
 BC pretraining: train the SAC PhysicsInformedActor to match MPC expert actions.
 Directly trains the actor with MSE loss on tanh(mean) output.
 Saves a checkpoint compatible with --resume --reset_critic --reset_alpha.
+
+Author: xie yang
+Date:   2025-06
+
 """
 import numpy as np
 import torch

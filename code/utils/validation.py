@@ -4,6 +4,10 @@ validation.py
 Validation utilities for evaluating trained agents on fixed test scenes.
 
 Loads scenes from trajectories.json and evaluates agent performance.
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import json

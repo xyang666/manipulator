@@ -8,6 +8,10 @@ Uses MuJoCo's native collision detection engine to compute:
   - Self-collisions: robot links vs other robot links
 
 Returns penetration depth and contact information for loss computation.
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import numpy as np

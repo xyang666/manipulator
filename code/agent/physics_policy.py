@@ -12,6 +12,8 @@ Differentiable physics regularization (Plan B):
     Reconstructs dq_cmd from action analytically using stored Jacobian,
     then penalizes torque limit violations via Pinocchio dynamics (M(q)·ddq + h(q,dq)).
 
+Author: xie yang
+Date:   2025-06
 Architecture:
     Input:  state s_t = [q, dq, x_ee, x_d, dx_d, d_obs, w(q)]  (dim=state_dim=25)
     Hidden: MLP with tanh activations

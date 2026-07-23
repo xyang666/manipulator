@@ -8,6 +8,10 @@ Usage:
     from planner.rrt_star import RRTStar
     planner = RRTStar(kin=kin, q_min=q_min, q_max=q_max, obstacles=obs)
     path, time_s, n_nodes = planner.plan(start_q, goal_q)
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import numpy as np

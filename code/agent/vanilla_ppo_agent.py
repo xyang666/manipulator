@@ -8,6 +8,9 @@ This serves as a baseline comparison for the physics-informed PPO agent.
 
 Reference:
     Schulman et al., "Proximal Policy Optimization Algorithms", 2017
+
+    Author: xie yang
+    Date:   2025-06
 """
 
 import numpy as np

@@ -10,6 +10,10 @@ Action: 7D joint velocities [dq_1, ..., dq_7] in rad/s, clipped to
 
 This is the environment used by the VanillaSACAgent baseline.
 Reference: Haarnoja et al., "Soft Actor-Critic", 2018
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import numpy as np

@@ -4,6 +4,10 @@ replay_buffer.py
 Experience replay buffer for SAC.
 Supports both uniform sampling (ReplayBuffer) and
 prioritized experience replay (PrioritizedReplayBuffer).
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import numpy as np

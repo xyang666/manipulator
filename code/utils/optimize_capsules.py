@@ -4,6 +4,10 @@ Outputs optimized collision_specs for kinematics.py.
 
 Usage:
     code/.venv/bin/python code/utils/optimize_capsules.py
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import numpy as np

@@ -13,6 +13,10 @@ Usage:
 
     # Load actor from SAC checkpoint:
     python train_ppo.py --load_sac_actor checkpoints/sac_run/ckpt_best.pt ...
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import json

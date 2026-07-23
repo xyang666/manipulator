@@ -2,7 +2,7 @@
 manipulator_env.py
 ------------------
 MuJoCo-based 7-DOF manipulator environment with:
-  - 10D action space: [Δẋ_RL (3), dq0 (7)] — task relaxation + null-space self-motion
+  - 7D action space: [Δẋ_RL (3), z (4)] — task relaxation + null-space coordinates
   - Dense reward combining tracking, obstacle avoidance, manipulability, energy
   - Signed distance field (simplified sphere model) for obstacle detection
   - Tracking-error-driven path progression (parameterized by s ∈ [0,1])
@@ -11,10 +11,13 @@ Observation space:
     s = [q (7), dq (7), x_ee (3), x_d (3), capsule_dists, self_dists, scene_embed, waypoints, path_progress, sigma]
 
 Action space (paper, Route A — position-only):
-    a = [Δẋ_RL ∈ R^3, dq0 ∈ R^7]  dim=10
-    Control law: q̇ = J⁺(ẋ_d + Kp(x_d - x) + diag(σ)·Δẋ_RL) + N(q)dq0
+    a = [Δẋ_RL ∈ R^3, z ∈ R^4]  dim=7
+    Control law: q̇ = J⁺(ẋ_d + Kp(x_d - x) + σ·Δẋ_RL) + B(q)z
     Gate operator diag(σ): scaled by d_obs (σ→0 when safe, σ→1 when dangerous)
     Uses position-only Jacobian J_pos ∈ ℝ³ˣ⁷ → null-space dimension = 4.
+
+Author: xie yang
+Date:   2025-06
 """
 
 import numpy as np
@@ -36,6 +39,7 @@ from utils.sdf import ObstacleSDF
 from utils.collision import CollisionDetector
 from utils.cbf import CBFController
 from trajectory.generator import TrajectoryGenerator
+from experiment_config import ENVIRONMENT
 
 try:
     from control.mpc_controller import MPCController
@@ -61,8 +65,8 @@ class ManipulatorEnv:
                  urdf_path: Optional[str] = None,
                  xml_path: Optional[str] = None,
                  n_joints: int = 7,
-                 dt: float = 0.02,
-                 episode_len: int = 200,
+                 dt: float = ENVIRONMENT.dt,
+                 episode_len: int = ENVIRONMENT.episode_len,
                  n_obstacles: int = 3,
                  obs_radius: float = 0.1,
                  controller: str = "rl",
@@ -71,21 +75,22 @@ class ManipulatorEnv:
                  manipulability_threshold: float = 0.01,
                  collision_term: bool = True,
                  path_deadzone: float = 0.20,
-                 w_obs: float = 1.0,
-                 w_collision: float = 100.0,
-                 w_track: float = 12.0,
-                 w_manip: float = 0.05,
-                 w_energy: float = 0.001,
-                 w_action: float = 0.5,
+                 w_obs: float = ENVIRONMENT.w_obs,
+                 w_collision: float = ENVIRONMENT.w_collision,
+                 w_track: float = ENVIRONMENT.w_track,
+                 w_manip: float = ENVIRONMENT.w_manip,
+                 w_energy: float = ENVIRONMENT.w_energy,
+                 w_action: float = ENVIRONMENT.w_action,
                  w_null: float = 0.0,
-                 d_safe: float = 0.06,
+                 d_safe: float = ENVIRONMENT.d_safe,
                  use_cbf: bool = False,
                  cbf_alpha: float = 1.0,
-                 success_bonus: float = 50.0,
+                 success_bonus: float = ENVIRONMENT.success_bonus,
                  reward_min: Optional[float] = None,
                  reward_scale: float = 1.0,
                  lr_lag: float = 0.01,
                  lag_target: float = 0.05,
+                 gate_enabled: bool = True,
                  obs_waypoint_steps: list | None = None,
                  obs_scene_embed: int = 0,
                  frame_stack: int = 1):
@@ -110,6 +115,7 @@ class ManipulatorEnv:
         self.collision_term = collision_term
         self.path_deadzone = path_deadzone
         self.frame_stack = frame_stack
+        self.gate_enabled = gate_enabled
 
         # Observation dimensions
         self.obs_waypoint_steps = obs_waypoint_steps or []
@@ -298,14 +304,19 @@ class ManipulatorEnv:
         """
         Parameters
         ----------
-        action : 10D action [Δẋ_RL (3), dq0 (7)]
+        action : 7D action [Δẋ_RL (3), z (4)]
                  Δẋ_RL: position-space relaxation velocity (gated by d_obs)
-                 dq0  : null-space self-motion velocity
+                 z     : coordinates in the position-Jacobian null-space basis
 
         Returns
         -------
         obs, reward, done, info
         """
+        action = np.asarray(action, dtype=float)
+        if action.shape != (self.act_dim,):
+            raise ValueError(
+                f"expected action shape {(self.act_dim,)}, got {action.shape}"
+            )
         if self.controller == "mpc" and self.mpc is not None:
             # MPC mode: directly optimize task-space tracking with obstacle avoidance
             dq_cmd = self.mpc.compute_control_task_space(
@@ -332,7 +343,9 @@ class ManipulatorEnv:
             # sigma = clip(λ, 0, 1) gates RL vs tracking control.
             # sigma_override bypasses the gate (used for random exploration in start_steps)
             sigma_ov = getattr(self, 'sigma_override', None)
-            if sigma_ov is not None:
+            if not self.gate_enabled:
+                sigma = 0.0
+            elif sigma_ov is not None:
                 sigma = float(sigma_ov)
             else:
                 # Compute current d_obs for constraint violation (before integration)
@@ -921,6 +934,21 @@ class ManipulatorEnv:
             gid = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_GEOM, f"obs{i}")
             if gid >= 0:
                 self.mj_model.geom_size[gid, 0] = self.sdf.radii[i]
+
+        # Move unused model obstacles out of the workspace. The XML contains a
+        # fixed maximum number, while phase-one scenarios use different counts.
+        i = self.sdf.n_obs
+        while True:
+            bid = mujoco.mj_name2id(
+                self.mj_model, mujoco.mjtObj.mjOBJ_BODY, f"obstacle{i}"
+            )
+            if bid < 0:
+                break
+            mocap_id = self.mj_model.body_mocapid[bid]
+            if mocap_id >= 0:
+                self.mj_data.mocap_pos[mocap_id] = np.array([10.0 + i, 10.0, 10.0])
+            i += 1
+        mujoco.mj_forward(self.mj_model, self.mj_data)
 
     def _compute_task_velocity(self) -> np.ndarray:
         """

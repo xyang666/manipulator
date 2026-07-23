@@ -7,6 +7,9 @@ Encoder-decoder architecture:
   - Encoder: TransformerEncoder over K history frames
   - Decoder: TransformerDecoder with H learnable query tokens → H action steps
   - Only a_0 receives RL gradient; positions 1..H-1 get L2 smoothness regularization
+
+    Author: xie yang
+    Date:   2025-06
 """
 
 import math

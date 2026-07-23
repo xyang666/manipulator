@@ -15,6 +15,9 @@ Usage:
     J    = kin.jacobian(q)
     N    = kin.null_space_projector(q)
     q    = kin.inverse_kinematics(x_target)
+
+Author: xie yang
+Date:   2025-06
 """
 
 import numpy as np

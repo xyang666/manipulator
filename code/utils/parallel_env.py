@@ -10,6 +10,10 @@ Usage:
     obss = pool.reset_all()                     # [n, obs_dim]
     result = pool.step_all(actions)             # actions: [n, act_dim]
     obss = result["obs"]                        # auto-reset if done
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import multiprocessing as mp
@@ -21,7 +25,7 @@ from typing import Callable
 class ParallelEnvPool:
     """N environment workers in separate processes, stepped in parallel."""
 
-    def __init__(self, n_envs: int, env_creator: Callable):
+    def __init__(self, n_envs: int, env_creator: Callable, base_seed: int = 0):
         self.n_envs = n_envs
         self._pipes: list[Connection] = []
         self._workers: list[mp.Process] = []
@@ -29,7 +33,8 @@ class ParallelEnvPool:
         ctx = mp.get_context("fork")
         for i in range(n_envs):
             parent_conn, child_conn = ctx.Pipe()
-            p = ctx.Process(target=_worker_loop, args=(child_conn, env_creator, i))
+            p = ctx.Process(target=_worker_loop,
+                            args=(child_conn, env_creator, i, base_seed))
             p.start()
             child_conn.close()
             self._pipes.append(parent_conn)
@@ -111,7 +116,8 @@ class ParallelEnvPool:
         return out
 
 
-def _worker_loop(pipe: Connection, env_creator: Callable, worker_id: int = 0):
+def _worker_loop(pipe: Connection, env_creator: Callable, worker_id: int = 0,
+                 base_seed: int = 0):
     """Worker process: owns one env, responds to parent commands."""
     import os
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -119,7 +125,7 @@ def _worker_loop(pipe: Connection, env_creator: Callable, worker_id: int = 0):
     # Seed RNG uniquely per worker to avoid synchronized scene sampling
     # when using fork (all workers inherit the same parent RNG state).
     import numpy as np
-    np.random.seed((worker_id * 9973 + 42) & 0xFFFFFFFF)
+    np.random.seed((base_seed + worker_id * 9973) & 0xFFFFFFFF)
 
     env = env_creator()
 

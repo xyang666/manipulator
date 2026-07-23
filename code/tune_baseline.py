@@ -6,6 +6,10 @@ Uses grid search to optimize tracking performance.
 
 Usage:
     python tune_baseline.py [--steps 500] [--trials 20]
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import numpy as np

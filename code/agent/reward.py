@@ -9,6 +9,9 @@ Multi-component reward function:
   r_manip     : manipulability bonus (encourage non-singular configs)
   r_energy    : energy penalty (penalize large joint velocities)
   r_collision : MuJoCo collision penalty
+
+    Author: xie yang
+    Date:   2025-06
 """
 
 import numpy as np

@@ -6,6 +6,10 @@ Green capsules = safe, Red capsules = colliding.
 
 Usage:
     code/.venv/bin/python code/test_capsule_collision.py
+
+Author: xie yang
+Date:   2025-06
+
 """
 import sys, json, time, numpy as np
 from pathlib import Path

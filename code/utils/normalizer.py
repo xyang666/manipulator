@@ -1,4 +1,8 @@
-"""Running mean/std normalizer for observations and rewards."""
+"""Running mean/std normalizer for observations and rewards.
+
+Author: xie yang
+Date:   2025-06
+"""
 
 import numpy as np
 

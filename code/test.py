@@ -11,6 +11,10 @@ Usage:
     python test.py --method mpc --n_obstacles 3 --render
     python test.py --method kp  --steps 500
     python test.py --method sac --checkpoint ../checkpoints/sac_pirl.pt --render
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import json

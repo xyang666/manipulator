@@ -6,6 +6,10 @@ On-policy rollout buffer for PPO with Generalized Advantage Estimation (GAE).
 Stores transitions in a 2D array [rollout_steps, n_envs, ...].
 After collecting a full rollout, computes GAE advantages via compute_advantages(),
 then samples mini-batches for multi-epoch PPO updates.
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import numpy as np

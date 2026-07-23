@@ -10,6 +10,10 @@ Applies a CBF-QP filter to joint velocity commands before execution:
 
 The QP has a closed-form solution (single constraint), making it O(n).
 Uses numerical central-difference gradient for the barrier function.
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import numpy as np

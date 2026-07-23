@@ -10,6 +10,10 @@ Robot physical constants defined here (single source of truth):
 Usage:
     dyn = ManipulatorDynamics(urdf_path)
     M, C, g = dyn.compute(q, dq)
+
+Author: xie yang
+Date:   2025-06
+
 """
 
 import numpy as np
