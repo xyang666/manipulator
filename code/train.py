@@ -5,7 +5,7 @@ SAC (off-policy) training entry point for physics-informed RL on a
 7-DOF manipulator with obstacle avoidance.
 
 Usage:
-    python train.py --steps 500000 --n_envs 16 \\
+    python train.py --steps 500000 --n_envs 32 \\
         --scene_json results/trajectories_obs.json
 
     # Resume from checkpoint:
@@ -81,7 +81,7 @@ def parse_args():
     p.add_argument("--grad_steps",   type=int,   default=ALGORITHM.gradient_steps)
     p.add_argument("--update_every", type=int,   default=1)
     p.add_argument("--buffer_size",  type=int,   default=ALGORITHM.replay_size)
-    p.add_argument("--n_envs",       type=int,   default=16)
+    p.add_argument("--n_envs",       type=int,   default=ALGORITHM.parallel_envs)
     p.add_argument("--episode_len",  type=int,   default=ENVIRONMENT.episode_len)
     p.add_argument("--trajectory_steps", type=int, default=ENVIRONMENT.trajectory_steps)
     p.add_argument("--tracking_full_speed_error", type=float,
@@ -635,17 +635,31 @@ def _train_sac_parallel(agent, buffer, pool, ref_env, args, hyperparams, logger,
         # Step all envs in parallel
         result = pool.step_all(actions)
 
-        # Store transitions and track per-env metrics
-        for i in range(n_envs):
-            buffer.push(
-                obs[i], actions[i], result["reward"][i],
-                result["obs"][i], result["done"][i],
-                q=result["q_before"][i], dq=result["dq_before"][i],
-                dq_next=result["dq_after"][i],
-                J=result["J"][i], sigma=result["sigma"][i],
-                dx_nom=result["dx_nom"][i],
-                cost=result["info"][i].get("cost", 0.0),
+        # Store the whole vector-environment result with one ring-buffer write.
+        # PER retains its object-based insertion path.
+        costs = np.asarray(
+            [item.get("cost", 0.0) for item in result["info"]],
+            dtype=np.float64,
+        )
+        if hasattr(buffer, "push_batch"):
+            buffer.push_batch(
+                obs, actions, result["reward"], result["obs"], result["done"],
+                q=result["q_before"], dq=result["dq_before"],
+                dq_next=result["dq_after"], J=result["J"],
+                sigma=result["sigma"], dx_nom=result["dx_nom"], cost=costs,
             )
+
+        # Track per-env metrics.
+        for i in range(n_envs):
+            if not hasattr(buffer, "push_batch"):
+                buffer.push(
+                    obs[i], actions[i], result["reward"][i],
+                    result["obs"][i], result["done"][i],
+                    q=result["q_before"][i], dq=result["dq_before"][i],
+                    dq_next=result["dq_after"][i],
+                    J=result["J"][i], sigma=result["sigma"][i],
+                    dx_nom=result["dx_nom"][i], cost=costs[i],
+                )
             total_steps += 1
             env_rewards[i] += result["reward"][i]
             env_d_obs[i].append(result["info"][i].get("d_obs", 0.0))

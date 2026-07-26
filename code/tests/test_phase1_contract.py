@@ -135,3 +135,21 @@ def test_uniform_replay_buffer_round_trip(tmp_path):
     assert restored.size == buffer.size and restored.ptr == buffer.ptr
     assert np.array_equal(restored.states[:5], buffer.states[:5])
     assert np.array_equal(restored.costs[:5], buffer.costs[:5])
+
+
+def test_uniform_replay_buffer_batch_insert_wraps_ring():
+    buffer = ReplayBuffer(capacity=5, state_dim=2, action_dim=1, joints=1)
+    for offset in (0, 3):
+        values = np.arange(offset, offset + 3, dtype=np.float32)
+        buffer.push_batch(
+            np.stack([values, values + 10], axis=1),
+            values[:, None], values, np.stack([values + 1, values + 11], axis=1),
+            values % 2 == 0, q=values[:, None], dq=values[:, None],
+            dq_next=(values + 1)[:, None], J=values[:, None, None] * np.ones((1, 3, 1)),
+            sigma=values, dx_nom=np.repeat(values[:, None], 3, axis=1),
+            cost=values / 10,
+        )
+    assert len(buffer) == 5
+    assert buffer.ptr == 1
+    assert buffer.states[0, 0] == 5
+    assert set(buffer.states[:, 0]) == {1, 2, 3, 4, 5}

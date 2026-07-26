@@ -239,6 +239,48 @@ class ReplayBuffer:
         self.ptr  = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
+    def push_batch(self, state, action, reward, next_state, done,
+                   q=None, dq=None, dq_next=None,
+                   J=None, sigma=None, dx_nom=None, cost=None):
+        """Insert a vector-environment batch with vectorized ring writes."""
+        states = np.asarray(state, dtype=np.float32)
+        n = len(states)
+        if n == 0:
+            return
+        if n > self.capacity:
+            start = n - self.capacity
+            return self.push_batch(
+                states[start:], np.asarray(action)[start:],
+                np.asarray(reward)[start:], np.asarray(next_state)[start:],
+                np.asarray(done)[start:],
+                q=None if q is None else np.asarray(q)[start:],
+                dq=None if dq is None else np.asarray(dq)[start:],
+                dq_next=None if dq_next is None else np.asarray(dq_next)[start:],
+                J=None if J is None else np.asarray(J)[start:],
+                sigma=None if sigma is None else np.asarray(sigma)[start:],
+                dx_nom=None if dx_nom is None else np.asarray(dx_nom)[start:],
+                cost=None if cost is None else np.asarray(cost)[start:],
+            )
+
+        idx = (self.ptr + np.arange(n)) % self.capacity
+        self.states[idx] = states
+        self.actions[idx] = np.asarray(action, dtype=np.float32)
+        self.rewards[idx, 0] = np.asarray(reward, dtype=np.float64).reshape(-1)
+        self.next_s[idx] = np.asarray(next_state, dtype=np.float32)
+        self.dones[idx, 0] = np.asarray(done, dtype=np.float32).reshape(-1)
+        if cost is not None:
+            self.costs[idx, 0] = np.asarray(cost, dtype=np.float64).reshape(-1)
+        if q is not None:
+            self.q_prev[idx] = np.asarray(q, dtype=np.float32)
+            self.dq_prev[idx] = np.asarray(dq, dtype=np.float32)
+            self.dq_next[idx] = np.asarray(dq_next, dtype=np.float32)
+        if J is not None:
+            self.J[idx] = np.asarray(J, dtype=np.float32)
+            self.sigma[idx, 0] = np.asarray(sigma, dtype=np.float32).reshape(-1)
+            self.dx_nom[idx] = np.asarray(dx_nom, dtype=np.float32)
+        self.ptr = (self.ptr + n) % self.capacity
+        self.size = min(self.size + n, self.capacity)
+
     def clear(self):
         """Clear all data (reset ptr and size) to discard random-exploration buffer."""
         self.ptr = 0

@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from experiment_config import (EVALUATION, PHASE1_METHODS, PHASE1_SCENARIOS,
+from experiment_config import (ALGORITHM, EVALUATION, PHASE1_METHODS, PHASE1_SCENARIOS,
                                phase1_defaults)
 
 
@@ -34,7 +34,10 @@ def build_manifest(checkpoint_root: Path, result_root: Path,
                     "python", "train.py", "--seed", str(seed), "--run_name", run_name,
                     "--save_path", str(checkpoint_root),
                     "--scene_json", str(train_scenes), "--val_json", str(validation_scenes),
-                    "--val_every_steps", "10000", "--val_scenes", str(val_count), *flags,
+                    "--n_envs", str(ALGORITHM.parallel_envs),
+                    "--grad_steps", str(ALGORITHM.gradient_steps),
+                    "--val_every_steps", str(ALGORITHM.validation_interval_steps),
+                    "--val_scenes", str(val_count), *flags,
                 ]
                 training_jobs.append({"method": method, "protocol": protocol,
                                       "seed": seed, "run_name": run_name,
