@@ -18,7 +18,7 @@ Date:   2025-06
 
 import numpy as np
 
-from env.manipulator_env import ManipulatorEnv
+from env.manipulator_env import ManipulatorEnv, dense_safety_cost
 
 
 class VanillaEnv(ManipulatorEnv):
@@ -51,6 +51,7 @@ class VanillaEnv(ManipulatorEnv):
         self._last_dx_nom = np.zeros(3, dtype=np.float32)
 
         # ---- Phase 2: Integration (identical to parent) ----
+        prev_dq = self.dq.copy()
         q_new = self.q + dq_cmd * self.dt
         dq_new = dq_cmd
 
@@ -62,32 +63,41 @@ class VanillaEnv(ManipulatorEnv):
 
         # ---- Phase 3: Post-integration bookkeeping ----
         x_ee, _ = self.kin.forward_kinematics(self.q)
+        self._cached_x_ee = x_ee
         tracking_error = self._update_reference(x_ee)
 
         self.step_count += 1
 
-        # Compute reward
-        x_ee, _ = self.kin.forward_kinematics(self.q)
-        d_obs = self.sdf.min_distance(x_ee, self.q, kinematics=self.kin)
+        # Compute reward using the same observation, collision, and scaling
+        # contract as ManipulatorEnv.
+        d_obs = self._mujoco_min_distance()
         d_obs = float(np.clip(d_obs, -0.5, 0.5))
         w = self._manipulability()
+        self._cached_w = w
 
         if len(self.ee_trajectory) >= self.max_trajectory_len:
             self.ee_trajectory.pop(0)
         self.ee_trajectory.append(x_ee.copy())
 
+        capsule_dists = self._mujoco_per_capsule_distances()
+        self._cached_capsule_dists = capsule_dists
+
         reward, reward_info = self.reward_fn.compute(
             q=self.q, dq=self.dq, x_ee=x_ee,
             x_d=self.x_d, dx_d=self.dx_d,
-            d_obs=d_obs, w=w, x_goal=self.x_goal,
+            d_obs=d_obs, w=w, prev_dq=prev_dq,
+            capsule_dists=capsule_dists,
         )
+        if self.reward_min is not None:
+            reward = max(reward, self.reward_min)
 
         # Collision detection
-        if self.mj_model is not None:
-            collision = (reward_info.get("n_obstacle_contacts", 0) > 0 or
-                         reward_info.get("n_self_contacts", 0) > 0)
+        if self.collision_detector is not None:
+            _, n_obs = self.collision_detector.detect_obstacle_collisions()
+            _, n_self = self.collision_detector.detect_self_collisions()
+            collision = (n_obs + n_self) > 0
         else:
-            collision = d_obs < 0.02
+            collision = False
 
         self._ever_collided = self._ever_collided or collision
 
@@ -96,15 +106,26 @@ class VanillaEnv(ManipulatorEnv):
         if success:
             reward += self.success_bonus
 
+        reward = reward / self.reward_scale
+
         tracking_error = float(np.linalg.norm(x_ee - self.x_d))
+        self_dists = self.kin.compute_self_distances(self.q)
+        d_self = float(np.min(self_dists)) if len(self_dists) else float("inf")
+        constraint_distance = min(float(d_obs), d_self)
+        cost = dense_safety_cost(constraint_distance, self.d_safe)
         info = {
-            "d_obs": d_obs, "w": w,
+            "d_obs": d_obs, "d_self": d_self,
+            "constraint_distance": constraint_distance,
+            "w": w,
             "success": success,
             "collision": collision,
+            "cost": cost,
             "path_param": self.path_param,
             "tracking_error": tracking_error,
             "termination_reason": termination_reason,
             "success_hold_count": self._success_hold_count,
+            "cbf_active": False,
+            "cbf_mod": 0.0,
             **reward_info,
         }
 
