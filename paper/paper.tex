@@ -490,7 +490,7 @@ J_{\text{pos}}\dot{q} = \dot{x}_d + K_p e + \sigma \cdot \Delta\dot{x}_{\text{RL
 \end{itemize}
 
 \subsubsection{实验场景设计}
-一期设计4类位置控制场景，难度递进。每种方法采用5个独立训练随机种子，每个种子在100个固定测试回合上评测。所有方法共享场景、初始状态、控制频率、速度限制、碰撞模型和终止条件。
+一期设计4类位置控制场景，难度递进。整臂避障和狭小空间场景分别生成60个训练、20个验证和100个测试场景，二者训练集合并为主实验课程；泛化实验另行生成60个单障碍训练场景、20个单障碍验证场景及100个三障碍测试场景。自由空间实验使用100个经完整8字轨迹IK连续性验证的初始构型。所有场景按固定随机种子生成，集合间参数指纹不重叠；每种方法采用5个独立训练随机种子。所有方法共享场景、初始状态、控制频率、速度限制、碰撞模型和终止条件。模型选择每$10^4$个全局环境交互步在验证集上执行一次，测试集仅用于最终报告。
 
 \paragraph{实验1：自由空间跟踪（Free-space Inspection）。}验证控制器基本跟踪性能。末端执行器沿卫星表面扫描路径运动：
 \begin{itemize}
@@ -501,7 +501,7 @@ J_{\text{pos}}\dot{q} = \dot{x}_d + K_p e + \sigma \cdot \Delta\dot{x}_{\text{RL
 
 \paragraph{实验2：整臂避障（Whole-body Obstacle Avoidance）。}核心实验——验证零空间策略的有效性。扫描轨迹上增加卫星部件障碍：
 \begin{itemize}
-\item \textbf{轨迹}：与实验1相同。
+\item \textbf{轨迹}：直线扫描轨迹，起终点在机械臂前方工作空间内采样，轨迹长度为0.3--0.6~m。
 \item \textbf{障碍}：3个不同半径的球形障碍，布置于任务路径和整臂扫掠空间附近。
 \item \textbf{指标}：成功率、碰撞率、最小间距 $d_{\text{obs}}^{\min}$、跟踪误差峰值、零空间利用度 $\|N(q)\dot{q}\|$。
 \end{itemize}
@@ -509,7 +509,7 @@ J_{\text{pos}}\dot{q} = \dot{x}_d + K_p e + \sigma \cdot \Delta\dot{x}_{\text{RL
 \paragraph{实验3：狭小空间操作（Confined-space Inspection）。}论文亮点——模拟太阳翼间或卫星桁架间的受限空间操作：
 \begin{itemize}
 \item \textbf{轨迹}：直线运动 $x_{\text{start}} = [0.4, -0.15, 0.4]$~m $\to$ $x_{\text{goal}} = [0.4, 0.15, 0.4]$~m，速度0.08~m/s。
-\item \textbf{障碍}：两列各5个球形障碍组成宽0.16~m的窄通道。
+\item \textbf{障碍}：两列各5个球形障碍组成球面间净宽0.24~m的窄通道；该宽度由整臂胶囊碰撞模型下的任务路径IK可行性筛选确定。
 \item \textbf{指标}：通过率、碰撞率、最小间距、跟踪误差、参考修正幅度 $\|\Delta\dot{x}_{\text{RL}}\|$。
 \end{itemize}
 
@@ -544,7 +544,7 @@ J_{\text{pos}}\dot{q} = \dot{x}_d + K_p e + \sigma \cdot \Delta\dot{x}_{\text{RL
 \end{itemize}
 
 \subsubsection{超参数设置}
-所有RL方法共享：学习率 $3\times10^{-4}$（余弦退火至$3\times10^{-5}$），$\gamma=0.99$，批量大小512，回放缓冲区$5\times10^5$，$\tau=0.005$。策略/价值网络均为2层MLP（256维），集成评判器$N=5$。熵系数$\alpha=0.1$，目标熵$\bar{\mathcal{H}}=-7$，$\alpha_{\min}=0.02$。Lagrange乘子$\lambda_{\text{Lag}}=0.1$，$c_{\text{limit}}=0.05$。评判器预热$N_{\text{warmup}}=5000$。奖励权重：$w_{\text{track}}=12.0$，$w_{\text{obs}}=5.0$，$w_{\text{manip}}=0.05$，$w_{\text{energy}}=0.001$，$w_{\text{collision}}=100.0$，$w_{\text{action}}=0.5$。$d_{\text{safe}}=0.06$~m，$\lambda_{\text{dyn}}=1.0$，每回合最大步数$T=500$，随机探索步数$10^4$。
+所有RL方法共享：学习率 $3\times10^{-4}$（余弦退火至$3\times10^{-5}$），$\gamma=0.99$，批量大小512，回放缓冲区$5\times10^5$，$\tau=0.005$。16个并行环境每轮执行4次梯度更新，对应更新数据比0.25。策略/价值网络均为2层MLP（256维），集成评判器$N=5$。熵系数$\alpha=0.1$，目标熵$\bar{\mathcal{H}}=-7$，$\alpha_{\min}=0.02$。Lagrange乘子初值$\lambda_{\text{Lag}}=0.1$、学习率$10^{-3}$，归一化折扣安全代价上限$c_{\text{limit}}=0.10$。评判器预热严格按全局环境交互步计数，$N_{\text{warmup}}=5000$。奖励权重：$w_{\text{track}}=12.0$，$w_{\text{obs}}=5.0$，$w_{\text{manip}}=0.05$，$w_{\text{energy}}=0.001$，$w_{\text{collision}}=100.0$，$w_{\text{action}}=0.5$。$d_{\text{safe}}=0.06$~m，$\lambda_{\text{dyn}}=1.0$。点到点参考轨迹采用350步五次最小加加速度时间标定，每回合最多500步；末端误差小于0.05~m并连续保持10步才判定成功。随机探索步数为$10^4$。
 
 \subsection{实验结果与分析}
 

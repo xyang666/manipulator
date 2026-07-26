@@ -41,7 +41,30 @@ from utils.logger import (TrainingLogger, REWARD_HEADER, REWARD_FORMAT,
                            reward_accumulators, accumulate_rewards,
                            avg_rewards, reward_print_values)
 from utils.validation import ValidationSet, evaluate_on_validation_set
-from experiment_config import ALGORITHM, ENVIRONMENT
+from experiment_config import ALGORITHM, ENVIRONMENT, TRAINING_PROTOCOL_VERSION
+
+
+def validation_rank(metrics):
+    """Return a lexicographic rank: success, safety, then tracking accuracy."""
+    return (float(metrics["success_rate"]),
+            -float(metrics["collision_rate"]),
+            -float(metrics["avg_tracking_error"]))
+
+
+def is_better_validation(candidate, incumbent):
+    """Whether candidate should replace the validation-selected checkpoint."""
+    return incumbent is None or validation_rank(candidate) > validation_rank(incumbent)
+
+
+def scene_sampling_weights(success_ema, uniform_mix=0.20):
+    """Prioritize low-success scenes while retaining uniform coverage."""
+    values = np.asarray(success_ema, dtype=np.float64)
+    if values.size == 0 or not 0.0 <= uniform_mix <= 1.0:
+        raise ValueError("invalid scene EMA or uniform mixture")
+    difficulty = np.clip(1.0 - values, 0.05, 1.0)
+    prioritized = difficulty / difficulty.sum()
+    uniform = np.full(values.size, 1.0 / values.size)
+    return uniform_mix * uniform + (1.0 - uniform_mix) * prioritized
 
 
 # ========================================================================
@@ -55,11 +78,20 @@ def parse_args():
     p.add_argument("--steps",        type=int,   default=500_000)
     p.add_argument("--batch_size",   type=int,   default=ALGORITHM.batch_size)
     p.add_argument("--start_steps",  type=int,   default=ALGORITHM.start_steps)
-    p.add_argument("--grad_steps",   type=int,   default=2)
+    p.add_argument("--grad_steps",   type=int,   default=ALGORITHM.gradient_steps)
     p.add_argument("--update_every", type=int,   default=1)
     p.add_argument("--buffer_size",  type=int,   default=ALGORITHM.replay_size)
     p.add_argument("--n_envs",       type=int,   default=16)
     p.add_argument("--episode_len",  type=int,   default=ENVIRONMENT.episode_len)
+    p.add_argument("--trajectory_steps", type=int, default=ENVIRONMENT.trajectory_steps)
+    p.add_argument("--tracking_full_speed_error", type=float,
+                   default=ENVIRONMENT.tracking_full_speed_error)
+    p.add_argument("--tracking_stop_error", type=float,
+                   default=ENVIRONMENT.tracking_stop_error)
+    p.add_argument("--success_tolerance", type=float,
+                   default=ENVIRONMENT.success_tolerance)
+    p.add_argument("--success_hold_steps", type=int,
+                   default=ENVIRONMENT.success_hold_steps)
     p.add_argument("--seed",         type=int,   default=11)
 
     # --- Policy / action ---
@@ -92,6 +124,7 @@ def parse_args():
     p.add_argument("--target_entropy",type=float, default=None)
     p.add_argument("--critic_warmup", type=int,   default=5000)
     p.add_argument("--lr_lag",        type=float, default=ALGORITHM.lagrange_learning_rate)
+    p.add_argument("--lag_init",      type=float, default=ALGORITHM.lagrange_initial_value)
     p.add_argument("--lag_target",    type=float, default=0.05)
     p.add_argument("--cost_limit",    type=float, default=ALGORITHM.cost_limit)
     p.add_argument("--cost_scale",    type=float, default=1.0)
@@ -115,6 +148,8 @@ def parse_args():
     p.add_argument("--scene_id",     type=int,   default=-1)
     p.add_argument("--val_json",     type=str,   default=None)
     p.add_argument("--val_every",    type=int,   default=50)
+    p.add_argument("--val_every_steps", type=int,
+                   default=ALGORITHM.validation_interval_steps)
     p.add_argument("--val_scenes",   type=int,   default=10)
     p.add_argument("--obs_scene_embed", type=int, default=0)
     p.add_argument("--obs_waypoint_steps", type=str, default=None)
@@ -138,6 +173,8 @@ def parse_args():
     # --- Logging / checkpoint ---
     p.add_argument("--log_every",        type=int, default=10)
     p.add_argument("--checkpoint_every", type=int, default=1000)
+    p.add_argument("--checkpoint_every_steps", type=int,
+                   default=ALGORITHM.checkpoint_interval_steps)
     p.add_argument("--no_collision_term", action="store_true")
 
     # --- Render ---
@@ -145,6 +182,7 @@ def parse_args():
 
     # --- Resume ---
     p.add_argument("--resume",       type=str, default=None)
+    p.add_argument("--allow_legacy_resume", action="store_true")
     p.add_argument("--reset_alpha",  action="store_true")
     p.add_argument("--reset_critic", action="store_true")
     p.add_argument("--reset_actor",  action="store_true")
@@ -194,7 +232,7 @@ def setup_scene_loading(args):
             n_scenes = len(scene_data[1])
             scene_weights = Array('d', [1.0] * n_scenes)
             scene_lock = Lock()
-            scene_ema = np.zeros(n_scenes, dtype=np.float64)
+            scene_ema = np.full(n_scenes, 0.5, dtype=np.float64)
             scene_counts = np.zeros(n_scenes, dtype=np.int32)
     else:
         n_obs = 5
@@ -217,6 +255,11 @@ def make_env_kwargs(args, n_obs, obs_waypoint_steps):
         obs_waypoint_steps=obs_waypoint_steps,
         frame_stack=args.frame_stack,
         episode_len=args.episode_len,
+        trajectory_steps=args.trajectory_steps,
+        tracking_full_speed_error=args.tracking_full_speed_error,
+        tracking_stop_error=args.tracking_stop_error,
+        success_tolerance=args.success_tolerance,
+        success_hold_steps=args.success_hold_steps,
         reward_min=args.reward_min,
         reward_scale=args.reward_scale,
         use_cbf=args.use_cbf, cbf_alpha=args.cbf_alpha,
@@ -231,7 +274,7 @@ def setup_agent_and_buffer(args, state_dim, action_dim, dyn, ref_env, device):
             state_dim=state_dim, action_dim=action_dim,
             hidden_dims=args.hidden_dims, lr=args.lr, alpha=args.alpha,
             tau=args.tau, device=device,
-            critic_warmup=max(1, args.critic_warmup // args.n_envs),
+            critic_warmup=args.critic_warmup,
             total_steps=args.steps, n_critics=2,
         )
         if args.per:
@@ -248,7 +291,7 @@ def setup_agent_and_buffer(args, state_dim, action_dim, dyn, ref_env, device):
         task_scale=args.task_scale, nullspace_scale=args.nullspace_scale,
         lr=args.lr, alpha=args.alpha, target_entropy=args.target_entropy,
         device=device,
-        critic_warmup=max(1, args.critic_warmup // args.n_envs),
+        critic_warmup=args.critic_warmup,
         total_steps=args.steps,
         n_critics=args.n_critics,
         cost_limit=args.cost_limit,
@@ -261,6 +304,7 @@ def setup_agent_and_buffer(args, state_dim, action_dim, dyn, ref_env, device):
         dropout=args.dropout,
         grad_steps=args.grad_steps,
         lr_lag=args.lr_lag,
+        lag_init=args.lag_init,
         use_safety_critic=not args.no_safety_critic,
     )
     if args.per:
@@ -271,11 +315,28 @@ def setup_agent_and_buffer(args, state_dim, action_dim, dyn, ref_env, device):
     return agent, buffer
 
 
-def handle_resume(args, agent, scene_ema, scene_counts, scene_weights, logger):
+def replay_path_for_checkpoint(checkpoint_path: str, per: bool) -> str:
+    suffix = ".replay.pkl.gz" if per else ".replay.npz"
+    return os.path.splitext(checkpoint_path)[0] + suffix
+
+
+def save_training_checkpoint(agent, buffer, checkpoint_path, metadata, per=False,
+                             save_replay=False):
+    metadata = dict(metadata)
+    if save_replay:
+        replay_path = replay_path_for_checkpoint(checkpoint_path, per)
+        metadata["replay_path"] = replay_path
+    agent.save(checkpoint_path, metadata=metadata)
+    if save_replay:
+        buffer.save(replay_path)
+
+
+def handle_resume(args, agent, buffer, scene_ema, scene_counts, scene_weights, logger):
     """Load checkpoint and restore training state. Returns (total_steps, episode, best_reward)."""
     total_steps = 0
     episode = 0
     best_reward = -np.inf
+    best_validation = None
 
     # BC pretrained actor (optional)
     if args.load_actor is not None:
@@ -300,12 +361,23 @@ def handle_resume(args, agent, scene_ema, scene_counts, scene_weights, logger):
         if not os.path.isabs(ckpt_path):
             ckpt_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ckpt_path)
         if os.path.exists(ckpt_path):
+            raw_meta = torch.load(
+                ckpt_path, map_location="cpu", weights_only=False
+            ).get("metadata", {})
+            protocol = raw_meta.get("training_protocol_version")
+            if protocol != TRAINING_PROTOCOL_VERSION and not args.allow_legacy_resume:
+                raise RuntimeError(
+                    f"checkpoint protocol {protocol!r} is incompatible with "
+                    f"protocol {TRAINING_PROTOCOL_VERSION}; use --load_actor for transfer "
+                    "or --allow_legacy_resume to override"
+                )
             meta = agent.load(ckpt_path, reset_alpha=args.reset_alpha,
                               reset_critic=args.reset_critic, reset_actor=args.reset_actor,
                               lr=args.lr)
             total_steps = meta.get("step", 0)
             episode = meta.get("episode", 0)
             best_reward = meta.get("best_reward", -np.inf)
+            best_validation = meta.get("best_validation")
             logger.best_reward = best_reward
 
             # Restore per-scene stats
@@ -313,18 +385,20 @@ def handle_resume(args, agent, scene_ema, scene_counts, scene_weights, logger):
                     and len(meta["scene_ema"]) == len(scene_ema):
                 scene_ema[:] = meta["scene_ema"]
                 scene_counts[:] = meta["scene_counts"]
-                ema = scene_ema.copy()
-                ema_min = ema.min()
-                ema_max = ema.max()
-                if ema_max > ema_min:
-                    norm = (ema - ema_min) / (ema_max - ema_min + 1e-8)
-                else:
-                    norm = np.ones_like(ema) * 0.5
-                weights = np.maximum(0.01, 1.0 - norm)
-                weights = weights / weights.sum()
+                weights = scene_sampling_weights(
+                    scene_ema, ALGORITHM.uniform_scene_mix
+                )
                 for s in range(len(weights)):
                     scene_weights[s] = weights[s]
                 print(f"[train] Restored scene performance stats for {len(scene_ema)} scenes")
+
+            replay_path = replay_path_for_checkpoint(ckpt_path, args.per)
+            if not os.path.exists(replay_path):
+                raise FileNotFoundError(
+                    f"resume requires replay buffer state: {replay_path}"
+                )
+            buffer.load(replay_path)
+            print(f"[train] Restored {len(buffer)} replay transitions from {replay_path}")
 
             print(f"[train] Resumed from {ckpt_path}: step={total_steps}, episode={episode}, "
                   f"best_reward={best_reward:.3f}")
@@ -337,7 +411,7 @@ def handle_resume(args, agent, scene_ema, scene_counts, scene_weights, logger):
         else:
             print(f"[train] WARNING: resume checkpoint not found: {ckpt_path}")
 
-    return total_steps, episode, best_reward
+    return total_steps, episode, best_reward, best_validation
 
 
 # ========================================================================
@@ -345,7 +419,8 @@ def handle_resume(args, agent, scene_ema, scene_counts, scene_weights, logger):
 # ========================================================================
 
 def _run_render_loop(agent, env, buffer, args, hyperparams, logger, val_set,
-                     total_steps=0, episode=0, best_reward=-np.inf):
+                     total_steps=0, episode=0, best_reward=-np.inf,
+                     best_validation=None):
     """Single-environment training loop with MuJoCo viewer."""
 
     print(f"Run directory: {logger.run_dir}")
@@ -358,6 +433,10 @@ def _run_render_loop(agent, env, buffer, args, hyperparams, logger, val_set,
     log_success_count = 0
     scene_id = getattr(env, '_current_scene_id', -1)
 
+    next_val_step = ((total_steps // args.val_every_steps) + 1) * args.val_every_steps
+    next_checkpoint_step = (
+        (total_steps // args.checkpoint_every_steps) + 1
+    ) * args.checkpoint_every_steps
     while total_steps < args.steps:
         obs = env.reset()
         agent.obs_normalizer.update(obs)
@@ -409,7 +488,10 @@ def _run_render_loop(agent, env, buffer, args, hyperparams, logger, val_set,
                     and total_steps % args.update_every == 0:
                 for i in range(args.grad_steps):
                     batch = buffer.sample(args.batch_size)
-                    losses, td_errors = agent.update(batch, is_last=(i == args.grad_steps - 1))
+                    losses, td_errors = agent.update(
+                        batch, is_last=(i == args.grad_steps - 1),
+                        actor_enabled=total_steps >= args.critic_warmup,
+                    )
                     if args.per:
                         buffer.update_priorities(batch["indices"], td_errors)
                     logger.log_update(losses)
@@ -449,18 +531,24 @@ def _run_render_loop(agent, env, buffer, args, hyperparams, logger, val_set,
             **avg_r,
         )
 
-        ckpt_meta = {"step": total_steps, "episode": episode, "best_reward": logger.best_reward,
+        ckpt_meta = {"training_protocol_version": TRAINING_PROTOCOL_VERSION,
+                     "step": total_steps, "episode": episode, "best_reward": logger.best_reward,
                      "hyperparams": hyperparams, "csv_path": logger.csv_path}
 
-        if episode % args.checkpoint_every == 0:
-            agent.save(logger.checkpoint_path(f"ep{episode:05d}"), metadata=ckpt_meta)
+        if total_steps >= next_checkpoint_step:
+            save_training_checkpoint(
+                agent, buffer, logger.checkpoint_path(f"step{total_steps:09d}"),
+                ckpt_meta, per=args.per, save_replay=True,
+            )
+            while next_checkpoint_step <= total_steps:
+                next_checkpoint_step += args.checkpoint_every_steps
         if ep_reward > logger.best_reward:
             logger.best_reward = ep_reward
             best_reward = logger.best_reward
             ckpt_meta["best_reward"] = best_reward
-            agent.save(logger.checkpoint_path("best"), metadata=ckpt_meta)
+            agent.save(logger.checkpoint_path("best_reward"), metadata=ckpt_meta)
 
-        if val_set is not None and episode % args.val_every == 0:
+        if val_set is not None and total_steps >= next_val_step:
             print(f"\n{'='*60}\nValidation at episode {episode}\n{'='*60}")
             val_results = evaluate_on_validation_set(
                 agent, env, val_set, num_scenes=args.val_scenes, max_steps=env.episode_len
@@ -471,9 +559,16 @@ def _run_render_loop(agent, env, buffer, args, hyperparams, logger, val_set,
             print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
             print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
             print(f"{'='*60}\n")
-            logger.log_validation(episode, val_results)
+            logger.log_validation(total_steps, episode, val_results)
+            if is_better_validation(val_results, best_validation):
+                best_validation = val_results.copy()
+                ckpt_meta["best_validation"] = best_validation
+                agent.save(logger.checkpoint_path("best"), metadata=ckpt_meta)
+            while next_val_step <= total_steps:
+                next_val_step += args.val_every_steps
 
-    return best_reward
+    return {"best_reward": best_reward, "total_steps": total_steps,
+            "episode": episode, "best_validation": best_validation}
 
 
 # ========================================================================
@@ -482,7 +577,8 @@ def _run_render_loop(agent, env, buffer, args, hyperparams, logger, val_set,
 
 def _train_sac_parallel(agent, buffer, pool, ref_env, args, hyperparams, logger,
                          val_set, scene_ema, scene_counts, scene_weights, scene_lock,
-                         total_steps=0, episode=0, best_reward=-np.inf):
+                         total_steps=0, episode=0, best_reward=-np.inf,
+                         best_validation=None):
     """Multi-environment SAC training with batched action selection."""
     n_envs = args.n_envs
     obs = pool.reset_all()
@@ -498,7 +594,10 @@ def _train_sac_parallel(agent, buffer, pool, ref_env, args, hyperparams, logger,
     env_ever_collided = [False for _ in range(n_envs)]
     env_steps = np.zeros(n_envs, dtype=int)
     log_success_count = 0
-    last_val_ep = -1
+    next_val_step = ((total_steps // args.val_every_steps) + 1) * args.val_every_steps
+    next_checkpoint_step = (
+        (total_steps // args.checkpoint_every_steps) + 1
+    ) * args.checkpoint_every_steps
     last_losses = {"actor_rl_loss": 0.0, "physics_loss": 0.0}
 
     # Force sigma=1 during start_steps so random actions actually explore
@@ -566,21 +665,19 @@ def _train_sac_parallel(agent, buffer, pool, ref_env, args, hyperparams, logger,
                 avg_collision_penalty = (sum(env_collision_penalty[i]) / len(env_collision_penalty[i])) \
                     if env_collision_penalty[i] else None
 
-                # Per-scene EMA for prioritized sampling
+                # Per-scene success EMA for difficulty-aware sampling.  A
+                # uniform component prevents starvation and catastrophic
+                # forgetting of easier scenes.
                 if scene_ema is not None:
                     ema_alpha = 0.3
-                    scene_ema[scene_id] = ema_alpha * env_rewards[i] + (1 - ema_alpha) * scene_ema[scene_id]
+                    outcome = 1.0 if ep_success else 0.0
+                    scene_ema[scene_id] = (ema_alpha * outcome +
+                                           (1 - ema_alpha) * scene_ema[scene_id])
                     scene_counts[scene_id] += 1
                     if scene_counts.min() >= 1:
-                        ema = scene_ema.copy()
-                        ema_min = ema.min()
-                        ema_max = ema.max()
-                        if ema_max > ema_min:
-                            norm = (ema - ema_min) / (ema_max - ema_min + 1e-8)
-                        else:
-                            norm = np.ones_like(ema) * 0.5
-                        weights = np.maximum(0.01, 1.0 - norm)
-                        weights = weights / weights.sum()
+                        weights = scene_sampling_weights(
+                            scene_ema, ALGORITHM.uniform_scene_mix
+                        )
                         if scene_lock is not None:
                             scene_lock.acquire()
                         for s in range(len(weights)):
@@ -622,6 +719,7 @@ def _train_sac_parallel(agent, buffer, pool, ref_env, args, hyperparams, logger,
                 )
 
                 ckpt_meta = {
+                    "training_protocol_version": TRAINING_PROTOCOL_VERSION,
                     "step": total_steps, "episode": episode,
                     "best_reward": best_reward, "hyperparams": hyperparams,
                     "csv_path": logger.csv_path,
@@ -629,17 +727,20 @@ def _train_sac_parallel(agent, buffer, pool, ref_env, args, hyperparams, logger,
                     "scene_counts": scene_counts.tolist() if scene_counts is not None else None,
                 }
 
-                if episode % args.checkpoint_every == 0:
-                    agent.save(logger.checkpoint_path(f"ep{episode:05d}"), metadata=ckpt_meta)
+                if total_steps >= next_checkpoint_step:
+                    save_training_checkpoint(
+                        agent, buffer, logger.checkpoint_path(f"step{total_steps:09d}"),
+                        ckpt_meta, per=args.per, save_replay=True,
+                    )
+                    while next_checkpoint_step <= total_steps:
+                        next_checkpoint_step += args.checkpoint_every_steps
                 if env_rewards[i] > best_reward:
                     best_reward = env_rewards[i]
                     ckpt_meta["best_reward"] = best_reward
-                    agent.save(logger.checkpoint_path("best"), metadata=ckpt_meta)
+                    agent.save(logger.checkpoint_path("best_reward"), metadata=ckpt_meta)
 
                 # Validation
-                if val_set is not None and episode > 0 and episode % args.val_every == 0 \
-                        and episode != last_val_ep:
-                    last_val_ep = episode
+                if val_set is not None and total_steps >= next_val_step:
                     print(f"\n{'='*60}")
                     print(f"Validation at episode {episode}")
                     print(f"{'='*60}")
@@ -653,7 +754,13 @@ def _train_sac_parallel(agent, buffer, pool, ref_env, args, hyperparams, logger,
                     print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
                     print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
                     print(f"{'='*60}\n")
-                    logger.log_validation(episode, val_results)
+                    logger.log_validation(total_steps, episode, val_results)
+                    if is_better_validation(val_results, best_validation):
+                        best_validation = val_results.copy()
+                        ckpt_meta["best_validation"] = best_validation
+                        agent.save(logger.checkpoint_path("best"), metadata=ckpt_meta)
+                    while next_val_step <= total_steps:
+                        next_val_step += args.val_every_steps
 
                 # Reset per-env tracking
                 env_rewards[i] = 0.0
@@ -673,13 +780,17 @@ def _train_sac_parallel(agent, buffer, pool, ref_env, args, hyperparams, logger,
         if total_steps >= args.start_steps and len(buffer) >= args.batch_size:
             for i in range(args.grad_steps):
                 batch = buffer.sample(args.batch_size)
-                losses, td_errors = agent.update(batch, is_last=(i == args.grad_steps - 1))
+                losses, td_errors = agent.update(
+                    batch, is_last=(i == args.grad_steps - 1),
+                    actor_enabled=total_steps >= args.critic_warmup,
+                )
                 if args.per:
                     buffer.update_priorities(batch["indices"], td_errors)
                 logger.log_update(losses)
                 last_losses = losses
 
-    return best_reward
+    return {"best_reward": best_reward, "total_steps": total_steps,
+            "episode": episode, "best_validation": best_validation}
 
 
 # ========================================================================
@@ -688,6 +799,10 @@ def _train_sac_parallel(agent, buffer, pool, ref_env, args, hyperparams, logger,
 
 def main():
     args = parse_args()
+    if args.val_every_steps <= 0 or args.checkpoint_every_steps <= 0:
+        raise ValueError("step-based validation/checkpoint intervals must be positive")
+    if args.grad_steps <= 0:
+        raise ValueError("grad_steps must be positive")
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -723,7 +838,11 @@ def main():
     if args.val_json is not None:
         val_path = args.val_json
         if not os.path.isabs(val_path):
-            val_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), val_path)
+            # First resolve relative to the launch directory (matching
+            # --scene_json), then fall back to the repository root.
+            cwd_path = os.path.abspath(val_path)
+            repo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), val_path)
+            val_path = cwd_path if os.path.exists(cwd_path) else repo_path
         if os.path.exists(val_path):
             val_set = ValidationSet(val_path)
             print(f"[train] Validation set: {len(val_set.scenes)} scenes available")
@@ -740,12 +859,18 @@ def main():
     run_name = args.run_name or f"sac_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     run_dir = os.path.join(args.save_path, run_name)
     hyperparams = {
+        "training_protocol_version": TRAINING_PROTOCOL_VERSION,
         "steps": args.steps, "batch_size": args.batch_size,
         "start_steps": args.start_steps, "update_every": args.update_every,
+        "critic_warmup_steps": args.critic_warmup,
+        "grad_steps": args.grad_steps,
+        "update_to_data_ratio": args.grad_steps / max(1, args.n_envs),
         "buffer_size": args.buffer_size,
         "lambda_dyn": args.lambda_dyn, "lr": args.lr,
         "alpha": args.alpha, "gamma": 0.99, "tau": args.tau,
         "state_dim": state_dim, "action_dim": action_dim,
+        "episode_len": args.episode_len,
+        "trajectory_steps": args.trajectory_steps,
     }
     logger = TrainingLogger(run_dir=run_dir, hyperparams=hyperparams)
     os.makedirs(args.save_path, exist_ok=True)
@@ -762,8 +887,8 @@ def main():
     print(f"[train] Config saved to {run_dir}/config.json")
 
     # ---- Resume ----
-    total_steps, episode, best_reward = handle_resume(
-        args, agent, scene_ema, scene_counts, scene_weights, logger
+    total_steps, episode, best_reward, best_validation = handle_resume(
+        args, agent, buffer, scene_ema, scene_counts, scene_weights, logger
     )
 
     # ---- Launch training ----
@@ -782,9 +907,9 @@ def main():
                     env._get_obs()
                 )[1]
         print(f"[train] Single-env mode ({'render' if args.render else 'n_envs=1 debug'})")
-        best_reward = _run_render_loop(
+        train_state = _run_render_loop(
             agent, env, buffer, args, hyperparams, logger, val_set,
-            total_steps, episode, best_reward
+            total_steps, episode, best_reward, best_validation
         )
         if hasattr(env, '_viewer'):
             env._viewer.close()
@@ -801,11 +926,10 @@ def main():
 
                     def _reset_fixed(seed=None):
                         vs.apply_scene_to_env(e, scenes)
-                        e.step_count = 0
+                        e._reset_episode_progress()
                         e._integral_err = np.zeros(3)
                         e._ever_collided = False
                         e.reward_fn._prev_dist_to_goal = None
-                        e.path_param = 0.0
                         e._last_sigma = 0.0
                         e._lag_lambda = 0.0
                         return e._get_obs()
@@ -837,11 +961,10 @@ def main():
                         new_idx = _sample_idx()
                         vs.apply_scene_to_env(e, scenes[new_idx])
                         e._current_scene_id = new_idx
-                        e.step_count = 0
+                        e._reset_episode_progress()
                         e._integral_err = np.zeros(3)
                         e._ever_collided = False
                         e.reward_fn._prev_dist_to_goal = None
-                        e.path_param = 0.0
                         e._last_sigma = 0.0
                         e._lag_lambda = 0.0
                         return e._get_obs()
@@ -853,12 +976,27 @@ def main():
 
         # Override total_steps/episode from resume (may differ from scratch)
         # agent and buffer are shared; pool resets envs automatically.
-        best_reward = _train_sac_parallel(
+        train_state = _train_sac_parallel(
             agent, buffer, pool, ref_env, args, hyperparams, logger,
-            val_set, scene_ema, scene_counts, scene_weights, scene_lock
+            val_set, scene_ema, scene_counts, scene_weights, scene_lock,
+            total_steps, episode, best_reward, best_validation
         )
         pool.close()
 
+    final_meta = {
+        "training_protocol_version": TRAINING_PROTOCOL_VERSION,
+        "step": train_state["total_steps"],
+        "episode": train_state["episode"],
+        "best_reward": train_state["best_reward"],
+        "best_validation": train_state["best_validation"],
+        "hyperparams": hyperparams,
+        "csv_path": logger.csv_path,
+    }
+    save_training_checkpoint(
+        agent, buffer, logger.checkpoint_path("final"), final_meta,
+        per=args.per, save_replay=True,
+    )
+    best_reward = train_state["best_reward"]
     logger.close()
     print(f"\nTraining done. Best reward: {best_reward:.3f}")
     print(f"Run directory: {run_dir}")

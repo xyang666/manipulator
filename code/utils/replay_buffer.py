@@ -11,6 +11,8 @@ Date:   2025-06
 """
 
 import numpy as np
+import gzip
+import pickle
 
 
 class SumTree:
@@ -173,6 +175,20 @@ class PrioritizedReplayBuffer:
     def __len__(self):
         return self.tree.size
 
+    def save(self, path: str) -> None:
+        with gzip.open(path, "wb") as stream:
+            pickle.dump(self, stream, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def load(self, path: str) -> None:
+        with gzip.open(path, "rb") as stream:
+            restored = pickle.load(stream)
+        if not isinstance(restored, PrioritizedReplayBuffer):
+            raise TypeError("replay file does not contain a prioritized buffer")
+        if (restored.capacity, restored.state_dim, restored.action_dim) != \
+                (self.capacity, self.state_dim, self.action_dim):
+            raise ValueError("replay buffer shape/capacity mismatch")
+        self.__dict__.update(restored.__dict__)
+
 
 class ReplayBuffer:
     """Uniform replay buffer (original implementation, unchanged)."""
@@ -247,3 +263,32 @@ class ReplayBuffer:
 
     def __len__(self):
         return self.size
+
+    def save(self, path: str) -> None:
+        """Persist active transitions and ring-buffer position."""
+        count = self.capacity if self.size == self.capacity else self.size
+        np.savez_compressed(
+            path, capacity=self.capacity, state_dim=self.state_dim,
+            action_dim=self.action_dim, joints=self.joints,
+            ptr=self.ptr, size=self.size,
+            states=self.states[:count], actions=self.actions[:count],
+            rewards=self.rewards[:count], next_s=self.next_s[:count],
+            dones=self.dones[:count], q_prev=self.q_prev[:count],
+            dq_prev=self.dq_prev[:count], dq_next=self.dq_next[:count],
+            J=self.J[:count], sigma=self.sigma[:count],
+            dx_nom=self.dx_nom[:count], costs=self.costs[:count],
+        )
+
+    def load(self, path: str) -> None:
+        with np.load(path, allow_pickle=False) as state:
+            expected = (self.capacity, self.state_dim, self.action_dim, self.joints)
+            actual = tuple(int(state[k]) for k in
+                           ("capacity", "state_dim", "action_dim", "joints"))
+            if actual != expected:
+                raise ValueError(f"replay buffer mismatch: expected {expected}, got {actual}")
+            self.ptr, self.size = int(state["ptr"]), int(state["size"])
+            count = self.capacity if self.size == self.capacity else self.size
+            for name in ("states", "actions", "rewards", "next_s", "dones",
+                         "q_prev", "dq_prev", "dq_next", "J", "sigma",
+                         "dx_nom", "costs"):
+                getattr(self, name)[:count] = state[name]

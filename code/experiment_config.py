@@ -20,6 +20,7 @@ PHASE1_SCENARIOS = (
     "confined_space",
     "generalization",
 )
+TRAINING_PROTOCOL_VERSION = 2
 TRAIN_SEEDS = (11, 23, 37, 53, 71)
 
 
@@ -37,14 +38,24 @@ class AlgorithmDefaults:
     lambda_dyn: float = 1.0
     task_scale: float = 1.0
     nullspace_scale: float = 0.5
-    cost_limit: float = 0.05
-    lagrange_learning_rate: float = 0.01
+    cost_limit: float = 0.10
+    lagrange_learning_rate: float = 0.001
+    lagrange_initial_value: float = 0.1
+    gradient_steps: int = 4
+    validation_interval_steps: int = 10_000
+    checkpoint_interval_steps: int = 50_000
+    uniform_scene_mix: float = 0.20
 
 
 @dataclass(frozen=True)
 class EnvironmentDefaults:
     dt: float = 0.02
     episode_len: int = 500
+    trajectory_steps: int = 350
+    tracking_full_speed_error: float = 0.03
+    tracking_stop_error: float = 0.08
+    success_tolerance: float = 0.05
+    success_hold_steps: int = 10
     d_safe: float = 0.06
     w_track: float = 12.0
     w_obs: float = 5.0

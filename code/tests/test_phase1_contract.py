@@ -2,9 +2,14 @@ import numpy as np
 import torch
 
 from agent.physics_policy import PhysicsInformedActor
+from agent.sac_agent import normalized_discounted_cost, scaled_sigmoid_inverse
 from agent.vanilla_sac_agent import VanillaSACAgent
 from experiment_config import EVALUATION, PHASE1_METHODS, PHASE1_SCENARIOS
 from experiments.manifest import build_manifest
+from experiments.split_scenes import scene_fingerprint, split_scenes
+from env.manipulator_env import ManipulatorEnv, dense_safety_cost
+from train import is_better_validation, scene_sampling_weights
+from utils.replay_buffer import ReplayBuffer
 
 
 def test_actor_has_three_plus_four_action_contract():
@@ -33,7 +38,100 @@ def test_manifest_covers_all_methods_scenarios_and_seeds(tmp_path):
     manifest = build_manifest(tmp_path / "checkpoints", tmp_path / "results")
     expected = len(PHASE1_METHODS) * len(PHASE1_SCENARIOS) * len(EVALUATION.train_seeds)
     assert len(manifest["evaluation_jobs"]) == expected
-    assert len(manifest["training_jobs"]) == 5 * len(EVALUATION.train_seeds)
+    assert len(manifest["training_jobs"]) == 10 * len(EVALUATION.train_seeds)
     assert all(job["seed"] in EVALUATION.train_seeds
                for job in manifest["evaluation_jobs"])
     assert all("--episodes" in job["command"] for job in manifest["evaluation_jobs"])
+    assert all("--scene_json" in job["command"] and "--val_json" in job["command"]
+               for job in manifest["training_jobs"])
+    assert all(job["command"][job["command"].index("--val_scenes") + 1]
+               == ("40" if job["protocol"] == "curriculum" else "20")
+               for job in manifest["training_jobs"])
+    assert all("--scene-json" in job["command"]
+               for job in manifest["evaluation_jobs"])
+    assert all("--val_every_steps" in job["command"]
+               for job in manifest["training_jobs"])
+
+
+def test_dense_safety_cost_tracks_margin_violation():
+    assert dense_safety_cost(0.2, 0.1) == 0.0
+    assert np.isclose(dense_safety_cost(0.05, 0.1), 0.5)
+    assert dense_safety_cost(0.0, 0.1) == 1.0
+    assert dense_safety_cost(-1.0, 0.1) == 2.0
+
+
+def test_validation_selection_prioritizes_success_then_safety():
+    incumbent = {"success_rate": 0.5, "collision_rate": 0.3,
+                 "avg_tracking_error": 0.02}
+    assert is_better_validation(
+        {"success_rate": 0.6, "collision_rate": 0.9,
+         "avg_tracking_error": 0.5}, incumbent)
+    assert is_better_validation(
+        {"success_rate": 0.5, "collision_rate": 0.2,
+         "avg_tracking_error": 0.5}, incumbent)
+    assert not is_better_validation(
+        {"success_rate": 0.5, "collision_rate": 0.4,
+         "avg_tracking_error": 0.001}, incumbent)
+
+
+def test_lagrange_raw_parameter_represents_paper_initial_value():
+    raw = scaled_sigmoid_inverse(0.1, 100.0)
+    actual = 100.0 / (1.0 + np.exp(-raw))
+    assert np.isclose(actual, 0.1)
+
+
+def test_discounted_safety_value_is_normalized_to_per_step_scale():
+    assert np.isclose(normalized_discounted_cost(5.0, 0.99), 0.05)
+
+
+def test_minimum_jerk_progress_has_stationary_endpoints():
+    fn = ManipulatorEnv._minimum_jerk_progress
+    eps = 1e-5
+    assert fn(0.0) == 0.0
+    assert fn(1.0) == 1.0
+    assert np.isclose((fn(eps) - fn(0.0)) / eps, 0.0, atol=1e-8)
+    assert np.isclose((fn(1.0) - fn(1.0 - eps)) / eps, 0.0, atol=1e-8)
+
+
+def test_tracking_progress_gate_uses_configured_error_band():
+    env = ManipulatorEnv.__new__(ManipulatorEnv)
+    env.tracking_full_speed_error = 0.03
+    env.tracking_stop_error = 0.08
+    assert env._tracking_progress_gate(0.02) == 1.0
+    assert env._tracking_progress_gate(0.08) == 0.0
+    assert np.isclose(env._tracking_progress_gate(0.055), 0.5)
+
+
+def test_scene_sampling_keeps_uniform_probability_floor():
+    weights = scene_sampling_weights(np.array([1.0, 0.0]), uniform_mix=0.2)
+    assert np.isclose(weights.sum(), 1.0)
+    assert np.all(weights >= 0.1)
+    assert weights[1] > weights[0]
+
+
+def test_scene_split_is_disjoint_and_deterministic():
+    scenes = [{"scene_id": i, "start": [i, 0, 0], "goal": [i, 1, 0],
+               "obstacles": []} for i in range(10)]
+    groups_a, _ = split_scenes(scenes, 6, 2, 2, seed=7)
+    groups_b, _ = split_scenes(scenes, 6, 2, 2, seed=7)
+    fingerprints = [{scene_fingerprint(s) for s in group} for group in groups_a]
+    assert groups_a == groups_b
+    assert not (fingerprints[0] & fingerprints[1])
+    assert not (fingerprints[0] & fingerprints[2])
+    assert not (fingerprints[1] & fingerprints[2])
+
+
+def test_uniform_replay_buffer_round_trip(tmp_path):
+    buffer = ReplayBuffer(capacity=8, state_dim=2, action_dim=1, joints=1)
+    for i in range(5):
+        buffer.push([i, i + 1], [i], i, [i + 1, i + 2], i == 4,
+                    q=[i], dq=[i], dq_next=[i + 1],
+                    J=np.ones((3, 1)) * i, sigma=i / 10, dx_nom=np.ones(3) * i,
+                    cost=i / 5)
+    path = tmp_path / "buffer.replay.npz"
+    buffer.save(path)
+    restored = ReplayBuffer(capacity=8, state_dim=2, action_dim=1, joints=1)
+    restored.load(path)
+    assert restored.size == buffer.size and restored.ptr == buffer.ptr
+    assert np.array_equal(restored.states[:5], buffer.states[:5])
+    assert np.array_equal(restored.costs[:5], buffer.costs[:5])

@@ -25,6 +25,21 @@ from agent.physics_policy import PhysicsInformedActor, SoftmaxCritic, PhysicsReg
 from utils.normalizer import RunningMeanStd
 
 
+def scaled_sigmoid_inverse(value: float, maximum: float) -> float:
+    """Raw parameter whose scaled sigmoid is exactly ``value``."""
+    if not 0.0 < value < maximum:
+        raise ValueError("value must be strictly between zero and maximum")
+    ratio = value / maximum
+    return float(np.log(ratio / (1.0 - ratio)))
+
+
+def normalized_discounted_cost(q_cost, gamma: float):
+    """Convert discounted cumulative cost to an average per-step scale."""
+    if not 0.0 <= gamma < 1.0:
+        raise ValueError("gamma must be in [0, 1)")
+    return (1.0 - gamma) * q_cost
+
+
 class SACAgent:
     """
     SAC agent with physics-informed actor loss.
@@ -60,6 +75,7 @@ class SACAgent:
                  dropout:      float = 0.1,
                  grad_steps:   int   = 1,
                  lr_lag:       float = 0.01,
+                 lag_init:     float = 0.1,
                  use_safety_critic: bool = True):
         self.gamma       = gamma
         self.use_safety_critic = use_safety_critic
@@ -120,7 +136,8 @@ class SACAgent:
             self.safety_critic_target = copy.deepcopy(self.safety_critic).to(self.device)
             self.safety_critic_opt = optim.Adam(self.safety_critic.parameters(), lr=lr)
             # Lagrange multiplier — sigmoid param avoids dead λ
-            self._lag_raw = torch.tensor(0.0, device=self.device, requires_grad=True)
+            lag_raw = scaled_sigmoid_inverse(lag_init, self._lambda_max)
+            self._lag_raw = torch.tensor(lag_raw, device=self.device, requires_grad=True)
             self.lag_opt = optim.Adam([self._lag_raw], lr=lr_lag)
 
         self.actor_opt  = optim.Adam(self.actor.parameters(),  lr=lr)
@@ -200,7 +217,8 @@ class SACAgent:
             return x.cpu().numpy()
         return np.asarray(x)
 
-    def update(self, batch: dict, batch_size: int = 256, is_last: bool = False):
+    def update(self, batch: dict, batch_size: int = 256, is_last: bool = False,
+               actor_enabled: bool | None = None):
         """
         One gradient update step from a sampled batch.
 
@@ -298,7 +316,8 @@ class SACAgent:
         td_error_avg = torch.stack(td_errors, dim=-1).mean(dim=-1).detach().cpu().numpy().flatten()
 
         self._update_count += 1
-        doing_warmup = self._update_count < self.critic_warmup
+        doing_warmup = (self._update_count < self.critic_warmup
+                        if actor_enabled is None else not actor_enabled)
         lag_loss = torch.tensor(0.0, device=self.device)
 
         if not doing_warmup:
@@ -309,8 +328,11 @@ class SACAgent:
             # Standard SAC objective or constrained RL (with safety critic)
             if self.use_safety_critic:
                 q_c_max = self.safety_critic.q_max(s_critic, a_new)
+                normalized_q_c = normalized_discounted_cost(q_c_max, self.gamma)
                 lag = self._lambda_max * torch.sigmoid(self._lag_raw)
-                actor_rl_loss = (self.alpha * log_pi - q_min + lag.detach() * q_c_max).mean()
+                actor_rl_loss = (
+                    self.alpha * log_pi - q_min + lag.detach() * normalized_q_c
+                ).mean()
             else:
                 actor_rl_loss = (self.alpha * log_pi - q_min).mean()
 
@@ -363,7 +385,12 @@ class SACAgent:
             if self.use_safety_critic and is_last:
                 with torch.no_grad():
                     q_c_max_detach = self.safety_critic.q_max(s_critic, a_new)
-                lag_loss = -lag * (q_c_max_detach - self.cost_limit * self.cost_scale).detach().mean()
+                    normalized_q_c = normalized_discounted_cost(
+                        q_c_max_detach, self.gamma
+                    )
+                lag_loss = -lag * (
+                    normalized_q_c - self.cost_limit * self.cost_scale
+                ).detach().mean()
                 self.lag_opt.zero_grad()
                 lag_loss.backward()
                 self.lag_opt.step()
@@ -393,6 +420,7 @@ class SACAgent:
         state = {
             "actor":          self.actor.state_dict(),
             "critic":         self.critic.state_dict(),
+            "critic_target":  self.critic_target.state_dict(),
             "actor_opt":      self.actor_opt.state_dict(),
             "critic_opt":     self.critic_opt.state_dict(),
             "alpha_opt":      self.alpha_opt.state_dict(),
@@ -426,6 +454,10 @@ class SACAgent:
             self.critic_opt = optim.Adam(self.critic.parameters(), lr=_lr)
         else:
             self.critic.load_state_dict(ckpt["critic"], strict=False)
+            if "critic_target" in ckpt:
+                self.critic_target.load_state_dict(ckpt["critic_target"], strict=False)
+            else:
+                self.critic_target.load_state_dict(self.critic.state_dict())
         if load_optimizers:
             if "actor_opt" in ckpt and not reset_actor:
                 self.actor_opt.load_state_dict(ckpt["actor_opt"])
@@ -451,4 +483,6 @@ class SACAgent:
             self._lag_raw.data.fill_(ckpt["lag_raw"])
         elif self.use_safety_critic and "log_lag" in ckpt:
             self._lag_raw.data.fill_(np.exp(ckpt["log_lag"]))
+        if self.use_safety_critic and load_optimizers and "lag_opt" in ckpt:
+            self.lag_opt.load_state_dict(ckpt["lag_opt"])
         return ckpt.get("metadata", {})

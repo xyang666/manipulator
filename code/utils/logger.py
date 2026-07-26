@@ -118,7 +118,7 @@ class TrainingLogger:
         self._val_csv_file = open(self.val_csv_path, "w", newline="")
         self._val_csv_writer = csv.DictWriter(
             self._val_csv_file,
-            fieldnames=["episode", "success_rate", "avg_reward", "avg_tracking_error",
+            fieldnames=["global_step", "episode", "success_rate", "avg_reward", "avg_tracking_error",
                        "avg_min_distance", "collision_rate"]
         )
         self._val_csv_writer.writeheader()
@@ -237,10 +237,10 @@ class TrainingLogger:
         """Return full path for a checkpoint file, e.g. tag='best' or 'ep00050'."""
         return os.path.join(self.run_dir, f"ckpt_{tag}.pt")
 
-    def log_validation(self, episode: int, val_results: dict) -> None:
+    def log_validation(self, step: int, episode: int, val_results: dict) -> None:
         """Log validation results to separate CSV."""
         row = {
-            "episode": episode,
+            "global_step": step, "episode": episode,
             "success_rate": val_results["success_rate"],
             "avg_reward": val_results["avg_reward"],
             "avg_tracking_error": val_results["avg_tracking_error"],

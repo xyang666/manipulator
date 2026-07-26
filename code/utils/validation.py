@@ -65,15 +65,36 @@ class ValidationSet:
         # Update SDF
         env.sdf.set_static_obstacles(obstacle_centers, obstacle_radii)
 
-        # Set current target to start
-        env.x_d = env.x_start.copy()
+        trajectory = scene.get("trajectory", {"type": "linear"})
+        if trajectory.get("type") == "figure_eight":
+            center = np.asarray(trajectory["center"], dtype=float)
+            y_amplitude = float(trajectory["y_amplitude"])
+            z_amplitude = float(trajectory["z_amplitude"])
+            period = float(trajectory["period"])
+            omega = 2.0 * np.pi / period
 
-        # Desired velocity towards goal
-        direction = env.x_goal - env.x_start
-        distance = np.linalg.norm(direction)
-        if distance > 1e-6:
-            env.dx_d = (direction / distance) * 0.1  # 0.1 m/s
+            def position(t):
+                phase = omega * t
+                return center + np.array([
+                    0.0, y_amplitude * np.sin(phase),
+                    z_amplitude * np.sin(2.0 * phase),
+                ])
+
+            def velocity(t):
+                phase = omega * t
+                return np.array([
+                    0.0, y_amplitude * omega * np.cos(phase),
+                    2.0 * z_amplitude * omega * np.cos(2.0 * phase),
+                ])
+
+            env.set_parametric_trajectory(position, velocity)
+            env.x_d = position(0.0)
+            env.dx_d[:3] = velocity(0.0)
         else:
+            env.use_parametric_traj = False
+            env._parametric_pos_func = None
+            env._parametric_vel_func = None
+            env.x_d = env.x_start.copy()
             env.dx_d = np.zeros(3)
 
         # Set initial configuration: use start_q if available, otherwise IK
@@ -102,12 +123,11 @@ class ValidationSet:
             mujoco.mj_forward(env.mj_model, env.mj_data)
 
         # Reset episode state
-        env.step_count = 0
+        env._reset_episode_progress()
         env._integral_err = np.zeros(3)
         env._ever_collided = False
         env.reward_fn._prev_dist_to_goal = None
         env.ee_trajectory.clear()
-        env.path_param = 0.0
         env._lag_lambda = 0.0
 
 
@@ -161,6 +181,7 @@ def evaluate_on_validation_set(agent, env, val_set: ValidationSet,
         ep_tracking_errors = []
         ep_min_distances = []
         ep_ever_collided_mj = False  # MuJoCo collision flag
+        ep_success = False
         done = False
         steps = 0
 
@@ -172,6 +193,7 @@ def evaluate_on_validation_set(agent, env, val_set: ValidationSet,
             ep_tracking_errors.append(info.get("tracking_error", 0.0))
             ep_min_distances.append(info.get("d_obs", 0.0))
             ep_ever_collided_mj = ep_ever_collided_mj or info.get("collision", False)
+            ep_success = ep_success or info.get("success", False)
 
             steps += 1
 
@@ -179,7 +201,8 @@ def evaluate_on_validation_set(agent, env, val_set: ValidationSet,
         x_ee, _ = env.kin.forward_kinematics(env.q)
         final_distance = np.linalg.norm(x_ee - env.x_goal)
         min_obs_dist = min(ep_min_distances) if ep_min_distances else 0.0
-        success = final_distance < 0.05 and not ep_ever_collided_mj
+        success = ep_success and final_distance < env.success_tolerance \
+            and not ep_ever_collided_mj
 
         if success:
             successes += 1

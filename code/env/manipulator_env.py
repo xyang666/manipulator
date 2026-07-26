@@ -41,6 +41,14 @@ from utils.cbf import CBFController
 from trajectory.generator import TrajectoryGenerator
 from experiment_config import ENVIRONMENT
 
+
+def dense_safety_cost(constraint_distance: float, d_safe: float) -> float:
+    """Normalized safety-margin violation, capped for numerical stability."""
+    if d_safe <= 0:
+        raise ValueError("d_safe must be positive")
+    return float(np.clip(max(0.0, d_safe - constraint_distance) / d_safe,
+                         0.0, 2.0))
+
 try:
     from control.mpc_controller import MPCController
     HAS_MPC = True
@@ -67,6 +75,11 @@ class ManipulatorEnv:
                  n_joints: int = 7,
                  dt: float = ENVIRONMENT.dt,
                  episode_len: int = ENVIRONMENT.episode_len,
+                 trajectory_steps: int = ENVIRONMENT.trajectory_steps,
+                 tracking_full_speed_error: float = ENVIRONMENT.tracking_full_speed_error,
+                 tracking_stop_error: float = ENVIRONMENT.tracking_stop_error,
+                 success_tolerance: float = ENVIRONMENT.success_tolerance,
+                 success_hold_steps: int = ENVIRONMENT.success_hold_steps,
                  n_obstacles: int = 3,
                  obs_radius: float = 0.1,
                  controller: str = "rl",
@@ -111,6 +124,17 @@ class ManipulatorEnv:
         self.n = n_joints
         self.dt = dt
         self.episode_len = episode_len
+        if not 0 < trajectory_steps <= episode_len:
+            raise ValueError("trajectory_steps must be in [1, episode_len]")
+        if not 0 <= tracking_full_speed_error < tracking_stop_error:
+            raise ValueError("tracking error thresholds must be ordered and non-negative")
+        if success_tolerance <= 0 or success_hold_steps <= 0:
+            raise ValueError("success tolerance and hold steps must be positive")
+        self.trajectory_steps = trajectory_steps
+        self.tracking_full_speed_error = tracking_full_speed_error
+        self.tracking_stop_error = tracking_stop_error
+        self.success_tolerance = success_tolerance
+        self.success_hold_steps = success_hold_steps
         self.use_trajectory_generator = use_trajectory_generator
         self.collision_term = collision_term
         self.path_deadzone = path_deadzone
@@ -256,6 +280,8 @@ class ManipulatorEnv:
 
         # Path parameterization (tracking-error-driven)
         self.path_param = 0.0  # s ∈ [0, 1]
+        self._trajectory_phase = 0.0
+        self._success_hold_count = 0
 
         # Parametric trajectory support (for figure-8, etc.)
         self.use_parametric_traj = False
@@ -274,9 +300,76 @@ class ManipulatorEnv:
             np.random.seed(seed)
         self._reset_state()
         self.ee_trajectory.clear()
-        self.path_param = 0.0
+        self._reset_episode_progress()
         self._obs_history.clear()
         return self._get_obs()
+
+    @staticmethod
+    def _minimum_jerk_progress(phase: float) -> float:
+        """C2-continuous progress with zero endpoint velocity/acceleration."""
+        u = float(np.clip(phase, 0.0, 1.0))
+        return 10.0 * u**3 - 15.0 * u**4 + 6.0 * u**5
+
+    def _tracking_progress_gate(self, tracking_error: float) -> float:
+        if tracking_error <= self.tracking_full_speed_error:
+            return 1.0
+        if tracking_error >= self.tracking_stop_error:
+            return 0.0
+        u = ((tracking_error - self.tracking_full_speed_error) /
+             (self.tracking_stop_error - self.tracking_full_speed_error))
+        smooth = u * u * (3.0 - 2.0 * u)
+        return float(1.0 - smooth)
+
+    def _reset_episode_progress(self) -> None:
+        self.step_count = 0
+        self.path_param = 0.0
+        self._trajectory_phase = 0.0
+        self._success_hold_count = 0
+        self._last_advance = 1.0
+
+    def _update_reference(self, x_ee: np.ndarray) -> float:
+        """Advance the reference without catching up after tracking stalls."""
+        tracking_error = float(np.linalg.norm(x_ee - self.x_d))
+        prev_x_d = self.x_d.copy()
+        if self.use_parametric_traj and self._parametric_pos_func is not None:
+            t = self.step_count * self.dt
+            self.x_d = self._parametric_pos_func(t)
+            self.dx_d[:3] = self._parametric_vel_func(t)
+            return tracking_error
+
+        gate = self._tracking_progress_gate(tracking_error)
+        self._last_advance = gate
+        self._trajectory_phase = min(
+            1.0, self._trajectory_phase + gate / self.trajectory_steps
+        )
+        self.path_param = self._minimum_jerk_progress(self._trajectory_phase)
+        self.x_d = (1.0 - self.path_param) * self.x_start + self.path_param * self.x_goal
+        self.dx_d[:3] = (self.x_d - prev_x_d) / self.dt
+        return tracking_error
+
+    def _termination_status(self, x_ee: np.ndarray, collision: bool):
+        """Return success, done and an explicit termination reason."""
+        if self.use_parametric_traj:
+            success = self.step_count >= self.episode_len and not self._ever_collided
+        else:
+            final_error = float(np.linalg.norm(x_ee - self.x_goal))
+            candidate = (self.path_param >= 0.99 and
+                         final_error < self.success_tolerance and
+                         not self._ever_collided)
+            self._success_hold_count = self._success_hold_count + 1 if candidate else 0
+            success = self._success_hold_count >= self.success_hold_steps
+
+        timed_out = self.step_count >= self.episode_len
+        done = success or timed_out or (self.collision_term and collision)
+        if success:
+            reason = "success"
+        elif self.collision_term and collision:
+            reason = "collision"
+        elif timed_out:
+            reason = "timeout"
+        else:
+            reason = None
+        return success, done, reason
 
     def set_parametric_trajectory(self, pos_func, vel_func):
         """
@@ -404,48 +497,10 @@ class ManipulatorEnv:
             self.q = q_new
             self.dq = dq_new
 
-        # Tracking-error-driven path progression with trapezoidal speed profile
+        # Tracking-error-gated minimum-jerk reference progression.
         x_ee, _ = self.kin.forward_kinematics(self.q)
         self._cached_x_ee = x_ee
-        tracking_error = np.linalg.norm(x_ee - self.x_d)
-
-        # Nominal path parameter (trapezoidal: ease-in → constant → ease-out)
-        total = self.episode_len
-        a_end = int(total * 0.2)
-        d_start = int(total * 0.8)
-
-        if self.step_count < a_end:
-            t = self.step_count / max(1, a_end)
-            nominal_s = t * t * a_end / total  # quadratic ease-in
-        elif self.step_count > d_start:
-            rem = max(1, total - d_start)
-            t = (self.step_count - d_start) / rem
-            nominal_s = d_start / total + (2.0 * t - t * t) * rem / total  # quadratic ease-out
-        else:
-            nominal_s = self.step_count / total  # linear
-
-        # Modulate by tracking error with dead zone and low-pass filter
-        # Dead zone: errors < 2cm don't slow progression (prevents accumulating lag)
-        err_deadzone = max(0.0, tracking_error - 0.02)
-        # path_deadzone: configurable, larger values allow more deviation
-        # before path progression stalls (default 0.20 = 22cm total)
-        raw_advance = float(np.clip(1.0 - err_deadzone / self.path_deadzone, 0.0, 1.0))
-        advance_rate = 0.5 * raw_advance + 0.5 * getattr(self, '_last_advance', raw_advance)
-        self._last_advance = advance_rate
-        self.path_param = min(1.0, self.path_param + (nominal_s - self.path_param) * advance_rate)
-
-        # Update target position: parametric vs linear trajectory
-        if self.use_parametric_traj and self._parametric_pos_func is not None:
-            t = self.step_count * self.dt
-            prev_x_d = self.x_d.copy()
-            self.x_d = self._parametric_pos_func(t)
-            self.dx_d[:3] = self._parametric_vel_func(t)
-        else:
-            # Original linear interpolation with tracking-error-driven progression
-            prev_x_d = self.x_d.copy()
-            self.x_d = (1.0 - self.path_param) * self.x_start + self.path_param * self.x_goal
-            # Feed-forward velocity = actual target motion, decoupled from advance_rate
-            self.dx_d[:3] = (self.x_d - prev_x_d) / self.dt
+        tracking_error = self._update_reference(x_ee)
 
         self.step_count += 1
 
@@ -486,32 +541,31 @@ class ManipulatorEnv:
         # Track cumulative collision flag for the entire episode
         self._ever_collided = self._ever_collided or collision
 
-        # Termination conditions
-        if self.use_parametric_traj:
-            path_complete = self.step_count >= self.episode_len
-        else:
-            path_complete = self.path_param >= 0.99
-        done = self.step_count >= self.episode_len or path_complete
-        if self.collision_term:
-            done = done or collision
+        success, done, termination_reason = self._termination_status(x_ee, collision)
 
-        # Sparse success bonus when reaching goal (only if no collision)
-        if path_complete and not self._ever_collided:
+        # Sparse success bonus only after the goal has been held continuously.
+        if success:
             reward += self.success_bonus
 
         # Scale reward for stable Q-learning (compresses Q-value range)
         reward = reward / self.reward_scale
 
         tracking_error = float(np.linalg.norm(x_ee - self.x_d))
-        # Safety cost: MuJoCo collision flag (binary).
-        # 0/1 per-step cost gives the safety critic a clean signal tied to what
-        # we actually care about, avoiding calibration issues between capsule
-        # SDF and real collision geometry.
-        cost = 1.0 if collision else 0.0
+        # Dense constraint violation for the safety critic.  MuJoCo collision
+        # remains the authoritative termination signal, while capsule distances
+        # provide useful learning signal before contact occurs.
+        self_dists = self.kin.compute_self_distances(self.q)
+        d_self = float(np.min(self_dists)) if len(self_dists) else float("inf")
+        constraint_distance = min(float(d_obs), d_self)
+        cost = dense_safety_cost(constraint_distance, self.d_safe)
 
-        info = {"d_obs": d_obs, "w": w, "success": path_complete and not self._ever_collided,
+        info = {"d_obs": d_obs, "d_self": d_self,
+                "constraint_distance": constraint_distance,
+                "w": w, "success": success,
                 "collision": collision, "cost": cost,
                 "path_param": self.path_param, "tracking_error": tracking_error,
+                "termination_reason": termination_reason,
+                "success_hold_count": self._success_hold_count,
                 "cbf_active": self._cbf_active, "cbf_mod": self._cbf_mod,
                 **reward_info}
 
@@ -626,7 +680,7 @@ class ManipulatorEnv:
         If use_trajectory_generator=True, generates collision-free scenes using TrajectoryGenerator.
         Otherwise uses default fixed trajectory (legacy behavior).
         """
-        self.step_count = 0
+        self._reset_episode_progress()
         self._integral_err = np.zeros(3)
         self._ever_collided = False
         self.reward_fn._prev_dist_to_goal = None  # reset goal distance tracking
@@ -679,13 +733,8 @@ class ManipulatorEnv:
         # Current target (starts at start position)
         self.x_d = self.x_start.copy()
 
-        # Desired velocity (towards goal)
-        direction = self.x_goal - self.x_start
-        distance = np.linalg.norm(direction)
-        if distance > 1e-6:
-            self.dx_d = (direction / distance) * 0.1  # 0.1 m/s
-        else:
-            self.dx_d = np.zeros(3)
+        # Minimum-jerk point-to-point trajectories start at zero velocity.
+        self.dx_d = np.zeros(3)
 
         # Use scene-verified IK config (avoids recomputing IK that may self-collide)
         if "start_q" in scene:
@@ -718,7 +767,7 @@ class ManipulatorEnv:
         self.x_start = np.array([0.8, 0.0, 0.5])
         self.x_goal = np.array([0.8, 0.0, 0.3])
         self.x_d = self.x_start.copy()
-        self.dx_d = np.array([0.0, 0.0, -0.1])
+        self.dx_d = np.zeros(3)
 
         # IK for initial configuration
         q_init = self.kin.inverse_kinematics(

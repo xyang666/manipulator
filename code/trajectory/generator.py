@@ -31,6 +31,7 @@ Date:   2025-06
 import numpy as np
 from env.dynamics import DQ_MAX
 import json
+import hashlib
 import argparse
 import sys
 from pathlib import Path
@@ -350,6 +351,163 @@ class TrajectoryGenerator:
                     return True
         return False
 
+    def arm_obstacle_clearance(self, q: np.ndarray, obstacles: list) -> float:
+        """Minimum signed capsule-to-obstacle clearance in metres."""
+        if not obstacles:
+            return float("inf")
+        minimum = float("inf")
+        for p1, p2, cap_radius in self.kin.get_link_capsules(q):
+            for obs in obstacles:
+                minimum = min(
+                    minimum,
+                    self._capsule_sphere_distance(
+                        p1, p2, cap_radius, np.asarray(obs[:3]), float(obs[3])
+                    ),
+                )
+        return float(minimum)
+
+    def _capsule_self_collision(self, q: np.ndarray) -> bool:
+        """Conservative self-collision test shared by scene oracles."""
+        from planner.rrt_star import segment_segment_distance
+
+        capsules = self.kin.get_link_capsules(q)
+        for i in range(len(capsules)):
+            for j in range(i + 3, len(capsules)):
+                if j >= len(capsules) - 3:
+                    continue
+                p1, p2, r1 = capsules[i]
+                q1, q2, r2 = capsules[j]
+                if segment_segment_distance(p1, p2, q1, q2) < r1 + r2 - 0.02:
+                    return True
+        return False
+
+    def _configuration_valid(self, q: np.ndarray, obstacles: list,
+                             clearance: float = 0.02) -> bool:
+        mujoco_self_collision = False
+        cd = self.collision_detector
+        if cd is not None and cd.has_mujoco:
+            cd.data.qpos[:self.kin.n] = q
+            cd.data.qvel[:self.kin.n] = 0.0
+            mujoco.mj_forward(cd.model, cd.data)
+            _, n_self = cd.detect_self_collisions()
+            mujoco_self_collision = n_self > 0
+        return bool(
+            np.all(q >= self.q_min) and np.all(q <= self.q_max)
+            and self.compute_manipulability(q) >= 0.001
+            and self.arm_obstacle_clearance(q, obstacles) >= clearance
+            and not self._capsule_self_collision(q)
+            and not mujoco_self_collision
+        )
+
+    def _edge_valid(self, q1: np.ndarray, q2: np.ndarray, obstacles: list,
+                    clearance: float = 0.025, samples: int = 15,
+                    x1: Optional[np.ndarray] = None,
+                    x2: Optional[np.ndarray] = None,
+                    task_tolerance: float = 0.03) -> bool:
+        distance = np.linalg.norm((q2 - q1) / (self.q_max - self.q_min))
+        # Always sample the interior. Short edges previously checked endpoints
+        # only, which could miss a clearance dip between adjacent IK layers.
+        count = max(samples + 1, int(np.ceil(samples * distance / 0.15)))
+        for alpha in np.linspace(0.0, 1.0, count):
+            q = (1 - alpha) * q1 + alpha * q2
+            if not self._configuration_valid(q, obstacles, clearance):
+                return False
+            if x1 is not None and x2 is not None:
+                actual, _ = self.kin.forward_kinematics(q)
+                desired = (1 - alpha) * x1 + alpha * x2
+                if np.linalg.norm(actual - desired) > task_tolerance:
+                    return False
+        return True
+
+    def _nominal_path_evidence(self, start_q: np.ndarray, goal_q: np.ndarray,
+                               obstacles: list, samples: int = 41) -> dict:
+        """Measure the direct joint interpolation; it is a difficulty baseline."""
+        clearances, min_manip = [], float("inf")
+        collision = False
+        for alpha in np.linspace(0.0, 1.0, samples):
+            q = (1 - alpha) * start_q + alpha * goal_q
+            clearance = self.arm_obstacle_clearance(q, obstacles)
+            clearances.append(clearance)
+            min_manip = min(min_manip, self.compute_manipulability(q))
+            collision = collision or clearance < 0.02 or self._capsule_self_collision(q)
+        return {
+            "collision": bool(collision),
+            "min_clearance": float(min(clearances, default=float("inf"))),
+            "min_manipulability": float(min_manip),
+        }
+
+    def _task_path_ik_oracle(self, start_pos: np.ndarray, goal_pos: np.ndarray,
+                             start_q: np.ndarray, goal_q: np.ndarray,
+                             obstacles: list, waypoints: int = 21,
+                             candidates: int = 10,
+                             clearance: float = 0.025) -> Optional[dict]:
+        """Find a collision-free IK branch while preserving the task-space line.
+
+        Each layer contains position-only IK solutions for one task waypoint.
+        Dynamic programming connects collision-free configurations across layers.
+        Thus acceptance proves more than a free start-to-goal joint-space path.
+        """
+        task_positions = [(1 - alpha) * start_pos + alpha * goal_pos
+                          for alpha in np.linspace(0.0, 1.0, waypoints)]
+        layers = [[start_q.copy()]]
+        for index, position in enumerate(task_positions[1:-1], 1):
+            seeds = list(layers[-1])
+            seeds.extend(np.random.uniform(self.q_min, self.q_max)
+                         for _ in range(max(0, candidates - len(seeds))))
+            solutions = []
+            for seed in seeds:
+                q = self.kin.inverse_kinematics(position, q_init=seed)
+                if q is None or not self._configuration_valid(q, obstacles, clearance):
+                    continue
+                if any(np.linalg.norm((q - old) / (self.q_max - self.q_min)) < 0.03
+                       for old in solutions):
+                    continue
+                solutions.append(q)
+            if not solutions:
+                return None
+            layers.append(solutions[:candidates])
+        layers.append([goal_q.copy()])
+
+        costs = [0.0]
+        parents = []
+        for layer_index in range(1, len(layers)):
+            next_costs = [float("inf")] * len(layers[layer_index])
+            next_parents = [-1] * len(layers[layer_index])
+            for j, q_next in enumerate(layers[layer_index]):
+                for i, q_prev in enumerate(layers[layer_index - 1]):
+                    if not np.isfinite(costs[i]) or not self._edge_valid(
+                            q_prev, q_next, obstacles, clearance,
+                            x1=task_positions[layer_index - 1],
+                            x2=task_positions[layer_index]):
+                        continue
+                    edge_cost = np.linalg.norm(
+                        (q_next - q_prev) / (self.q_max - self.q_min)
+                    )
+                    if costs[i] + edge_cost < next_costs[j]:
+                        next_costs[j] = costs[i] + edge_cost
+                        next_parents[j] = i
+            if not any(np.isfinite(next_costs)):
+                return None
+            parents.append(next_parents)
+            costs = next_costs
+
+        cursor = int(np.argmin(costs))
+        path = [layers[-1][cursor]]
+        for layer_index in range(len(layers) - 1, 0, -1):
+            cursor = parents[layer_index - 1][cursor]
+            path.append(layers[layer_index - 1][cursor])
+        path.reverse()
+        min_clearance = min(self.arm_obstacle_clearance(q, obstacles) for q in path)
+        min_manip = min(self.compute_manipulability(q) for q in path)
+        return {
+            "oracle": "task_path_ik_graph",
+            "oracle_waypoints": waypoints,
+            "oracle_min_clearance": float(min_clearance),
+            "oracle_min_manipulability": float(min_manip),
+            "oracle_required_clearance": float(clearance),
+            "feasible_q_path": [q.tolist() for q in path],
+        }
+
     # ------------------------------------------------------------------
     # Scene generation
     # ------------------------------------------------------------------
@@ -379,7 +537,10 @@ class TrajectoryGenerator:
                        max_attempts: int = 100,
                        ahead_mode: bool = False,
                        collision_detector: CollisionDetector = None,
-                       max_obstacle_distance: float = 0.3) -> Optional[dict]:
+                       max_obstacle_distance: float = 0.3,
+                       require_nontrivial: bool = True,
+                       oracle_waypoints: int = 21,
+                       oracle_candidates: int = 10) -> Optional[dict]:
         """
         Generate a single collision-free scene with manipulability constraint.
 
@@ -421,7 +582,10 @@ class TrajectoryGenerator:
 
             # Compute IK at start and goal
             start_ik = self.kin.inverse_kinematics(start_pos, q_init=start_seed_q)
-            goal_ik = self.kin.inverse_kinematics(goal_pos, q_init=goal_seed_q)
+            # Keep endpoints on a compatible redundancy branch. An independent
+            # random goal seed can create an artificial multi-radian jump even
+            # when the Cartesian task is simple.
+            goal_ik = self.kin.inverse_kinematics(goal_pos, q_init=start_ik)
             if start_ik is None or goal_ik is None:
                 continue
 
@@ -462,16 +626,18 @@ class TrajectoryGenerator:
             else:
                 obstacles = []
 
-            # Full-arm collision check (capsule model, 2cm clearance)
-            # Run BEFORE controller path verification — cheap filter that avoids
-            # wasting 500-step Jacobian simulation on scenes that collide anyway
-            arm_collision = False
-            for alpha in np.linspace(0, 1, 10):
-                q_interp = (1 - alpha) * start_ik + alpha * goal_ik
-                if self.check_arm_collision(q_interp, obstacles):
-                    arm_collision = True
-                    break
-            if arm_collision:
+            nominal = self._nominal_path_evidence(start_ik, goal_ik, obstacles)
+            # Keep collision cases and near-clearance cases. Easy free-space
+            # scenes remain available by disabling require_nontrivial.
+            nontrivial = nominal["collision"] or nominal["min_clearance"] < 0.08
+            if n_obstacles > 0 and require_nontrivial and not nontrivial:
+                continue
+
+            oracle = self._task_path_ik_oracle(
+                start_pos, goal_pos, start_ik, goal_ik, obstacles,
+                waypoints=oracle_waypoints, candidates=oracle_candidates,
+            )
+            if oracle is None:
                 continue
 
             # Compute min along IK path for reporting
@@ -488,7 +654,22 @@ class TrajectoryGenerator:
                 "obstacles": [[float(o[0]), float(o[1]), float(o[2]), float(o[3])] for o in obstacles],
                 "manipulability_mean": float((manip_start + manip_goal) / 2.0),
                 "manipulability_min": float(manip_min),
+                "feasible": True,
+                "nontrivial": bool(nontrivial),
+                "nominal_collision": nominal["collision"],
+                "nominal_min_clearance": nominal["min_clearance"],
+                "nominal_min_manipulability": nominal["min_manipulability"],
+                "difficulty": ("hard" if nominal["collision"] else
+                               "medium" if nominal["min_clearance"] < 0.05 else "easy"),
+                **oracle,
             }
+
+            fingerprint_payload = {k: scene[k] for k in
+                                   ("start", "goal", "obstacles")}
+            scene["scene_fingerprint"] = hashlib.sha256(
+                json.dumps(fingerprint_payload, sort_keys=True,
+                           separators=(",", ":")).encode("utf-8")
+            ).hexdigest()[:16]
 
             return scene
 
@@ -604,7 +785,8 @@ class TrajectoryGenerator:
 
     def generate_dataset(self, num_scenes: int, n_obstacles: int,
                         output_path: str, seed: int = 42, max_attempts_per_scene: int = 500,
-                        ahead_mode: bool = False):
+                        ahead_mode: bool = False, require_nontrivial: bool = True,
+                        oracle_waypoints: int = 21, oracle_candidates: int = 10):
         """
         Generate multiple scenes and save to JSON. Generates exactly num_scenes
         valid scenes, retrying failed scenes with new random seeds.
@@ -618,6 +800,8 @@ class TrajectoryGenerator:
         max_attempts_per_scene: max retries per scene index
         """
         np.random.seed(seed)
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
 
         print(f"\n{'='*60}")
         print(f"Generating {num_scenes} valid scenes with {n_obstacles} obstacles each")
@@ -633,7 +817,10 @@ class TrajectoryGenerator:
 
             scene = self.generate_scene(scene_id=scene_id, n_obstacles=n_obstacles,
                                         max_attempts=max_attempts_per_scene,
-                                        ahead_mode=ahead_mode)
+                                        ahead_mode=ahead_mode,
+                                        require_nontrivial=require_nontrivial,
+                                        oracle_waypoints=oracle_waypoints,
+                                        oracle_candidates=oracle_candidates)
 
             if scene is not None:
                 scene["scene_id"] = len(scenes)  # Renumber sequentially
@@ -646,7 +833,7 @@ class TrajectoryGenerator:
             scene_id += 1
 
         # Save to JSON
-        with open(output_path, 'w') as f:
+        with output.open('w') as f:
             json.dump(scenes, f, indent=2)
 
         print(f"\n{'='*60}")
@@ -688,6 +875,14 @@ def main():
                        help='Generate Y-parallel trajectories in front of robot')
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed')
+    parser.add_argument('--allow_easy', action='store_true',
+                       help='Allow scenes whose nominal direct path is not risky')
+    parser.add_argument('--oracle_waypoints', type=int, default=21,
+                       help='Number of task-path layers in the feasibility oracle')
+    parser.add_argument('--oracle_candidates', type=int, default=10,
+                       help='Maximum IK candidates per task-path layer')
+    parser.add_argument('--max_attempts_per_scene', type=int, default=500,
+                       help='Maximum sampled candidates examined for each scene')
 
     args = parser.parse_args()
 
@@ -727,6 +922,10 @@ def main():
         output_path=args.output,
         seed=args.seed,
         ahead_mode=args.ahead_mode,
+        require_nontrivial=not args.allow_easy,
+        oracle_waypoints=args.oracle_waypoints,
+        oracle_candidates=args.oracle_candidates,
+        max_attempts_per_scene=args.max_attempts_per_scene,
     )
 
 if __name__ == "__main__":

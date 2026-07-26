@@ -495,7 +495,7 @@ def main():
                         print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
                         print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
                         print(f"{'='*60}\n")
-                        logger.log_validation(episode, val_results)
+                        logger.log_validation(total_steps, episode, val_results)
 
                     # Reset per-env
                     env_rewards[i] = 0.0

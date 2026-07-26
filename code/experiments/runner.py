@@ -14,9 +14,11 @@ from env.dynamics import ManipulatorDynamics
 from env.manipulator_env import ManipulatorEnv
 from env.vanilla_env import VanillaEnv
 from env.residual_env import ResidualEnv
-from experiment_config import ALGORITHM, ENVIRONMENT, PHASE1_METHODS, PHASE1_SCENARIOS
+from experiment_config import (ALGORITHM, ENVIRONMENT, PHASE1_METHODS,
+                               PHASE1_SCENARIOS, TRAINING_PROTOCOL_VERSION)
 from experiments.metrics import EpisodeRecorder
 from experiments.scenarios import apply_named_scenario
+from utils.validation import ValidationSet
 
 
 TAU_MAX = np.array([87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0])
@@ -30,7 +32,9 @@ def _structured_agent(env, checkpoint: Path, args) -> SACAgent:
         n_critics=ALGORITHM.n_critics, use_safety_critic=args.safety_critic,
         device=args.device,
     )
-    agent.load(str(checkpoint), load_optimizers=False)
+    metadata = agent.load(str(checkpoint), load_optimizers=False)
+    if metadata.get("training_protocol_version") != TRAINING_PROTOCOL_VERSION:
+        raise RuntimeError("checkpoint was not trained with the current protocol")
     agent.actor.eval()
     return agent
 
@@ -38,7 +42,9 @@ def _structured_agent(env, checkpoint: Path, args) -> SACAgent:
 def _vanilla_agent(env, checkpoint: Path, args) -> VanillaSACAgent:
     agent = VanillaSACAgent(env.obs_dim, env.n, hidden_dims=ALGORITHM.hidden_dims,
                             device=args.device)
-    agent.load(str(checkpoint), load_optimizers=False)
+    metadata = agent.load(str(checkpoint), load_optimizers=False)
+    if metadata.get("training_protocol_version") != TRAINING_PROTOCOL_VERSION:
+        raise RuntimeError("checkpoint was not trained with the current protocol")
     agent.actor.eval()
     return agent
 
@@ -109,7 +115,8 @@ def run(args) -> list[dict]:
     }.get(args.method, ManipulatorEnv)
     env = env_class(
         urdf_path=args.urdf, xml_path=args.xml, dt=ENVIRONMENT.dt,
-        episode_len=args.steps, n_obstacles=14,
+        episode_len=args.steps, trajectory_steps=args.trajectory_steps,
+        n_obstacles=14,
         w_track=ENVIRONMENT.w_track, w_obs=ENVIRONMENT.w_obs,
         w_manip=ENVIRONMENT.w_manip, w_energy=ENVIRONMENT.w_energy,
         w_collision=ENVIRONMENT.w_collision, w_action=ENVIRONMENT.w_action,
@@ -125,11 +132,19 @@ def run(args) -> list[dict]:
     elif args.method == "sac_residual":
         agent = _vanilla_agent(env, args.checkpoint, args)
 
+    scene_set = ValidationSet(str(args.scene_json)) if args.scene_json else None
+    if scene_set is not None and not scene_set.scenes:
+        raise ValueError(f"scene set is empty: {args.scene_json}")
     rows = []
     for episode in range(args.episodes):
         seed = args.seed + episode
         env.reset(seed=seed)
-        apply_named_scenario(env, args.scenario)
+        if scene_set is None:
+            apply_named_scenario(env, args.scenario)
+        else:
+            scene_set.apply_scene_to_env(
+                env, scene_set.scenes[episode % len(scene_set.scenes)]
+            )
         if args.method in ("pd", "cbf_qp"):
             action_fn = lambda obs: np.zeros(env.act_dim)
         elif args.method == "gradient_projection":
@@ -140,8 +155,10 @@ def run(args) -> list[dict]:
             action_fn = lambda obs: agent.select_action(obs, deterministic=True)
         else:
             action_fn = lambda obs: agent.select_action(obs, deterministic=True)
+        scene_id = (scene_set.scenes[episode % len(scene_set.scenes)]["scene_id"]
+                    if scene_set is not None else episode)
         rows.append(evaluate_episode(env, action_fn, args.method, args.scenario,
-                                     args.seed, episode))
+                                     args.seed, scene_id))
     return rows
 
 
@@ -153,7 +170,11 @@ def parse_args():
     parser.add_argument("--seed", required=True, type=int)
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--steps", type=int, default=ENVIRONMENT.episode_len)
+    parser.add_argument("--trajectory-steps", type=int,
+                        default=ENVIRONMENT.trajectory_steps)
     parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument("--scene-json", type=Path,
+                        help="Fixed certified scenes; cycled in file order")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--urdf", default=str(root / "panda_description/urdf/panda.urdf"))
     parser.add_argument("--xml", default=str(root / "models/panda_scene.xml"))

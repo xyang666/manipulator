@@ -61,42 +61,8 @@ class VanillaEnv(ManipulatorEnv):
             self.dq = dq_new
 
         # ---- Phase 3: Post-integration bookkeeping ----
-        # Tracking-error-driven path progression with trapezoidal speed profile
         x_ee, _ = self.kin.forward_kinematics(self.q)
-        tracking_error = np.linalg.norm(x_ee - self.x_d)
-
-        # Nominal path parameter (trapezoidal: ease-in -> constant -> ease-out)
-        total = self.episode_len
-        a_end = int(total * 0.2)
-        d_start = int(total * 0.8)
-
-        if self.step_count < a_end:
-            t = self.step_count / max(1, a_end)
-            nominal_s = t * t * a_end / total  # quadratic ease-in
-        elif self.step_count > d_start:
-            rem = max(1, total - d_start)
-            t = (self.step_count - d_start) / rem
-            nominal_s = d_start / total + (2.0 * t - t * t) * rem / total  # quadratic ease-out
-        else:
-            nominal_s = self.step_count / total  # linear
-
-        # Modulate by tracking error with dead zone and low-pass filter
-        err_deadzone = max(0.0, tracking_error - 0.02)
-        raw_advance = float(np.clip(1.0 - err_deadzone / self.path_deadzone, 0.0, 1.0))
-        advance_rate = 0.5 * raw_advance + 0.5 * getattr(self, '_last_advance', raw_advance)
-        self._last_advance = advance_rate
-        self.path_param = min(1.0, self.path_param + (nominal_s - self.path_param) * advance_rate)
-
-        # Update target position
-        if self.use_parametric_traj and self._parametric_pos_func is not None:
-            t = self.step_count * self.dt
-            prev_x_d = self.x_d.copy()
-            self.x_d = self._parametric_pos_func(t)
-            self.dx_d[:3] = self._parametric_vel_func(t)
-        else:
-            prev_x_d = self.x_d.copy()
-            self.x_d = (1.0 - self.path_param) * self.x_start + self.path_param * self.x_goal
-            self.dx_d[:3] = (self.x_d - prev_x_d) / self.dt
+        tracking_error = self._update_reference(x_ee)
 
         self.step_count += 1
 
@@ -125,26 +91,20 @@ class VanillaEnv(ManipulatorEnv):
 
         self._ever_collided = self._ever_collided or collision
 
-        # Termination conditions
-        if self.use_parametric_traj:
-            path_complete = self.step_count >= self.episode_len
-        else:
-            path_complete = self.path_param >= 0.99
-        done = self.step_count >= self.episode_len or path_complete
-        if self.collision_term:
-            done = done or collision
+        success, done, termination_reason = self._termination_status(x_ee, collision)
 
-        # Sparse success bonus
-        if path_complete:
+        if success:
             reward += self.success_bonus
 
         tracking_error = float(np.linalg.norm(x_ee - self.x_d))
         info = {
             "d_obs": d_obs, "w": w,
-            "success": path_complete and not self._ever_collided,
+            "success": success,
             "collision": collision,
             "path_param": self.path_param,
             "tracking_error": tracking_error,
+            "termination_reason": termination_reason,
+            "success_hold_count": self._success_hold_count,
             **reward_info,
         }
 
@@ -169,7 +129,7 @@ if __name__ == "__main__":
 
     env = VanillaEnv(
         urdf_path=_urdf, xml_path=_xml, n_joints=7,
-        n_obstacles=1, episode_len=100,
+        n_obstacles=1, episode_len=100, trajectory_steps=70,
     )
 
     # Initial state

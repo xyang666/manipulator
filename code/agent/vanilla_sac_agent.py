@@ -202,7 +202,8 @@ class VanillaSACAgent:
     # Training step
     # ------------------------------------------------------------------
 
-    def update(self, batch: dict, batch_size: int = 256, is_last: bool = True):
+    def update(self, batch: dict, batch_size: int = 256, is_last: bool = True,
+               actor_enabled: bool | None = None):
         """
         One gradient update step from a sampled batch.
 
@@ -236,7 +237,8 @@ class VanillaSACAgent:
         self.critic_opt.step()
 
         self._update_count += 1
-        doing_warmup = self._update_count < self.critic_warmup
+        doing_warmup = (self._update_count < self.critic_warmup
+                        if actor_enabled is None else not actor_enabled)
 
         if not doing_warmup:
             # -------- Actor update (no physics loss) --------
@@ -286,6 +288,7 @@ class VanillaSACAgent:
         torch.save({
             "actor": self.actor.state_dict(),
             "critic": self.critic.state_dict(),
+            "critic_target": self.critic_target.state_dict(),
             "actor_opt": self.actor_opt.state_dict(),
             "critic_opt": self.critic_opt.state_dict(),
             "alpha_opt": self.alpha_opt.state_dict(),
@@ -299,6 +302,10 @@ class VanillaSACAgent:
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
         self.actor.load_state_dict(ckpt["actor"])
         self.critic.load_state_dict(ckpt["critic"])
+        if "critic_target" in ckpt:
+            self.critic_target.load_state_dict(ckpt["critic_target"])
+        else:
+            self.critic_target.load_state_dict(self.critic.state_dict())
         if load_optimizers:
             if "actor_opt" in ckpt:
                 self.actor_opt.load_state_dict(ckpt["actor_opt"])
