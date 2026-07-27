@@ -8,7 +8,7 @@
 唯一正式场景目录为：
 
 ```text
-results/paper_scenes/
+results/ewalker_scenes/
 ├── manifest.json
 ├── free_space/test.json
 ├── whole_body/{train,validation,test}.json
@@ -26,7 +26,7 @@ results/paper_scenes/
 |---|---:|---:|---:|---|
 | 自由空间 | - | - | 100 | 无障碍8字轨迹 |
 | 整臂避障 | 60 | 20 | 100 | 直线扫描，3个球形障碍 |
-| 狭小空间 | 60 | 20 | 100 | 10球走廊，净宽0.24--0.28 m |
+| 狭小空间 | 60 | 20 | 100 | 10球走廊，净宽0.44--0.50 m |
 | 泛化 | 60 | 20 | 100 | 单球训练/验证，三球测试 |
 
 共640个基础场景，场景指纹全局不重复。`curriculum` 是整臂避障和狭小
@@ -55,7 +55,7 @@ Oracle路径只用于离线筛选和审计，不进入策略观测，也不作�
 cd /root/manipulator/code
 screen -dmS paper_scene_generation bash -lc \
   '.venv/bin/python -u -m experiments.generate_paper_scenes \
-   --output-dir results/paper_scenes --seed 20260726 \
+   --output-dir results/ewalker_scenes --seed 20260726 \
    > /tmp/paper_scene_generation.log 2>&1'
 ```
 
@@ -75,8 +75,8 @@ tail -f /tmp/paper_scene_generation.log
 主课程训练文件为：
 
 ```text
-results/paper_scenes/curriculum/train.json       # 120个
-results/paper_scenes/curriculum/validation.json  # 40个
+results/ewalker_scenes/curriculum/train.json       # 120个
+results/ewalker_scenes/curriculum/validation.json  # 40个
 ```
 
 120个训练场景由60个三球整臂场景和60个十球走廊场景组成。当前实现是
@@ -96,9 +96,9 @@ results/paper_scenes/curriculum/validation.json  # 40个
 泛化模型独立从头训练：
 
 ```text
-results/paper_scenes/generalization/train.json       # 60个单球场景
-results/paper_scenes/generalization/validation.json  # 20个单球场景
-results/paper_scenes/generalization/test.json        # 100个三球场景
+results/ewalker_scenes/generalization/train.json       # 60个单球场景
+results/ewalker_scenes/generalization/validation.json  # 20个单球场景
+results/ewalker_scenes/generalization/test.json        # 100个三球场景
 ```
 
 训练和模型选择期间不得读取三球测试集。最终把单球checkpoint直接用于三球

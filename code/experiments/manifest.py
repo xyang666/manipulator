@@ -9,8 +9,8 @@ from experiment_config import (ALGORITHM, EVALUATION, PHASE1_METHODS, PHASE1_SCE
 
 
 def build_manifest(checkpoint_root: Path, result_root: Path,
-                   scene_json: Path = Path("../results/paper_scenes/curriculum/train.json"),
-                   val_json: Path = Path("../results/paper_scenes/curriculum/validation.json")) -> dict:
+                   scene_json: Path = Path("../results/ewalker_scenes/curriculum/train.json"),
+                   val_json: Path = Path("../results/ewalker_scenes/curriculum/validation.json")) -> dict:
     training_jobs = []
     learned = {
         "sac_joint": ["--agent_type", "joint", "--lambda_dyn", "0", "--no_safety_critic"],
@@ -22,8 +22,8 @@ def build_manifest(checkpoint_root: Path, result_root: Path,
     protocols = {
         "curriculum": (scene_json, val_json, 40),
         "generalization": (
-            Path("../results/paper_scenes/generalization/train.json"),
-            Path("../results/paper_scenes/generalization/validation.json"), 20,
+            Path("../results/ewalker_scenes/generalization/train.json"),
+            Path("../results/ewalker_scenes/generalization/validation.json"), 20,
         ),
     }
     for method, flags in learned.items():
@@ -55,7 +55,7 @@ def build_manifest(checkpoint_root: Path, result_root: Path,
                     "--scenario", scenario, "--seed", str(seed), "--episodes",
                     str(EVALUATION.episodes_per_seed), "--output", str(output),
                 ]
-                scene_path = Path("../results/paper_scenes") / scenario / "test.json"
+                scene_path = Path("../results/ewalker_scenes") / scenario / "test.json"
                 command.extend(["--scene-json", str(scene_path)])
                 if method not in ("pd", "gradient_projection", "cbf_qp"):
                     command.extend(["--checkpoint", str(checkpoint)])

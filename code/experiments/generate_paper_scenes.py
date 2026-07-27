@@ -324,7 +324,7 @@ def write(path, scenes):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output-dir", default="results/paper_scenes")
+    parser.add_argument("--output-dir", default="results/ewalker_scenes")
     parser.add_argument("--train", type=int, default=60)
     parser.add_argument("--validation", type=int, default=20)
     parser.add_argument("--test", type=int, default=100)

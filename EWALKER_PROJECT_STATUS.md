@@ -246,16 +246,16 @@ nvidia-smi
 
 ### 5.5 工程和文档债务
 
-- `code/experiments/manifest.py` 默认仍指向 `results/paper_scenes/`，必须改为
-  `results/ewalker_scenes/` 后才能生成正式任务。
-- `code/experiments/README.md` 仍描述旧 Panda 场景和 0.24--0.28 m 走廊，
-  不能继续作为当前实验的唯一操作说明。
+- `code/experiments/manifest.py`、审计器、生成器和实验 README 已切换到
+  `results/ewalker_scenes/`；后续不得重新引用旧 `paper_scenes`。
 - 训练场景生成器会在一个 split 全部完成后才写文件，长任务中断会丢失该
   split 的内存结果；需要增加增量落盘和恢复机制。
 - GitHub HTTPS remote 缺少凭据。本地和训练服务器 Git 已同步，但 GitHub
   尚未推送最新提交。
-- 本地存在未提交的日志、冒烟场景、旧 `paper_scenes_v2` 和用户工作文件，
-  清理前必须逐项确认，不能批量删除。
+- 旧 Panda `paper_scenes`、未完成 `paper_scenes_v2`、E-Walker 冒烟集和无引用
+  的旧场景图片已经清理；当前正式场景唯一来源为 `ewalker_scenes`。
+- `challenge_stage1.json` 因胶囊调试脚本仍在使用而保留，
+  `challenge_stage3.json` 因用户命令文件仍在使用而保留；它们不是正式训练集。
 
 ## 6. 正式训练矩阵
 

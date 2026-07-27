@@ -94,9 +94,9 @@ def main() -> int:
     repository = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser()
     parser.add_argument("--scene-root", type=Path,
-                        default=repository / "results/paper_scenes")
+                        default=repository / "results/ewalker_scenes")
     parser.add_argument("--output", type=Path,
-                        default=repository / "results/paper_scenes/pd_audit.json")
+                        default=repository / "results/ewalker_scenes/pd_audit.json")
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--urdf", default=DEFAULT_URDF)
     parser.add_argument("--xml", default=DEFAULT_XML)
