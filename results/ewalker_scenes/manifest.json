@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "seed": 20260726,
+  "robot_model": {
+    "name": "ewalker_inspired_7dof",
+    "status": "research reconstruction; not flight hardware",
+    "urdf": "ewalker_description/urdf/ewalker.urdf",
+    "mjcf": "models/ewalker_scene.xml",
+    "geometry_source": "E-Walker public-paper topology, tubular form and 1.3 m envelope",
+    "inertia_status": "modelled values"
+  },
+  "train_count_per_scenario": 60,
+  "validation_count_per_scenario": 20,
+  "test_count_per_scenario": 100,
+  "generation_workers": 96,
+  "global_unique_scenes": 640,
+  "protocol": {
+    "free_space": "figure-eight, no obstacles",
+    "difficulty": "hard means the zero-residual PD controller fails while the IK-graph oracle certifies a safe path",
+    "whole_body": "PD-blocking linear scan, 3 spheres",
+    "confined_space": "PD-blocking linear scan, 10-sphere corridor",
+    "generalization": "PD-blocking train 1 sphere, test 3 spheres",
+    "obstacle_geometry": "sphere collision proxies; not task-object CAD"
+  }
+}
