@@ -196,10 +196,10 @@ class PhysicsRegularizer:
         self.n = dynamics.n
         self.device = torch.device(device)
 
-        # Per-joint torque limits (Franka Panda defaults)
-        # Joints 1-4: 87 Nm, Joints 5-7: 12 Nm
         if tau_max is None:
-            tau_max = [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0]
+            from robot_config import DEFAULT_TAU_MAX, model_limits
+            tau_max = model_limits(
+                dynamics.model, "effortLimit", DEFAULT_TAU_MAX)
         if isinstance(tau_max, (list, np.ndarray)):
             tau_tensor = torch.tensor(tau_max, dtype=torch.float32)
         else:

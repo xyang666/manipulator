@@ -12,7 +12,7 @@ Date:   2025-06
 
 import numpy as np
 from typing import Optional
-from env.dynamics import DQ_MAX
+from robot_config import DEFAULT_DQ_MAX, model_limits
 
 try:
     import cvxpy as cp
@@ -246,12 +246,23 @@ class MPCController:
         dq_avoid : [n] joint velocity in null space of the position task
         """
         # Link names in the same order as kinematics.get_link_capsules()
-        capsule_link_order = [
-            "panda_link0", "panda_link1", "panda_link2", "panda_link3",
-            "panda_link4", "panda_link5", "panda_link5",  # link5 has 2 capsules
-            "panda_link6", "panda_link7", "panda_hand",
-            "panda_leftfinger", "panda_rightfinger",
-        ]
+        is_ewalker = (
+            kinematics.model is not None and
+            any(frame.name == "ewalker_link1"
+                for frame in kinematics.model.frames))
+        if is_ewalker:
+            capsule_link_order = [
+                "ewalker_base", "ewalker_link1", "ewalker_link2",
+                "ewalker_link3", "ewalker_link4", "ewalker_link5",
+                "ewalker_link6", "ewalker_link7", "ewalker_tcp",
+            ]
+        else:
+            capsule_link_order = [
+                "panda_link0", "panda_link1", "panda_link2", "panda_link3",
+                "panda_link4", "panda_link5", "panda_link5",
+                "panda_link6", "panda_link7", "panda_hand",
+                "panda_leftfinger", "panda_rightfinger",
+            ]
         capsules = kinematics.get_link_capsules(q)
         # Get all link Jacobians at once
         link_names = sorted(set(capsule_link_order))
@@ -441,10 +452,10 @@ class MPCController:
         cost = cp.sum_squares(dq_var - dq_desired) + 0.01 * cp.sum_squares(dq_var)
 
         # Constraints
-        constraints = [
-            dq_var >= -DQ_MAX,
-            dq_var <= DQ_MAX
-        ]
+        dq_max = model_limits(
+            kinematics.model, "velocityLimit",
+            DEFAULT_DQ_MAX[:self.n_controls])
+        constraints = [dq_var >= -dq_max, dq_var <= dq_max]
 
         # Solve
         problem = cp.Problem(cp.Minimize(cost), constraints)

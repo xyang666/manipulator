@@ -106,6 +106,10 @@ class ManipulatorKinematics:
             self.model = full_model
         self.data = self.model.createData()
         self.n = self.model.nv
+        if self.q_min is None:
+            self.q_min = self.model.lowerPositionLimit[:self.n].copy()
+        if self.q_max is None:
+            self.q_max = self.model.upperPositionLimit[:self.n].copy()
         # Prefer tcp/ee frame; fallback to last frame
         self.ee_frame_id = self.model.nframes - 1
         for i, f in enumerate(self.model.frames):
@@ -205,7 +209,7 @@ class ManipulatorKinematics:
 
     def get_link_capsules(self, q: np.ndarray) -> list[tuple[np.ndarray, np.ndarray, float]]:
         """
-        Returns capsule representation of each link for Franka Panda.
+        Returns the robot's shared analytical capsule representation.
         Each capsule is (start_point, end_point, radius).
 
         Extracts collision geometry directly from URDF collision primitives:
@@ -233,7 +237,7 @@ class ManipulatorKinematics:
 
             # URDF collision geometry: (link_frame, [(local_p1, local_p2, radius), ...])
             # Optimized via code/utils/optimize_capsules.py
-            collision_specs = {
+            panda_collision_specs = {
                 "panda_link0": [
                     (np.array([0.0489, -0.0011, 0.1013]),
                      np.array([-0.1569, 0.0015, 0.0001]), 0.118),
@@ -276,6 +280,49 @@ class ManipulatorKinematics:
                     (np.array([0, -0.015, 0.015]), np.array([0, -0.015, 0.045]), 0.015),
                 ],
             }
+            ewalker_collision_specs = {
+                "ewalker_base": [
+                    (np.array([0.0, 0.0, 0.0]),
+                     np.array([0.0, 0.0, 0.12]), 0.075),
+                ],
+                "ewalker_link1": [
+                    (np.array([0.0, 0.0, 0.0]),
+                     np.array([0.0, 0.0, 0.09]), 0.065),
+                ],
+                "ewalker_link2": [
+                    (np.array([0.0, 0.0, 0.0]),
+                     np.array([0.0, 0.0, 0.09]), 0.065),
+                ],
+                "ewalker_link3": [
+                    (np.array([0.0, 0.0, 0.0]),
+                     np.array([0.0, 0.0, 0.25]), 0.055),
+                ],
+                "ewalker_link4": [
+                    (np.array([0.0, 0.0, 0.0]),
+                     np.array([0.0, 0.0, 0.25]), 0.055),
+                ],
+                "ewalker_link5": [
+                    (np.array([0.0, 0.0, 0.0]),
+                     np.array([0.0, 0.0, 0.09]), 0.065),
+                ],
+                "ewalker_link6": [
+                    (np.array([0.0, 0.0, 0.0]),
+                     np.array([0.0, 0.0, 0.09]), 0.065),
+                ],
+                "ewalker_link7": [
+                    (np.array([0.0, 0.0, 0.0]),
+                     np.array([0.0, 0.0, 0.09]), 0.065),
+                ],
+                "ewalker_tcp": [
+                    (np.array([0.0, 0.0, -0.14]),
+                     np.array([0.0, 0.0, 0.0]), 0.075),
+                ],
+            }
+            collision_specs = (
+                ewalker_collision_specs
+                if "ewalker_link1" in frame_tf
+                else panda_collision_specs
+            )
 
             # Transform each capsule to world frame
             for link_name, caps_local in collision_specs.items():
@@ -319,11 +366,20 @@ class ManipulatorKinematics:
     def _get_capsule_link_indices(self) -> list[int]:
         """Return link index for each capsule.
         Caps 5 and 6 both → link5 (link5 has 2 collision capsules in URDF)."""
+        if (self.model is not None and
+                any(frame.name == "ewalker_link1"
+                    for frame in self.model.frames)):
+            return list(range(9))
         return [0, 1, 2, 3, 4, 5, 5, 6, 7, 8, 9, 10][:11]
 
     def get_self_collision_pairs(self) -> list[tuple[int, int]]:
         """Return list of (i, j) capsule index pairs that can self-collide."""
         capsule_to_link = self._get_capsule_link_indices()
+        ewalker_allowed_overlap = {
+            (0, 2), (1, 3),  # compact shoulder assembly
+            (4, 6), (5, 7),  # compact wrist assembly
+        }
+        is_ewalker = len(capsule_to_link) == 9
         n_caps = len(capsule_to_link)
         pairs = []
         for i in range(n_caps):
@@ -334,9 +390,9 @@ class ManipulatorKinematics:
                 if li == lj:
                     continue
                 # Adjacent in kinematic tree: mechanically connected
-                if (li, lj) in self._ADJACENT_LINK_PAIRS:
+                if abs(li - lj) <= 1:
                     continue
-                if (lj, li) in self._ADJACENT_LINK_PAIRS:
+                if is_ewalker and tuple(sorted((li, lj))) in ewalker_allowed_overlap:
                     continue
                 pairs.append((i, j))
         return pairs

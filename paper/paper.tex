@@ -160,7 +160,7 @@ N_{\text{pos}}^2 &= N_{\text{pos}}, \quad \dot{q} = J_{\text{pos}}^\dagger \dot{
 M(q)\ddot{q} + C(q,\dot{q})\dot{q} + G(q) = \tau
 \label{eq:dynamics}
 \end{equation}
-其中 $M(q) \in \mathbb{R}^{7 \times 7}$ 为惯性矩阵，$C(q,\dot{q}) \in \mathbb{R}^{7 \times 7}$ 为科氏力矩阵，$G(q) \in \mathbb{R}^7$ 为重力项。关节力矩受执行器物理极限约束 $|\tau_i| \leq \tau_{\max,i}$；对于 Franka Panda 机械臂，$\tau_{\max} = [87, 87, 87, 87, 12, 12, 12]^T$~Nm。
+其中 $M(q) \in \mathbb{R}^{7 \times 7}$ 为惯性矩阵，$C(q,\dot{q}) \in \mathbb{R}^{7 \times 7}$ 为科氏力矩阵，$G(q) \in \mathbb{R}^7$ 为重力项。关节力矩受执行器约束 $|\tau_i| \leq \tau_{\max,i}$。本文研究模型采用 $\tau_{\max,i}=42$~Nm；该值参考 E-Walker 地面原型的执行器指标，而非飞行硬件额定值。
 
 \subsection{结构化动作空间与约束 SAC 框架}
 \label{sec:policy_network}
@@ -458,7 +458,9 @@ J_{\text{pos}}\dot{q} = \dot{x}_d + K_p e + \sigma \cdot \Delta\dot{x}_{\text{RL
 \subsection{实验设置}
 
 \subsubsection{仿真平台}
-仿真基于 MuJoCo 物理引擎和 7 自由度空间机械臂模型，运动学和动力学由 Pinocchio 库计算，控制频率 50~Hz（$\Delta t = 0.02$~s）。空间环境模拟微重力条件，忽略重力项 $G(q)=0$。
+仿真采用依据公开 E-Walker 文献重建的 7 自由度空间机械臂研究模型\cite{nair2022ewalker}。模型保留文献给出的对称七转动关节拓扑（三轴肩、单轴肘和三轴腕）、双管状主连杆，并采用约 1.3~m 的 $1{:}6$ 地面原型尺度。这里“依据公开文献的几何”仅指上述拓扑、管状形态和总体尺度；各段精确长度分配及胶囊半径是重建选择，并非来自公开 CAD。由于公开文献未提供 URDF、精确关节坐标系、逐连杆质量分布和完整惯量张量，本文的关节坐标系、关节限位、连杆质量及惯量均为可复现实验所需的建模值；其中惯量由基本几何体近似得到。该模型仅称为 \emph{E-Walker-inspired} 研究重建，不代表、也不声称对应任何在轨或飞行型号。
+
+物理接触由 MuJoCo 计算，运动学和动力学由 Pinocchio 计算；解析规划器与 MuJoCo 采用轴线和半径一致的胶囊体碰撞模型。控制频率为 50~Hz（$\Delta t = 0.02$~s）。空间环境采用姿态稳定的固定基座近似并关闭重力项 $G(q)=0$。因此，本文结论限定于该固定基座、建模惯量的仿真设定，不外推为真实航天器--机械臂耦合动力学或飞行性能。
 
 \subsubsection{对比方法}
 选取以下基线方法：

@@ -86,12 +86,9 @@ def parse_args():
     p.add_argument("--obs_waypoint_steps", type=str, default=None)
 
     # Paths
-    _here = os.path.dirname(os.path.abspath(__file__))
-    _root = os.path.dirname(_here)
-    _venv_data = os.path.join(_here, ".venv/lib/python3.12/site-packages/cmeel.prefix"
-                              "/share/example-robot-data/robots/panda_description")
-    p.add_argument("--urdf", type=str, default=os.path.join(_venv_data, "urdf/panda.urdf"))
-    p.add_argument("--xml",  type=str, default=os.path.join(_root, "models/panda_scene.xml"))
+    from robot_config import DEFAULT_URDF, DEFAULT_XML
+    p.add_argument("--urdf", type=str, default=DEFAULT_URDF)
+    p.add_argument("--xml", type=str, default=DEFAULT_XML)
     p.add_argument("--save_path", type=str, default="checkpoints/ppo_pirl.pt")
     p.add_argument("--run_name",  type=str, default=None)
 

@@ -27,6 +27,7 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 
 from env.manipulator_env import ManipulatorEnv
+from robot_config import DEFAULT_URDF, DEFAULT_XML
 
 
 # ---------------------------------------------------------------------------
@@ -34,10 +35,8 @@ from env.manipulator_env import ManipulatorEnv
 # ---------------------------------------------------------------------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
-_VENV_DATA = os.path.join(_HERE, ".venv/lib/python3.12/site-packages/cmeel.prefix"
-                          "/share/example-robot-data/robots/panda_description")
-_DEFAULT_URDF = os.path.join(_VENV_DATA, "urdf/panda.urdf")
-_DEFAULT_XML  = os.path.join(_ROOT, "models/panda_scene.xml")
+_DEFAULT_URDF = DEFAULT_URDF
+_DEFAULT_XML = DEFAULT_XML
 _DEFAULT_CKPT = os.path.join(_ROOT, "checkpoints/sac_pirl.pt")
 _DEFAULT_SCENE_JSON = os.path.join(_ROOT, "results/trajectories.json")
 

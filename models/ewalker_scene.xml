@@ -1,0 +1,91 @@
+<mujoco model="ewalker_inspired_7dof">
+  <!--
+    Research reconstruction based on Nair et al. (2022),
+    DOI 10.3389/frobt.2022.995813. Inertias are modelling assumptions.
+    All collision geoms are capsules shared with the analytical model.
+  -->
+  <compiler angle="radian"/>
+  <option gravity="0 0 0" timestep="0.002"/>
+  <default>
+    <joint armature="0.01" damping="0.02"/>
+    <geom type="capsule" contype="1" conaffinity="1" friction="0.6 0.05 0.01"
+          rgba="0.82 0.86 0.90 1"/>
+  </default>
+
+  <worldbody>
+    <light pos="0 0 2" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <geom name="floor" type="plane" size="3 3 0.1" pos="0 0 0"
+          rgba="0.08 0.10 0.15 1" contype="0" conaffinity="0"/>
+
+    <body name="ewalker_base">
+      <geom name="ewalker_base_capsule" size="0.075 0.06" pos="0 0 0.06"
+            rgba="0.85 0.56 0.12 1"/>
+      <body name="ewalker_link1" pos="0 0 0.12">
+        <joint name="ewalker_joint1" axis="0 0 1" range="-3.1415926536 3.1415926536"/>
+        <inertial pos="0 0 0.045" mass="1.15" diaginertia="0.00199 0.00199 0.00243"/>
+        <geom name="ewalker_link1_capsule" size="0.065 0.045" pos="0 0 0.045"
+              rgba="0.16 0.20 0.26 1"/>
+        <body name="ewalker_link2" pos="0 0 0.09">
+          <joint name="ewalker_joint2" axis="0 1 0" range="-2.617993878 2.617993878"/>
+          <inertial pos="0 0 0.045" mass="1.15" diaginertia="0.00199 0.00199 0.00243"/>
+          <geom name="ewalker_link2_capsule" size="0.065 0.045" pos="0 0 0.045"
+                rgba="0.16 0.20 0.26 1"/>
+          <body name="ewalker_link3" pos="0 0 0.09">
+            <joint name="ewalker_joint3" axis="1 0 0" range="-3.1415926536 3.1415926536"/>
+            <inertial pos="0 0 0.125" mass="1.35" diaginertia="0.00805 0.00805 0.00204"/>
+            <geom name="ewalker_link3_capsule" size="0.055 0.125" pos="0 0 0.125"/>
+            <body name="ewalker_link4" pos="0 0 0.25">
+              <joint name="ewalker_joint4" axis="0 1 0" range="-2.617993878 2.617993878"/>
+              <inertial pos="0 0 0.125" mass="1.35" diaginertia="0.00805 0.00805 0.00204"/>
+              <geom name="ewalker_link4_capsule" size="0.055 0.125" pos="0 0 0.125"/>
+              <body name="ewalker_link5" pos="0 0 0.25">
+                <joint name="ewalker_joint5" axis="1 0 0" range="-3.1415926536 3.1415926536"/>
+                <inertial pos="0 0 0.045" mass="1.15" diaginertia="0.00199 0.00199 0.00243"/>
+                <geom name="ewalker_link5_capsule" size="0.065 0.045" pos="0 0 0.045"
+                      rgba="0.16 0.20 0.26 1"/>
+                <body name="ewalker_link6" pos="0 0 0.09">
+                  <joint name="ewalker_joint6" axis="0 1 0" range="-2.617993878 2.617993878"/>
+                  <inertial pos="0 0 0.045" mass="1.15" diaginertia="0.00199 0.00199 0.00243"/>
+                  <geom name="ewalker_link6_capsule" size="0.065 0.045" pos="0 0 0.045"
+                        rgba="0.16 0.20 0.26 1"/>
+                  <body name="ewalker_link7" pos="0 0 0.09">
+                    <joint name="ewalker_joint7" axis="0 0 1" range="-3.1415926536 3.1415926536"/>
+                    <inertial pos="0 0 0.08" mass="1.70" diaginertia="0.0048 0.0048 0.0040"/>
+                    <geom name="ewalker_link7_capsule" size="0.065 0.045" pos="0 0 0.045"
+                          rgba="0.16 0.20 0.26 1"/>
+                    <geom name="ewalker_lee_capsule" size="0.075 0.07" pos="0 0 0.25"
+                          rgba="0.85 0.56 0.12 1"/>
+                    <site name="ee_site" pos="0 0 0.32" size="0.012"
+                          rgba="1 0.2 0.1 0.8"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+
+    <!-- Fixed-capacity obstacle pool, positioned and resized at runtime. -->
+    <body name="obstacle0" mocap="true"><geom name="obs0" type="sphere" size="0.03" rgba="1 0 0 0.6"/></body>
+    <body name="obstacle1" mocap="true"><geom name="obs1" type="sphere" size="0.03" rgba="1 0 0 0.6"/></body>
+    <body name="obstacle2" mocap="true"><geom name="obs2" type="sphere" size="0.03" rgba="1 0 0 0.6"/></body>
+    <body name="obstacle3" mocap="true"><geom name="obs3" type="sphere" size="0.03" rgba="1 0 0 0.6"/></body>
+    <body name="obstacle4" mocap="true"><geom name="obs4" type="sphere" size="0.03" rgba="1 0 0 0.6"/></body>
+    <body name="obstacle5" mocap="true"><geom name="obs5" type="sphere" size="0.03" rgba="1 0 0 0.6"/></body>
+    <body name="obstacle6" mocap="true"><geom name="obs6" type="sphere" size="0.03" rgba="1 0 0 0.6"/></body>
+    <body name="obstacle7" mocap="true"><geom name="obs7" type="sphere" size="0.03" rgba="1 0 0 0.6"/></body>
+    <body name="obstacle8" mocap="true"><geom name="obs8" type="sphere" size="0.03" rgba="1 0 0 0.6"/></body>
+    <body name="obstacle9" mocap="true"><geom name="obs9" type="sphere" size="0.03" rgba="1 0 0 0.6"/></body>
+  </worldbody>
+
+  <actuator>
+    <velocity name="act_j1" joint="ewalker_joint1" kv="100" ctrlrange="-0.5 0.5"/>
+    <velocity name="act_j2" joint="ewalker_joint2" kv="100" ctrlrange="-0.5 0.5"/>
+    <velocity name="act_j3" joint="ewalker_joint3" kv="100" ctrlrange="-0.5 0.5"/>
+    <velocity name="act_j4" joint="ewalker_joint4" kv="100" ctrlrange="-0.5 0.5"/>
+    <velocity name="act_j5" joint="ewalker_joint5" kv="100" ctrlrange="-0.5 0.5"/>
+    <velocity name="act_j6" joint="ewalker_joint6" kv="100" ctrlrange="-0.5 0.5"/>
+    <velocity name="act_j7" joint="ewalker_joint7" kv="100" ctrlrange="-0.5 0.5"/>
+  </actuator>
+</mujoco>

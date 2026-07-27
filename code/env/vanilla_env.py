@@ -6,7 +6,7 @@ actions directly as joint velocities (dq), bypassing the task-space
 control law used by the physics-informed agent.
 
 Action: 7D joint velocities [dq_1, ..., dq_7] in rad/s, clipped to
-        actuator limits (DQ_MAX ≈ 2.175 rad/s each).
+        actuator limits read from the loaded robot model.
 
 This is the environment used by the VanillaSACAgent baseline.
 Reference: Haarnoja et al., "Soft Actor-Critic", 2018
@@ -139,12 +139,9 @@ if __name__ == "__main__":
     import sys, os
     sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-    _HERE = os.path.dirname(os.path.abspath(__file__))
-    _ROOT = os.path.dirname(os.path.dirname(_HERE))
-    _venv_data = os.path.join(_HERE, "..", ".venv/lib/python3.12/site-packages/cmeel.prefix"
-                              "/share/example-robot-data/robots/panda_description")
-    _urdf = os.path.join(_venv_data, "urdf/panda.urdf")
-    _xml = os.path.join(_ROOT, "models/panda_scene.xml")
+    from robot_config import DEFAULT_URDF, DEFAULT_XML
+    _urdf = DEFAULT_URDF
+    _xml = DEFAULT_XML
 
     print("=== vanilla_env.py unit tests ===")
 

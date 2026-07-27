@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "model_name": "ewalker_inspired_7dof",
+  "status": "research reconstruction; not flight hardware",
+  "source": {
+    "citation": "Nair et al., Design engineering a walking robotic manipulator for in-space assembly missions, Frontiers in Robotics and AI 9, 2022",
+    "doi": "10.3389/frobt.2022.995813",
+    "source_based_parameters": {
+      "topology": "3-axis shoulder, 1-axis elbow, 3-axis wrist",
+      "degrees_of_freedom": 7,
+      "symmetry": true,
+      "prototype_total_length_m": 1.3,
+      "prototype_total_mass_kg_approx": 12.0,
+      "prototype_actuator_torque_nm": 42.0,
+      "primary_link_shape": "hollow tube"
+    }
+  },
+  "modelled_parameters": {
+    "geometry_reconstruction_note": "The paper supplies topology, tubular form and approximate 1.3 m prototype envelope; exact segment allocation and radii below are reconstruction choices, not published CAD dimensions.",
+    "axial_offsets_m": {
+      "base_to_j1": 0.12,
+      "j1_to_j2": 0.09,
+      "j2_to_j3": 0.09,
+      "j3_to_j4": 0.25,
+      "j4_to_j5": 0.25,
+      "j5_to_j6": 0.09,
+      "j6_to_j7": 0.09,
+      "j7_to_tcp": 0.32
+    },
+    "capsule_radii_m": {
+      "base": 0.075,
+      "compact_joint_links": 0.065,
+      "primary_tubular_links": 0.055,
+      "end_effector_interface": 0.075
+    },
+    "joint_axes": ["z", "y", "x", "y", "x", "y", "z"],
+    "joint_limits_rad": [
+      [-3.1415926536, 3.1415926536],
+      [-2.6179938780, 2.6179938780],
+      [-3.1415926536, 3.1415926536],
+      [-2.6179938780, 2.6179938780],
+      [-3.1415926536, 3.1415926536],
+      [-2.6179938780, 2.6179938780],
+      [-3.1415926536, 3.1415926536]
+    ],
+    "joint_velocity_limit_rad_s": 0.5,
+    "joint_effort_limit_nm": 42.0,
+    "model_total_mass_kg": 10.6,
+    "collision_geometry": "matching analytical/MJCF capsule axes and radii; URDF uses cylinders because it has no capsule primitive",
+    "inertia_method": "diagonal rigid-body approximations from primitive geometry",
+    "gravity_assumption": "fixed attitude-stabilized spacecraft base; gravity disabled by the experiment"
+  }
+}

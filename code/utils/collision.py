@@ -95,12 +95,20 @@ class CollisionDetector:
 
         total_pen = 0.0
         n_self = 0
+        ewalker_allowed_overlap = {
+            frozenset(("ewalker_base", "ewalker_link2")),
+            frozenset(("ewalker_link1", "ewalker_link3")),
+            frozenset(("ewalker_link4", "ewalker_link6")),
+            frozenset(("ewalker_link5", "ewalker_link7")),
+        }
 
         # Get robot body IDs (assuming robot bodies are named with 'panda' prefix)
         robot_body_ids = set()
         for i in range(self.model.nbody):
             body_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, i)
-            if body_name and 'panda' in body_name.lower():
+            if body_name and any(
+                    token in body_name.lower()
+                    for token in ("panda", "ewalker")):
                 robot_body_ids.add(i)
 
         # Check contacts between robot bodies
@@ -121,6 +129,12 @@ class CollisionDetector:
                 # Adjacent bodies have body IDs differing by 1 in kinematic chain
                 if abs(body1 - body2) <= 1:
                     continue  # Skip adjacent links
+                name1 = mujoco.mj_id2name(
+                    self.model, mujoco.mjtObj.mjOBJ_BODY, body1)
+                name2 = mujoco.mj_id2name(
+                    self.model, mujoco.mjtObj.mjOBJ_BODY, body2)
+                if frozenset((name1, name2)) in ewalker_allowed_overlap:
+                    continue
 
                 penetration = -contact.dist
                 if penetration > 0:
@@ -148,7 +162,9 @@ class CollisionDetector:
         robot_body_ids = set()
         for i in range(self.model.nbody):
             body_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, i)
-            if body_name and 'panda' in body_name.lower():
+            if body_name and any(
+                    token in body_name.lower()
+                    for token in ("panda", "ewalker")):
                 robot_body_ids.add(i)
 
         # Check contacts with non-robot bodies (obstacles)

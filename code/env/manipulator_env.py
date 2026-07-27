@@ -33,7 +33,7 @@ except ImportError:
     print("[env] WARNING: mujoco not found. Running in kinematics-only mode.")
 
 from env.kinematics import ManipulatorKinematics
-from env.dynamics import ManipulatorDynamics, DQ_MAX
+from env.dynamics import ManipulatorDynamics
 from agent.reward import RewardFunction
 from utils.sdf import ObstacleSDF
 from utils.collision import CollisionDetector
@@ -147,8 +147,7 @@ class ManipulatorEnv:
         self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1 + 3  # fallback, overwritten below
         self.act_dim = n_joints  # 7D: 3 (task relaxation) + 4 (nullspace, = n-3)
 
-        self.kin = ManipulatorKinematics(urdf_path, n_joints,
-                                          q_min=Q_MIN, q_max=Q_MAX)
+        self.kin = ManipulatorKinematics(urdf_path, n_joints)
         # Sync env DOF with actual model loaded by Pinocchio (may differ from n_joints)
         self.n = self.kin.n
 
@@ -176,6 +175,7 @@ class ManipulatorEnv:
                 body_name = mujoco.mj_id2name(self.mj_model,
                                                mujoco.mjtObj.mjOBJ_BODY, body_id)
                 if body_name and ("panda" in body_name.lower()
+                                  or "ewalker" in body_name.lower()
                                   or "link" in body_name.lower()):
                     self._robot_geom_ids.append(i)
 
@@ -218,8 +218,10 @@ class ManipulatorEnv:
         self.obs_dim = self._single_obs_dim * self.frame_stack
         self._obs_history = collections.deque(maxlen=self.frame_stack)
 
-        # Truncate DQ_MAX to match actual DOF
-        self._dq_max = DQ_MAX[:self.n]
+        if self.kin.model is not None:
+            self._dq_max = self.kin.model.velocityLimit[:self.n].copy()
+        else:
+            self._dq_max = np.full(self.n, 0.5)
         self.dyn = ManipulatorDynamics(urdf_path, n_joints)
 
         # Trajectory generator (optional)
@@ -485,7 +487,7 @@ class ManipulatorEnv:
         prev_dq = self.dq.copy()
 
         # Apply joint velocity limits before integration
-        # dq_cmd = np.clip(dq_cmd, -self._dq_max, self._dq_max)
+        dq_cmd = np.clip(dq_cmd, -self._dq_max, self._dq_max)
 
         # Integrate (kinematics-only mode)
         q_new = self.q + dq_cmd * self.dt
@@ -576,20 +578,24 @@ class ManipulatorEnv:
 
         Parameters
         ----------
-        show_robot : if False, hide the robot's visual geometry (only capsules shown)
+        show_robot : if False, hide the opaque robot geoms and draw the same
+            collision geoms semi-transparently. Their original MuJoCo type,
+            size and orientation are preserved.
         """
         if self.mj_model is None:
             return
         if not hasattr(self, '_viewer'):
             self._viewer = mujoco.viewer.launch_passive(self.mj_model, self.mj_data)
         if self._viewer.is_running():
-            # Hide only robot body geoms by setting alpha to 0
-            # Identify robot geoms by body name (Panda links start with "panda_")
+            # Hide only robot body geoms by setting alpha to 0. The collision
+            # overlay below redraws them with the real MuJoCo geometry type.
             for i in range(self.mj_model.ngeom):
                 body_id = self.mj_model.geom_bodyid[i]
                 body_name = mujoco.mj_id2name(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, body_id)
-                # Hide geoms belonging to robot bodies (typically contain "panda" or "link")
-                if body_name and ("panda" in body_name.lower() or "link" in body_name.lower()):
+                if body_name and (
+                        "panda" in body_name.lower()
+                        or "ewalker" in body_name.lower()
+                        or "link" in body_name.lower()):
                     self.mj_model.geom_rgba[i, 3] = 1.0 if show_robot else 0.0
             # Draw visualizations
             self._draw_visualizations()
@@ -600,16 +606,18 @@ class ManipulatorEnv:
         scene = self._viewer.user_scn
         scene.ngeom = 0  # Clear previous geometries
 
-        # 1. Draw robot collision geometry (from MuJoCo, semi-transparent blue spheres)
+        # 1. Draw the actual robot collision geometry from MuJoCo. Previously
+        # every geom was forced to mjGEOM_SPHERE, which made capsule links look
+        # like a chain of balls in the interactive viewer.
         for gid in self._robot_geom_ids:
             if scene.ngeom >= scene.maxgeom:
                 break
-            pos = self.mj_data.geom_xpos[gid]
-            radius = self.mj_model.geom_size[gid, 0]  # collision radius
             mujoco.mjv_initGeom(
                 scene.geoms[scene.ngeom],
-                mujoco.mjtGeom.mjGEOM_SPHERE,
-                np.array([radius, 0, 0]), pos, np.eye(3).flatten(),
+                int(self.mj_model.geom_type[gid]),
+                self.mj_model.geom_size[gid].copy(),
+                self.mj_data.geom_xpos[gid].copy(),
+                self.mj_data.geom_xmat[gid].copy(),
                 np.array([0.0, 0.5, 1.0, 0.3])  # Blue, semi-transparent
             )
             scene.ngeom += 1
@@ -745,7 +753,7 @@ class ManipulatorEnv:
                 self.q = q_init
             else:
                 print("[env] WARNING: IK failed for start position, using home pose")
-                self.q = np.array([0.0, 0.0, 0.0, -1.57, 0.0, 1.57, 0.785])
+                self.q = np.zeros(self.n)
 
         self.dq = np.zeros(self.n)
         self._sync_obstacles_to_mujoco()
@@ -754,8 +762,8 @@ class ManipulatorEnv:
         if self.mj_data is not None:
             self.mj_data.qpos[:self.n] = self.q
             self.mj_data.qvel[:self.n] = self.dq
-            self.mj_data.qpos[self.n:self.n + 2] = 0.0
-            self.mj_data.qvel[self.n:self.n + 2] = 0.0
+            self.mj_data.qpos[self.n:] = 0.0
+            self.mj_data.qvel[self.n:] = 0.0
             mujoco.mj_forward(self.mj_model, self.mj_data)
 
     def _reset_state_default(self):
@@ -770,14 +778,15 @@ class ManipulatorEnv:
         self.dx_d = np.zeros(3)
 
         # IK for initial configuration
-        q_init = self.kin.inverse_kinematics(
-            np.concatenate([self.x_start, np.array([0, 0, 0, 1])])
-        )
+        # The experiment controls end-effector position only. Requiring a
+        # legacy Panda orientation here can make a reachable E-Walker start
+        # pose fail IK unnecessarily.
+        q_init = self.kin.inverse_kinematics(self.x_start)
         if q_init is not None:
             self.q = q_init
         else:
             print("[env] WARNING: IK failed, using home pose")
-            self.q = np.array([0.0, 0.0, 0.0, -1.57, 0.0, 1.57, 0.785])
+            self.q = np.zeros(self.n)
 
         self.dq = np.zeros(self.n)
 
@@ -794,8 +803,8 @@ class ManipulatorEnv:
         if self.mj_data is not None:
             self.mj_data.qpos[:self.n] = self.q
             self.mj_data.qvel[:self.n] = self.dq
-            self.mj_data.qpos[self.n:self.n + 2] = 0.0
-            self.mj_data.qvel[self.n:self.n + 2] = 0.0
+            self.mj_data.qpos[self.n:] = 0.0
+            self.mj_data.qvel[self.n:] = 0.0
             mujoco.mj_forward(self.mj_model, self.mj_data)
 
     def _generate_obstacles_near_trajectory(self) -> list:
@@ -1036,9 +1045,9 @@ class ManipulatorEnv:
         self.mj_data.qpos[:self.n] = q_desired
         self.mj_data.qvel[:self.n] = dq_cmd
 
-        # Keep fingers closed
-        self.mj_data.qpos[self.n:self.n + 2] = 0.0
-        self.mj_data.qvel[self.n:self.n + 2] = 0.0
+        # Keep any non-arm joints (e.g. legacy Panda fingers) fixed.
+        self.mj_data.qpos[self.n:] = 0.0
+        self.mj_data.qvel[self.n:] = 0.0
 
         mujoco.mj_forward(self.mj_model, self.mj_data)  # Update kinematics only
         self.q = self.mj_data.qpos[:self.n].copy()

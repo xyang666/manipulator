@@ -29,7 +29,6 @@ Date:   2025-06
 """
 
 import numpy as np
-from env.dynamics import DQ_MAX
 import json
 import hashlib
 import argparse
@@ -41,6 +40,7 @@ from typing import List, Tuple, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from env.kinematics import ManipulatorKinematics
+from robot_config import DEFAULT_DQ_MAX, DEFAULT_URDF, model_limits
 from utils.collision import CollisionDetector
 
 try:
@@ -74,17 +74,16 @@ class TrajectoryGenerator:
         """
         self.n = n_joints
 
-        # Joint limits (Panda default)
-        self.q_min = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
-        self.q_max = np.array([2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973])
-
-        self.kin = ManipulatorKinematics(urdf_path=urdf_path, n_joints=n_joints,
-                                          q_min=self.q_min, q_max=self.q_max)
-        # Workspace bounds (default: empirical Panda workspace)
+        self.kin = ManipulatorKinematics(urdf_path=urdf_path, n_joints=n_joints)
+        self.q_min = self.kin.q_min.copy()
+        self.q_max = self.kin.q_max.copy()
+        self.dq_max = model_limits(
+            self.kin.model, "velocityLimit", DEFAULT_DQ_MAX)
+        # Conservative bounds for the 1.3 m E-Walker-inspired model.
         # Z_min = 0.10 ensures positions stay above the floor (Z=0) with margin
         if workspace_bounds is None:
-            self.ws_min = np.array([-0.65, -0.65, 0.15])
-            self.ws_max = np.array([0.65, 0.65, 0.85])
+            self.ws_min = np.array([-1.0, -1.0, 0.10])
+            self.ws_max = np.array([1.0, 1.0, 1.25])
         else:
             self.ws_min, self.ws_max = workspace_bounds
 
@@ -758,7 +757,7 @@ class TrajectoryGenerator:
             except np.linalg.LinAlgError:
                 return False
             dq = Jpinv @ dx_cmd[:3]
-            dq = np.clip(dq, -DQ_MAX, DQ_MAX)
+            dq = np.clip(dq, -self.dq_max, self.dq_max)
 
             q = q + dq * dt
 
@@ -870,7 +869,7 @@ class TrajectoryGenerator:
 
 def main():
     parser = argparse.ArgumentParser(description='Generate collision-free trajectories with manipulability constraints')
-    parser.add_argument('--urdf', type=str, default='panda_description/urdf/panda.urdf',
+    parser.add_argument('--urdf', type=str, default=DEFAULT_URDF,
                        help='Path to URDF file')
     parser.add_argument('--xml', type=str, default=None,
                        help='Path to MuJoCo XML file (enables self-collision check)')

@@ -2,10 +2,7 @@
 dynamics.py
 -----------
 Computes manipulator dynamics matrices M(q), C(q,dq), g(q) using Pinocchio.
-Supports any 7-DOF arm URDF (default: Franka Panda).
-
-Robot physical constants defined here (single source of truth):
-    DQ_MAX — per-joint velocity limits (rad/s)
+Supports any 7-DOF arm URDF.
 
 Usage:
     dyn = ManipulatorDynamics(urdf_path)
@@ -18,8 +15,8 @@ Date:   2025-06
 
 import numpy as np
 
-# Joint velocity limits (Franka Panda, rad/s)
-DQ_MAX = np.array([2.175, 2.175, 2.175, 2.175, 2.610, 2.610, 2.610])
+# Legacy compatibility only. New code reads limits from the loaded URDF.
+DQ_MAX = np.full(7, 0.5)
 
 try:
     import pinocchio as pin

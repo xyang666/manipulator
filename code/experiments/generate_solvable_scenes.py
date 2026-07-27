@@ -62,10 +62,11 @@ def generate_split(generator, name, count, used_fingerprints,
 
 
 def main():
+    from robot_config import DEFAULT_URDF
     parser = argparse.ArgumentParser(
         description="Generate independently certified train/validation/test scenes"
     )
-    parser.add_argument("--urdf", default="panda_description/urdf/panda.urdf")
+    parser.add_argument("--urdf", default=DEFAULT_URDF)
     parser.add_argument("--output_dir", default="results/solvable_scenes")
     parser.add_argument("--train", type=int, default=500)
     parser.add_argument("--validation", type=int, default=100)

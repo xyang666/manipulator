@@ -117,8 +117,8 @@ class ValidationSet:
         if env.mj_data is not None:
             env.mj_data.qpos[:env.n] = env.q
             env.mj_data.qvel[:env.n] = env.dq
-            env.mj_data.qpos[env.n:env.n + 2] = 0.0
-            env.mj_data.qvel[env.n:env.n + 2] = 0.0
+            env.mj_data.qpos[env.n:] = 0.0
+            env.mj_data.qvel[env.n:] = 0.0
             import mujoco
             mujoco.mj_forward(env.mj_model, env.mj_data)
 

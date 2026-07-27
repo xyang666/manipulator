@@ -11,6 +11,7 @@ import mujoco
 
 from env.manipulator_env import ManipulatorEnv
 from experiment_config import ENVIRONMENT
+from robot_config import DEFAULT_URDF, DEFAULT_XML
 from trajectory.generator import TrajectoryGenerator
 from utils.collision import CollisionDetector
 from utils.validation import ValidationSet
@@ -24,8 +25,8 @@ class PDEvaluator:
 
     def __init__(self, root, max_obstacles=10):
         self.env = ManipulatorEnv(
-            urdf_path=str(root / "panda_description/urdf/panda.urdf"),
-            xml_path=str(root / "models/panda_scene.xml"),
+            urdf_path=DEFAULT_URDF,
+            xml_path=DEFAULT_XML,
             n_obstacles=max_obstacles, use_trajectory_generator=False,
         )
         self.applier = ValidationSet.__new__(ValidationSet)
@@ -220,13 +221,19 @@ def generate_free_space(generator, count, used):
 
 def generate_corridors(generator, evaluator, count, prefix, used, rng):
     scenes = []
-    home = np.array([0.0, 0.0, 0.0, -1.57, 0.0, 1.57, 0.785])
+    # Use the neutral pose of the loaded robot. The previous Panda-specific
+    # seed biased IK after switching the experiment to E-Walker.
+    home = np.zeros(generator.kin.n)
     while len(scenes) < count:
         x = np.random.uniform(0.38, 0.42)
         z = np.random.uniform(0.37, 0.43)
         half_span = np.random.uniform(0.14, 0.16)
         radius = np.random.uniform(0.025, 0.032)
-        free_width = np.random.uniform(0.24, 0.28)
+        # E-Walker's capsule envelope is wider than the former Panda model.
+        # A 0.24--0.28 m corridor collides even at the endpoint IK solutions;
+        # 0.44--0.50 m retains a confined passage while allowing at least
+        # 2.5 cm endpoint clearance before adding the PD-blocking obstacle.
+        free_width = np.random.uniform(0.44, 0.50)
         offset = free_width / 2.0 + radius
         start = np.array([x, -half_span, z])
         goal = np.array([x, half_span, z])
@@ -274,10 +281,10 @@ def _init_generation_worker(root_text):
     global _WORKER_GENERATOR, _WORKER_EVALUATOR
     root = Path(root_text)
     _WORKER_GENERATOR = TrajectoryGenerator(
-        str(root / "panda_description/urdf/panda.urdf"),
+        DEFAULT_URDF,
         obstacle_radius_range=(0.025, 0.055),
     )
-    model = mujoco.MjModel.from_xml_path(str(root / "models/panda_scene.xml"))
+    model = mujoco.MjModel.from_xml_path(DEFAULT_XML)
     _WORKER_GENERATOR.collision_detector = CollisionDetector(
         model, mujoco.MjData(model))
     _WORKER_EVALUATOR = PDEvaluator(root)
@@ -330,10 +337,10 @@ def main():
         output = root / output
     np.random.seed(args.seed)
     generator = TrajectoryGenerator(
-        str(root / "panda_description/urdf/panda.urdf"),
+        DEFAULT_URDF,
         obstacle_radius_range=(0.025, 0.055),
     )
-    model = mujoco.MjModel.from_xml_path(str(root / "models/panda_scene.xml"))
+    model = mujoco.MjModel.from_xml_path(DEFAULT_XML)
     generator.collision_detector = CollisionDetector(model, mujoco.MjData(model))
     used = set()
 
@@ -393,6 +400,15 @@ def main():
     write(output / "curriculum/validation.json",
           whole_validation + confined_validation)
     manifest = {"schema_version": 1, "seed": args.seed,
+                "robot_model": {
+                    "name": "ewalker_inspired_7dof",
+                    "status": "research reconstruction; not flight hardware",
+                    "urdf": "ewalker_description/urdf/ewalker.urdf",
+                    "mjcf": "models/ewalker_scene.xml",
+                    "geometry_source": ("E-Walker public-paper topology, "
+                                        "tubular form and 1.3 m envelope"),
+                    "inertia_status": "modelled values",
+                },
                 "train_count_per_scenario": args.train,
                 "validation_count_per_scenario": args.validation,
                 "test_count_per_scenario": args.test,
@@ -406,7 +422,9 @@ def main():
                              "confined_space": ("PD-blocking linear scan, "
                                                 "10-sphere corridor"),
                              "generalization": ("PD-blocking train 1 sphere, "
-                                                "test 3 spheres")}}
+                                                "test 3 spheres"),
+                             "obstacle_geometry": (
+                                 "sphere collision proxies; not task-object CAD")}}
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2),
                                            encoding="utf-8")
 

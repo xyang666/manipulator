@@ -74,118 +74,195 @@ def scene_sampling_weights(success_ema, uniform_mix=0.20):
 def parse_args():
     p = argparse.ArgumentParser()
 
-    # --- SAC training ---
+    # --- SAC 训练规模与采样 ---
+    # 训练期间累计采集的环境步数；不是 episode 数，也不是梯度更新次数。
     p.add_argument("--steps",        type=int,   default=500_000)
+    # 每次从经验回放池抽取的样本数；增大可提高 GPU 吞吐，但占用更多显存。
     p.add_argument("--batch_size",   type=int,   default=ALGORITHM.batch_size)
+    # 前多少个环境步只随机探索、不更新策略，用于给回放池预热。
     p.add_argument("--start_steps",  type=int,   default=ALGORITHM.start_steps)
+    # 每次触发网络更新时连续执行的梯度更新次数。
     p.add_argument("--grad_steps",   type=int,   default=ALGORITHM.gradient_steps)
+    # 每采集多少轮并行环境数据触发一次网络更新。
     p.add_argument("--update_every", type=int,   default=1)
+    # 经验回放池最多保存的 transition 数；满后覆盖最旧数据。
     p.add_argument("--buffer_size",  type=int,   default=ALGORITHM.replay_size)
+    # 并行环境数量；主要影响 CPU 占用和数据采集速度。
     p.add_argument("--n_envs",       type=int,   default=ALGORITHM.parallel_envs)
+    # 单个 episode 的最大控制步数；控制周期默认 0.02 s。
     p.add_argument("--episode_len",  type=int,   default=ENVIRONMENT.episode_len)
+    # 期望轨迹走完所用的参考步数，必须不大于 episode_len。
     p.add_argument("--trajectory_steps", type=int, default=ENVIRONMENT.trajectory_steps)
+    # 跟踪误差低于该值（m）时，参考轨迹按完整速度推进。
     p.add_argument("--tracking_full_speed_error", type=float,
                    default=ENVIRONMENT.tracking_full_speed_error)
+    # 跟踪误差高于该值（m）时暂停参考轨迹；两阈值之间平滑降速。
     p.add_argument("--tracking_stop_error", type=float,
                    default=ENVIRONMENT.tracking_stop_error)
+    # 末端到目标距离小于该值（m）才计入连续成功保持。
     p.add_argument("--success_tolerance", type=float,
                    default=ENVIRONMENT.success_tolerance)
+    # 连续满足目标容差多少步后，将 episode 判定为成功。
     p.add_argument("--success_hold_steps", type=int,
                    default=ENVIRONMENT.success_hold_steps)
+    # Python、NumPy、PyTorch 和环境的随机种子，用于复现实验。
     p.add_argument("--seed",         type=int,   default=11)
 
-    # --- Policy / action ---
+    # --- 策略网络与动作空间 ---
+    # 结构化动作中任务空间参考修正量的最大尺度（m/s）。
     p.add_argument("--task_scale",       type=float, default=ALGORITHM.task_scale)
+    # 结构化动作中零空间关节速度分量的最大尺度（rad/s）。
     p.add_argument("--nullspace_scale",  type=float, default=ALGORITHM.nullspace_scale)
+    # MLP 隐藏层宽度，使用逗号分隔，例如 "256,256"。
     p.add_argument("--hidden_dims",      type=str,   default="256,256")
+    # Q critic 数量；多个 critic 取保守估计可缓解 Q 值过估计。
     p.add_argument("--n_critics",        type=int,   default=ALGORITHM.n_critics)
+    # 策略/critic 主干：普通 MLP 或时序 Transformer。
     p.add_argument("--backbone",         type=str,   default="mlp", choices=["mlp", "transformer"])
+    # 拼接多少帧历史观测；大于 1 时观测维度和内存开销增加。
     p.add_argument("--frame_stack",      type=int,   default=1)
+    # 策略一次预测的动作序列长度；1 表示每步重新预测。
     p.add_argument("--action_horizon",   type=int,   default=1)
+    # Transformer 特征维度，仅 backbone=transformer 时生效。
     p.add_argument("--d_model",          type=int,   default=128)
+    # Transformer 多头注意力的 head 数。
     p.add_argument("--n_heads",          type=int,   default=4)
+    # Transformer encoder 层数。
     p.add_argument("--n_enc_layers",     type=int,   default=2)
+    # Transformer decoder 层数。
     p.add_argument("--n_dec_layers",     type=int,   default=2)
+    # Transformer dropout 概率。
     p.add_argument("--dropout",          type=float, default=0.1)
+    # 启用控制障碍函数（CBF）后处理安全滤波器。
     p.add_argument("--use_cbf",          action="store_true")
+    # CBF 收敛/保守系数；增大通常更积极地修正接近障碍的动作。
     p.add_argument("--cbf_alpha",        type=float, default=1.0)
+    # 关闭独立安全 critic，退化为只优化奖励的 SAC。
     p.add_argument("--no_safety_critic", action="store_true")
+    # 关闭风险门控，使任务空间 RL 修正不再按障碍距离衰减。
     p.add_argument("--disable_gate", action="store_true")
+    # structured=3D任务修正+4D零空间；joint=直接7D；residual=PD上叠加7D残差。
     p.add_argument("--agent_type", choices=["structured", "joint", "residual"],
                    default="structured")
 
-    # --- Physics regularization ---
+    # --- 动力学正则化 ---
+    # 超出 URDF 关节力矩上限的惩罚权重；0 表示不使用动力学正则项。
     p.add_argument("--lambda_dyn",  type=float, default=ALGORITHM.lambda_dyn)
 
-    # --- Learning ---
+    # --- SAC/约束 SAC 优化参数 ---
+    # actor、critic 的 Adam 学习率。
     p.add_argument("--lr",            type=float, default=ALGORITHM.learning_rate)
+    # 目标 critic 的 Polyak 软更新系数，越小更新越平滑。
     p.add_argument("--tau",           type=float, default=ALGORITHM.tau)
+    # SAC 初始熵温度；控制探索强度。
     p.add_argument("--alpha",         type=float, default=ALGORITHM.alpha)
+    # 目标策略熵；None 时依据动作维度自动设置。
     p.add_argument("--target_entropy",type=float, default=None)
+    # critic 先单独学习多少次更新，再开始更新 actor。
     p.add_argument("--critic_warmup", type=int,   default=5000)
+    # 安全约束 Lagrange 乘子的学习率。
     p.add_argument("--lr_lag",        type=float, default=ALGORITHM.lagrange_learning_rate)
+    # Lagrange 乘子的初始值。
     p.add_argument("--lag_init",      type=float, default=ALGORITHM.lagrange_initial_value)
+    # 兼容旧实验的约束目标参数；当前协议优先使用 cost_limit。
     p.add_argument("--lag_target",    type=float, default=0.05)
+    # 允许的平均安全代价上限；超过后 Lagrange 惩罚增强。
     p.add_argument("--cost_limit",    type=float, default=ALGORITHM.cost_limit)
+    # 写入回放池前对安全代价的整体缩放系数。
     p.add_argument("--cost_scale",    type=float, default=1.0)
 
-    # --- Reward ---
+    # --- 奖励函数与安全距离 ---
+    # 末端轨迹跟踪奖励权重。
     p.add_argument("--w_track",      type=float, default=ENVIRONMENT.w_track)
+    # 接近障碍物时连续避障惩罚的权重。
     p.add_argument("--w_obs",        type=float, default=ENVIRONMENT.w_obs)
+    # 实际发生碰撞时惩罚的权重。
     p.add_argument("--w_collision",  type=float, default=ENVIRONMENT.w_collision)
+    # 低可操作度（接近奇异位形）惩罚权重。
     p.add_argument("--w_manip",      type=float, default=ENVIRONMENT.w_manip)
+    # 关节运动/动力学能耗惩罚权重。
     p.add_argument("--w_energy",     type=float, default=ENVIRONMENT.w_energy)
+    # 动作幅值和平滑性惩罚权重。
     p.add_argument("--w_action",     type=float, default=ENVIRONMENT.w_action)
+    # 额外零空间动作幅值惩罚权重。
     p.add_argument("--w_null",       type=float, default=0.0)
+    # 机器人胶囊表面到障碍物表面的期望安全间距（m）。
     p.add_argument("--d_safe",       type=float, default=ENVIRONMENT.d_safe)
+    # 成功到达并保持目标后一次性加入的奖励。
     p.add_argument("--success_bonus",type=float, default=ENVIRONMENT.success_bonus)
+    # 单步原始奖励的下限；None 表示不截断负奖励。
     p.add_argument("--reward_min",   type=float, default=None)
+    # 最终奖励除以该值，用于控制 Q 值的数值范围。
     p.add_argument("--reward_scale", type=float, default=1.0)
+    # 允许参考轨迹继续推进的误差死区尺度（m）。
     p.add_argument("--path_deadzone",type=float, default=0.20)
 
-    # --- Data ---
+    # --- 训练/验证场景和观测 ---
+    # 训练场景 JSON；None 时由 E-Walker 环境在线生成场景。
     p.add_argument("--scene_json",   type=str,   default=None)
+    # 固定训练 JSON 中的单个场景编号；-1 表示从全部场景采样。
     p.add_argument("--scene_id",     type=int,   default=-1)
+    # 独立验证场景 JSON，用于选择 best checkpoint。
     p.add_argument("--val_json",     type=str,   default=None)
+    # 兼容旧配置：每多少个 episode 验证一次。
     p.add_argument("--val_every",    type=int,   default=50)
+    # 每采集多少环境步进行一次验证；当前训练循环优先使用该参数。
     p.add_argument("--val_every_steps", type=int,
                    default=ALGORITHM.validation_interval_steps)
+    # 每次验证评估的场景数量。
     p.add_argument("--val_scenes",   type=int,   default=10)
+    # 观测中编码的障碍物数量；每个障碍占中心 xyz 和半径 4 维。
     p.add_argument("--obs_scene_embed", type=int, default=0)
+    # 观测未来路径点的步数偏移，逗号分隔，例如 "10,25,50"。
     p.add_argument("--obs_waypoint_steps", type=str, default=None)
 
-    # --- Replay buffer ---
+    # --- 经验回放 ---
+    # 启用优先经验回放（PER），优先采样 TD error 较大的 transition。
     p.add_argument("--per",         action="store_true")
 
-    # --- Paths ---
+    # --- 机器人模型与输出路径 ---
     _here = os.path.dirname(os.path.abspath(__file__))
     _root = os.path.dirname(_here)
-    _venv_data = os.path.join(_here, ".venv/lib/python3.12/site-packages/cmeel.prefix"
-                              "/share/example-robot-data/robots/panda_description")
-    _default_urdf = os.path.join(_venv_data, "urdf/panda.urdf")
-    _default_xml  = os.path.join(_root, "models/panda_scene.xml")
+    from robot_config import DEFAULT_URDF, DEFAULT_XML
+    _default_urdf = DEFAULT_URDF
+    _default_xml = DEFAULT_XML
 
+    # Pinocchio 使用的 URDF；默认是 E-Walker-inspired 7-DoF 模型。
     p.add_argument("--urdf",       type=str, default=_default_urdf)
+    # MuJoCo 使用的 MJCF/XML；默认是对应的 E-Walker 场景模型。
     p.add_argument("--xml",        type=str, default=_default_xml)
+    # checkpoint 保存目录。
     p.add_argument("--save_path",  type=str, default="checkpoints")
+    # 本次运行名称；用于日志、checkpoint 元数据和实验区分。
     p.add_argument("--run_name",   type=str, default=None)
 
-    # --- Logging / checkpoint ---
+    # --- 日志与 checkpoint ---
+    # 每多少个 episode 输出一次训练统计。
     p.add_argument("--log_every",        type=int, default=10)
+    # 兼容旧配置：每多少个 episode 保存一次 checkpoint。
     p.add_argument("--checkpoint_every", type=int, default=1000)
+    # 每采集多少环境步保存一次 checkpoint；当前协议优先使用该参数。
     p.add_argument("--checkpoint_every_steps", type=int,
                    default=ALGORITHM.checkpoint_interval_steps)
+    # 不因碰撞立即终止 episode；碰撞惩罚和安全代价仍然计算。
     p.add_argument("--no_collision_term", action="store_true")
 
-    # --- Render ---
+    # --- 可视化 ---
+    # 打开 MuJoCo 实时窗口；会明显降低训练速度，仅建议调试时使用。
     p.add_argument("--render", action="store_true")
 
-    # --- Resume ---
+    # --- 恢复/迁移训练 ---
+    # 从指定 checkpoint 恢复模型、优化器和训练计数。
     p.add_argument("--resume",       type=str, default=None)
+    # 允许加载缺少当前协议元数据的旧 checkpoint（可能不可完全复现）。
     p.add_argument("--allow_legacy_resume", action="store_true")
+    # 恢复时重新初始化熵温度 alpha 及其优化器。
     p.add_argument("--reset_alpha",  action="store_true")
+    # 恢复时重新初始化奖励 critic/安全 critic。
     p.add_argument("--reset_critic", action="store_true")
+    # 恢复时重新初始化 actor。
     p.add_argument("--reset_actor",  action="store_true")
+    # 仅从给定 checkpoint 导入 actor，其他网络保持新初始化。
     p.add_argument("--load_actor",   type=str, default=None)
 
     return p.parse_args()

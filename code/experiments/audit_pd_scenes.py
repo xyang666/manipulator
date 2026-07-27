@@ -90,6 +90,7 @@ def _scene_files(root: Path) -> list[Path]:
 
 
 def main() -> int:
+    from robot_config import DEFAULT_URDF, DEFAULT_XML
     repository = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser()
     parser.add_argument("--scene-root", type=Path,
@@ -97,9 +98,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path,
                         default=repository / "results/paper_scenes/pd_audit.json")
     parser.add_argument("--workers", type=int, default=16)
-    parser.add_argument("--urdf", default=str(
-        repository / "panda_description/urdf/panda.urdf"))
-    parser.add_argument("--xml", default=str(repository / "models/panda_scene.xml"))
+    parser.add_argument("--urdf", default=DEFAULT_URDF)
+    parser.add_argument("--xml", default=DEFAULT_XML)
     args = parser.parse_args()
 
     jobs: list[tuple[str, dict]] = []

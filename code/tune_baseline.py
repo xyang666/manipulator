@@ -21,20 +21,15 @@ from typing import Dict, Tuple
 sys.path.insert(0, os.path.dirname(__file__))
 
 from env.manipulator_env import ManipulatorEnv
+from robot_config import DEFAULT_URDF, DEFAULT_XML
 
 
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--steps", type=int, default=500, help="Steps per trial")
     p.add_argument("--trials", type=int, default=20, help="Number of tuning trials")
-    _here = os.path.dirname(os.path.abspath(__file__))
-    _root = os.path.dirname(_here)
-    _venv_data = os.path.join(_here, ".venv/lib/python3.12/site-packages/cmeel.prefix"
-                              "/share/example-robot-data/robots/panda_description")
-    _default_urdf = os.path.join(_venv_data, "urdf/panda.urdf")
-    _default_xml = os.path.join(_root, "models/panda_scene.xml")
-    p.add_argument("--urdf", type=str, default=_default_urdf)
-    p.add_argument("--xml", type=str, default=_default_xml)
+    p.add_argument("--urdf", type=str, default=DEFAULT_URDF)
+    p.add_argument("--xml", type=str, default=DEFAULT_XML)
     return p.parse_args()
 
 
@@ -176,4 +171,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

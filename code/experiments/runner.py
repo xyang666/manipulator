@@ -18,10 +18,9 @@ from experiment_config import (ALGORITHM, ENVIRONMENT, PHASE1_METHODS,
                                PHASE1_SCENARIOS, TRAINING_PROTOCOL_VERSION)
 from experiments.metrics import EpisodeRecorder
 from experiments.scenarios import apply_named_scenario
+from robot_config import (DEFAULT_TAU_MAX, DEFAULT_URDF, DEFAULT_XML,
+                          model_limits)
 from utils.validation import ValidationSet
-
-
-TAU_MAX = np.array([87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0])
 
 
 def _structured_agent(env, checkpoint: Path, args) -> SACAgent:
@@ -77,7 +76,8 @@ def _joint_residual_to_structured(env, residual: np.ndarray) -> np.ndarray:
 
 def evaluate_episode(env, action_fn, method: str, scenario: str,
                      seed: int, scene_id: int) -> dict:
-    recorder = EpisodeRecorder(method, scenario, seed, scene_id, env.dt, TAU_MAX)
+    tau_max = model_limits(env.dyn.model, "effortLimit", DEFAULT_TAU_MAX)
+    recorder = EpisodeRecorder(method, scenario, seed, scene_id, env.dt, tau_max)
     obs = env._get_obs()
     previous_dq = env.dq.copy()
     for _ in range(env.episode_len):
@@ -176,8 +176,8 @@ def parse_args():
     parser.add_argument("--scene-json", type=Path,
                         help="Fixed certified scenes; cycled in file order")
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--urdf", default=str(root / "panda_description/urdf/panda.urdf"))
-    parser.add_argument("--xml", default=str(root / "models/panda_scene.xml"))
+    parser.add_argument("--urdf", default=DEFAULT_URDF)
+    parser.add_argument("--xml", default=DEFAULT_XML)
     parser.add_argument("--device", default="cpu")
     parser.set_defaults(lambda_dyn=ALGORITHM.lambda_dyn, safety_critic=True)
     args = parser.parse_args()

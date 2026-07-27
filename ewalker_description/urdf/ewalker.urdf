@@ -1,0 +1,95 @@
+<?xml version="1.0"?>
+<!--
+  E-Walker-inspired research reconstruction.
+  Geometry/topology source: Nair et al. (2022), DOI 10.3389/frobt.2022.995813.
+  Inertial values and joint frames are modelling assumptions, not flight data.
+-->
+<robot name="ewalker_inspired_7dof">
+  <material name="space_white"><color rgba="0.82 0.86 0.90 1"/></material>
+  <material name="joint_dark"><color rgba="0.16 0.20 0.26 1"/></material>
+  <material name="lee_gold"><color rgba="0.85 0.56 0.12 1"/></material>
+
+  <link name="ewalker_base">
+    <visual><origin xyz="0 0 0.06"/><geometry><cylinder radius="0.075" length="0.12"/></geometry><material name="lee_gold"/></visual>
+    <collision><origin xyz="0 0 0.06"/><geometry><cylinder radius="0.075" length="0.12"/></geometry></collision>
+    <inertial><origin xyz="0 0 0.06"/><mass value="1.60"/><inertia ixx="0.00492" ixy="0" ixz="0" iyy="0.00492" iyz="0" izz="0.00450"/></inertial>
+  </link>
+
+  <link name="ewalker_link1">
+    <visual><origin xyz="0 0 0.045"/><geometry><cylinder radius="0.065" length="0.09"/></geometry><material name="joint_dark"/></visual>
+    <collision><origin xyz="0 0 0.045"/><geometry><cylinder radius="0.065" length="0.09"/></geometry></collision>
+    <inertial><origin xyz="0 0 0.045"/><mass value="1.15"/><inertia ixx="0.00199" ixy="0" ixz="0" iyy="0.00199" iyz="0" izz="0.00243"/></inertial>
+  </link>
+  <joint name="ewalker_joint1" type="revolute">
+    <origin xyz="0 0 0.12"/><parent link="ewalker_base"/><child link="ewalker_link1"/><axis xyz="0 0 1"/>
+    <limit lower="-3.1415926536" upper="3.1415926536" effort="42" velocity="0.5"/><dynamics damping="0.02" friction="0"/>
+  </joint>
+
+  <link name="ewalker_link2">
+    <visual><origin xyz="0 0 0.045"/><geometry><cylinder radius="0.065" length="0.09"/></geometry><material name="joint_dark"/></visual>
+    <collision><origin xyz="0 0 0.045"/><geometry><cylinder radius="0.065" length="0.09"/></geometry></collision>
+    <inertial><origin xyz="0 0 0.045"/><mass value="1.15"/><inertia ixx="0.00199" ixy="0" ixz="0" iyy="0.00199" iyz="0" izz="0.00243"/></inertial>
+  </link>
+  <joint name="ewalker_joint2" type="revolute">
+    <origin xyz="0 0 0.09"/><parent link="ewalker_link1"/><child link="ewalker_link2"/><axis xyz="0 1 0"/>
+    <limit lower="-2.6179938780" upper="2.6179938780" effort="42" velocity="0.5"/><dynamics damping="0.02" friction="0"/>
+  </joint>
+
+  <link name="ewalker_link3">
+    <visual><origin xyz="0 0 0.125"/><geometry><cylinder radius="0.055" length="0.25"/></geometry><material name="space_white"/></visual>
+    <collision><origin xyz="0 0 0.125"/><geometry><cylinder radius="0.055" length="0.25"/></geometry></collision>
+    <inertial><origin xyz="0 0 0.125"/><mass value="1.35"/><inertia ixx="0.00805" ixy="0" ixz="0" iyy="0.00805" iyz="0" izz="0.00204"/></inertial>
+  </link>
+  <joint name="ewalker_joint3" type="revolute">
+    <origin xyz="0 0 0.09"/><parent link="ewalker_link2"/><child link="ewalker_link3"/><axis xyz="1 0 0"/>
+    <limit lower="-3.1415926536" upper="3.1415926536" effort="42" velocity="0.5"/><dynamics damping="0.02" friction="0"/>
+  </joint>
+
+  <link name="ewalker_link4">
+    <visual><origin xyz="0 0 0.125"/><geometry><cylinder radius="0.055" length="0.25"/></geometry><material name="space_white"/></visual>
+    <collision><origin xyz="0 0 0.125"/><geometry><cylinder radius="0.055" length="0.25"/></geometry></collision>
+    <inertial><origin xyz="0 0 0.125"/><mass value="1.35"/><inertia ixx="0.00805" ixy="0" ixz="0" iyy="0.00805" iyz="0" izz="0.00204"/></inertial>
+  </link>
+  <joint name="ewalker_joint4" type="revolute">
+    <origin xyz="0 0 0.25"/><parent link="ewalker_link3"/><child link="ewalker_link4"/><axis xyz="0 1 0"/>
+    <limit lower="-2.6179938780" upper="2.6179938780" effort="42" velocity="0.5"/><dynamics damping="0.02" friction="0"/>
+  </joint>
+
+  <link name="ewalker_link5">
+    <visual><origin xyz="0 0 0.045"/><geometry><cylinder radius="0.065" length="0.09"/></geometry><material name="joint_dark"/></visual>
+    <collision><origin xyz="0 0 0.045"/><geometry><cylinder radius="0.065" length="0.09"/></geometry></collision>
+    <inertial><origin xyz="0 0 0.045"/><mass value="1.15"/><inertia ixx="0.00199" ixy="0" ixz="0" iyy="0.00199" iyz="0" izz="0.00243"/></inertial>
+  </link>
+  <joint name="ewalker_joint5" type="revolute">
+    <origin xyz="0 0 0.25"/><parent link="ewalker_link4"/><child link="ewalker_link5"/><axis xyz="1 0 0"/>
+    <limit lower="-3.1415926536" upper="3.1415926536" effort="42" velocity="0.5"/><dynamics damping="0.02" friction="0"/>
+  </joint>
+
+  <link name="ewalker_link6">
+    <visual><origin xyz="0 0 0.045"/><geometry><cylinder radius="0.065" length="0.09"/></geometry><material name="joint_dark"/></visual>
+    <collision><origin xyz="0 0 0.045"/><geometry><cylinder radius="0.065" length="0.09"/></geometry></collision>
+    <inertial><origin xyz="0 0 0.045"/><mass value="1.15"/><inertia ixx="0.00199" ixy="0" ixz="0" iyy="0.00199" iyz="0" izz="0.00243"/></inertial>
+  </link>
+  <joint name="ewalker_joint6" type="revolute">
+    <origin xyz="0 0 0.09"/><parent link="ewalker_link5"/><child link="ewalker_link6"/><axis xyz="0 1 0"/>
+    <limit lower="-2.6179938780" upper="2.6179938780" effort="42" velocity="0.5"/><dynamics damping="0.02" friction="0"/>
+  </joint>
+
+  <link name="ewalker_link7">
+    <visual><origin xyz="0 0 0.045"/><geometry><cylinder radius="0.065" length="0.09"/></geometry><material name="joint_dark"/></visual>
+    <collision><origin xyz="0 0 0.045"/><geometry><cylinder radius="0.065" length="0.09"/></geometry></collision>
+    <inertial><origin xyz="0 0 0.08"/><mass value="1.70"/><inertia ixx="0.0048" ixy="0" ixz="0" iyy="0.0048" iyz="0" izz="0.0040"/></inertial>
+  </link>
+  <joint name="ewalker_joint7" type="revolute">
+    <origin xyz="0 0 0.09"/><parent link="ewalker_link6"/><child link="ewalker_link7"/><axis xyz="0 0 1"/>
+    <limit lower="-3.1415926536" upper="3.1415926536" effort="42" velocity="0.5"/><dynamics damping="0.02" friction="0"/>
+  </joint>
+
+  <link name="ewalker_tcp">
+    <visual><origin xyz="0 0 -0.07"/><geometry><cylinder radius="0.075" length="0.14"/></geometry><material name="lee_gold"/></visual>
+    <collision><origin xyz="0 0 -0.07"/><geometry><cylinder radius="0.075" length="0.14"/></geometry></collision>
+  </link>
+  <joint name="ewalker_tcp_joint" type="fixed">
+    <origin xyz="0 0 0.32"/><parent link="ewalker_link7"/><child link="ewalker_tcp"/>
+  </joint>
+</robot>
