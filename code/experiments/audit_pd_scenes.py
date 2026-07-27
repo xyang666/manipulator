@@ -111,7 +111,10 @@ def main() -> int:
         raise ValueError(f"no base scene files found below {args.scene_root}")
 
     max_obstacles = max(len(scene.get("obstacles", [])) for _, scene in jobs)
-    context = mp.get_context("spawn")
+    # Fork keeps the large MuJoCo/Pinocchio/PyTorch shared libraries
+    # copy-on-write.  A spawn pool duplicates them in every worker and exceeds
+    # the 2 GiB memory cgroup used by the training server.
+    context = mp.get_context("fork")
     with context.Pool(
         processes=args.workers,
         initializer=_init_worker,
