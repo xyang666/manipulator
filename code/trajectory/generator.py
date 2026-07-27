@@ -451,9 +451,24 @@ class TrajectoryGenerator:
                           for alpha in np.linspace(0.0, 1.0, waypoints)]
         layers = [[start_q.copy()]]
         for index, position in enumerate(task_positions[1:-1], 1):
-            seeds = list(layers[-1])
-            seeds.extend(np.random.uniform(self.q_min, self.q_max)
-                         for _ in range(max(0, candidates - len(seeds))))
+            # Expand each surviving branch locally in the position-Jacobian
+            # null space.  Reusing only the previous IK solutions preserves the
+            # same redundancy branch and cannot discover a gradual whole-arm
+            # detour around an obstacle.
+            branch_seeds = list(layers[-1])
+            seeds = []
+            perturbation_scale = 0.20
+            for base in branch_seeds:
+                seeds.append(base)
+                basis = self.kin.null_space_basis_position(base)
+                z = np.random.normal(0.0, perturbation_scale, basis.shape[1])
+                perturbed = np.clip(base + basis @ z, self.q_min, self.q_max)
+                seeds.append(perturbed)
+            target_seed_count = max(candidates, 2 * len(branch_seeds))
+            seeds.extend(
+                np.random.uniform(self.q_min, self.q_max)
+                for _ in range(max(0, target_seed_count - len(seeds)))
+            )
             solutions = []
             for seed in seeds:
                 q = self.kin.inverse_kinematics(position, q_init=seed)
