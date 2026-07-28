@@ -189,12 +189,16 @@ class PhysicsRegularizer:
     def __init__(self, dynamics,
                  tau_max: float | list[float] | np.ndarray | None = None,
                  lambda_dyn: float = 0.1, dt: float = 0.02,
+                 soft_limit_ratio: float = 0.80,
                  device: str = "cpu"):
         self.dt = dt
         self.lambda_dyn = lambda_dyn
         self.dynamics = dynamics
         self.n = dynamics.n
         self.device = torch.device(device)
+        if not 0.0 < soft_limit_ratio < 1.0:
+            raise ValueError("soft_limit_ratio must be in (0, 1)")
+        self.soft_limit_ratio = float(soft_limit_ratio)
 
         if tau_max is None:
             from robot_config import DEFAULT_TAU_MAX, model_limits
@@ -321,9 +325,11 @@ class PhysicsRegularizer:
         M_batch, h_batch = self._compute_dynamics_batch(q_batch, dq_batch)
         torques = (M_batch @ ddq.unsqueeze(-1)).squeeze(-1) + h_batch
 
-        # ---- Torque limit violation loss ----
-        violation = F.relu(torques.abs() - self._tau_max_t)
-        loss = (violation ** 2).mean()
+        # Dimensionless soft-limit loss: zero below the configured utilization
+        # and equal to one at the actuator hard limit.
+        utilization = torques.abs() / self._tau_max_t.clamp_min(1e-6)
+        margin = F.relu(utilization - self.soft_limit_ratio)
+        loss = ((margin / (1.0 - self.soft_limit_ratio)) ** 2).mean()
 
         return loss * self.lambda_dyn
 

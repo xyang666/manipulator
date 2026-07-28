@@ -77,6 +77,8 @@ class SACAgent:
                  lr_lag:       float = 1e-4,
                  lag_init:     float = 0.1,
                  lag_max:      float = 10.0,
+                 min_alpha:    float = 0.05,
+                 physics_soft_limit_ratio: float = 0.80,
                  use_safety_critic: bool = True):
         self.gamma       = gamma
         self.use_safety_critic = use_safety_critic
@@ -92,6 +94,8 @@ class SACAgent:
         self._single_dim = single_dim if single_dim is not None else state_dim
         self._backbone = backbone
         self._grad_steps = max(1, grad_steps)
+        if min_alpha <= 0.0:
+            raise ValueError("min_alpha must be positive")
 
         # Scale tau by 1/grad_steps so the effective Polyak averaging rate is
         # τ per env step (not per gradient step). Otherwise when grad_steps > 1,
@@ -149,11 +153,12 @@ class SACAgent:
         # Differentiable physics regularizer (Plan B: pure torch, preserves grad)
         self.physics = PhysicsRegularizer(dynamics, lambda_dyn=lambda_dyn,
                                           dt=self._get_dt_default(),
+                                          soft_limit_ratio=physics_soft_limit_ratio,
                                           device=self.device)
 
         # Automatic entropy tuning
         self.target_entropy = target_entropy if target_entropy is not None else -action_dim
-        self.min_alpha = 0.02  # prevent entropy collapse
+        self.min_alpha = float(min_alpha)
         initial_log_alpha = max(np.log(alpha), np.log(self.min_alpha))
         self.log_alpha = torch.tensor(initial_log_alpha, requires_grad=True, device=self.device)
         self.alpha_opt = optim.Adam([self.log_alpha], lr=lr)
@@ -302,6 +307,7 @@ class SACAgent:
 
         # -------- Safety Critic update (optional) --------
         safety_critic_loss = 0.0
+        predicted_cost = 0.0
         if self.use_safety_critic:
             with torch.no_grad():
                 a_, log_pi_, _ = self.actor.sample(s_)
@@ -309,11 +315,17 @@ class SACAgent:
                 qc_target = torch.min(torch.cat(qc_targets, dim=-1), dim=-1, keepdim=True).values
                 qc_backup = cost * self.cost_scale + self.gamma * (1 - d) * qc_target
             for qc in self.safety_critic(s_critic, a):
-                safety_critic_loss += F.mse_loss(qc, qc_backup)
+                safety_critic_loss += F.huber_loss(
+                    qc, qc_backup, delta=1.0
+                )
             self.safety_critic_opt.zero_grad()
             safety_critic_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.safety_critic.parameters(), max_norm=1.0)
             self.safety_critic_opt.step()
+            with torch.no_grad():
+                predicted_cost = normalized_discounted_cost(
+                    self.safety_critic.q_max(s_critic, a), self.gamma
+                ).mean().item()
 
         # Average TD-errors across N critics for PER priority update
         td_error_avg = torch.stack(td_errors, dim=-1).mean(dim=-1).detach().cpu().numpy().flatten()
@@ -416,6 +428,7 @@ class SACAgent:
             "lag_loss":     lag_loss.item() if isinstance(lag_loss, torch.Tensor) else lag_loss,
             "alpha":        self.alpha,
             "lag":          (self._lambda_max * torch.sigmoid(self._lag_raw)).item() if self.use_safety_critic else 0.0,
+            "predicted_cost": predicted_cost,
             "td_error":     float(td_error_avg.mean()),
         }, td_error_avg
 

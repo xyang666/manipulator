@@ -12,6 +12,7 @@ Date:   2025-06
 """
 
 import csv
+import json
 import math
 import os
 from datetime import datetime
@@ -43,7 +44,7 @@ CSV_COLUMNS = [
     "collision_penalty",
     "critic_loss", "safety_critic_loss",
     "actor_rl_loss", "physics_loss", "actor_loss", "lag_loss",
-    "alpha", "lag",
+    "alpha", "lag", "predicted_cost",
     "success", "ever_collided",
 ]
 
@@ -119,7 +120,9 @@ class TrainingLogger:
         self._val_csv_writer = csv.DictWriter(
             self._val_csv_file,
             fieldnames=["global_step", "episode", "success_rate", "avg_reward", "avg_tracking_error",
-                       "avg_min_distance", "collision_rate"]
+                       "avg_min_distance", "collision_rate",
+                       "obstacle_collision_rate", "self_collision_rate",
+                       "scenario_metrics"]
         )
         self._val_csv_writer.writeheader()
 
@@ -246,6 +249,16 @@ class TrainingLogger:
             "avg_tracking_error": val_results["avg_tracking_error"],
             "avg_min_distance": val_results["avg_min_distance"],
             "collision_rate": val_results["collision_rate"],
+            "obstacle_collision_rate": val_results.get(
+                "obstacle_collision_rate", 0.0
+            ),
+            "self_collision_rate": val_results.get(
+                "self_collision_rate", 0.0
+            ),
+            "scenario_metrics": json.dumps(
+                val_results.get("scenario_metrics", {}),
+                ensure_ascii=False, sort_keys=True
+            ),
         }
         self._val_csv_writer.writerow(row)
         self._val_csv_file.flush()
@@ -287,7 +300,7 @@ class TrainingLogger:
             row["alpha"] = alpha
 
         # lag_loss and lag come from **avg_reward_kwargs (not in REWARD_COMPONENTS)
-        for extra_key in ("lag_loss", "lag"):
+        for extra_key in ("lag_loss", "lag", "predicted_cost"):
             val = avg_reward_kwargs.get(extra_key)
             if val is not None:
                 row[extra_key] = val

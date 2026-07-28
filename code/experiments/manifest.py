@@ -42,6 +42,27 @@ def build_manifest(checkpoint_root: Path, result_root: Path,
                 training_jobs.append({"method": method, "protocol": protocol,
                                       "seed": seed, "run_name": run_name,
                                       "command": command})
+    # A bounded diagnostic run isolates the task that curriculum validation
+    # showed to be under-learned. It is not part of the 50-job paper matrix.
+    diagnostic_jobs = [{
+        "method": "ours_full",
+        "protocol": "whole_body_diagnostic",
+        "seed": EVALUATION.train_seeds[0],
+        "run_name": f"ours_full/whole_body_diagnostic/seed_{EVALUATION.train_seeds[0]}",
+        "command": [
+            "python", "train.py", "--seed", str(EVALUATION.train_seeds[0]),
+            "--run_name",
+            f"ours_full/whole_body_diagnostic/seed_{EVALUATION.train_seeds[0]}",
+            "--save_path", str(checkpoint_root),
+            "--scene_json", "../results/ewalker_scenes/whole_body/train.json",
+            "--val_json", "../results/ewalker_scenes/whole_body/validation.json",
+            "--n_envs", str(ALGORITHM.parallel_envs),
+            "--grad_steps", str(ALGORITHM.gradient_steps),
+            "--val_every_steps", str(ALGORITHM.validation_interval_steps),
+            "--val_scenes", "20", "--agent_type", "structured",
+            "--lambda_dyn", "1",
+        ],
+    }]
     jobs = []
     for method in PHASE1_METHODS:
         for scenario in PHASE1_SCENARIOS:
@@ -62,8 +83,10 @@ def build_manifest(checkpoint_root: Path, result_root: Path,
                 jobs.append({"method": method, "scenario": scenario, "seed": seed,
                              "checkpoint": str(checkpoint) if "--checkpoint" in command else None,
                              "output": str(output), "command": command})
-    return {"schema_version": 1, "defaults": phase1_defaults(),
-            "training_jobs": training_jobs, "evaluation_jobs": jobs}
+    return {"schema_version": 2, "defaults": phase1_defaults(),
+            "training_jobs": training_jobs,
+            "diagnostic_jobs": diagnostic_jobs,
+            "evaluation_jobs": jobs}
 
 
 def main() -> int:

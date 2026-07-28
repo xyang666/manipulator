@@ -20,7 +20,7 @@ PHASE1_SCENARIOS = (
     "confined_space",
     "generalization",
 )
-TRAINING_PROTOCOL_VERSION = 4
+TRAINING_PROTOCOL_VERSION = 5
 TRAIN_SEEDS = (11, 23, 37, 53, 71)
 
 
@@ -30,12 +30,14 @@ class AlgorithmDefaults:
     gamma: float = 0.99
     tau: float = 0.005
     alpha: float = 0.1
+    minimum_alpha: float = 0.05
     batch_size: int = 512
     replay_size: int = 500_000
     start_steps: int = 10_000
     hidden_dims: tuple[int, int] = (256, 256)
     n_critics: int = 5
     lambda_dyn: float = 1.0
+    physics_soft_limit_ratio: float = 0.80
     task_scale: float = 1.0
     nullspace_scale: float = 0.5
     cost_limit: float = 0.10
@@ -66,8 +68,12 @@ class EnvironmentDefaults:
     w_energy: float = 0.001
     w_collision: float = 100.0
     collision_event_penalty: float = 500.0
-    w_action: float = 0.5
-    success_bonus: float = 50.0
+    w_action: float = 0.05
+    w_null: float = 0.05
+    success_bonus: float = 100.0
+    reward_scale: float = 10.0
+    obs_scene_embed: int = 10
+    obs_waypoint_steps: tuple[int, ...] = (10, 25, 50)
 
 
 @dataclass(frozen=True)

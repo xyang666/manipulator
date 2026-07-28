@@ -12,6 +12,7 @@ Date:   2025-06
 
 import json
 import numpy as np
+from collections import defaultdict
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -167,6 +168,9 @@ def evaluate_on_validation_set(agent, env, val_set: ValidationSet,
         "avg_tracking_error": 0.0,
         "avg_min_distance": 0.0,
         "collision_rate": 0.0,
+        "obstacle_collision_rate": 0.0,
+        "self_collision_rate": 0.0,
+        "scenario_metrics": {},
         "scene_results": []
     }
 
@@ -175,6 +179,12 @@ def evaluate_on_validation_set(agent, env, val_set: ValidationSet,
     total_tracking_error = 0.0
     total_min_distance = 0.0
     collisions = 0
+    obstacle_collisions = 0
+    self_collisions = 0
+    scenario_totals = defaultdict(
+        lambda: {"episodes": 0, "successes": 0, "collisions": 0,
+                 "obstacle_collisions": 0, "self_collisions": 0}
+    )
 
     for i in range(num_scenes):
         scene = val_set.scenes[i]
@@ -188,6 +198,8 @@ def evaluate_on_validation_set(agent, env, val_set: ValidationSet,
         ep_tracking_errors = []
         ep_min_distances = []
         ep_ever_collided_mj = False  # MuJoCo collision flag
+        ep_obstacle_collision = False
+        ep_self_collision = False
         ep_success = False
         done = False
         steps = 0
@@ -200,6 +212,13 @@ def evaluate_on_validation_set(agent, env, val_set: ValidationSet,
             ep_tracking_errors.append(info.get("tracking_error", 0.0))
             ep_min_distances.append(info.get("d_obs", 0.0))
             ep_ever_collided_mj = ep_ever_collided_mj or info.get("collision", False)
+            ep_obstacle_collision = (
+                ep_obstacle_collision
+                or info.get("obstacle_collision", False)
+            )
+            ep_self_collision = (
+                ep_self_collision or info.get("self_collision", False)
+            )
             ep_success = ep_success or info.get("success", False)
 
             steps += 1
@@ -215,6 +234,18 @@ def evaluate_on_validation_set(agent, env, val_set: ValidationSet,
             successes += 1
         if ep_ever_collided_mj:
             collisions += 1
+        obstacle_collisions += int(ep_obstacle_collision)
+        self_collisions += int(ep_self_collision)
+        scene_id = str(scene["scene_id"])
+        scenario = scene.get("scenario") or scene.get("kind")
+        if not scenario:
+            scenario = scene_id.split("-validation-")[0].split("-")[0]
+        group = scenario_totals[str(scenario)]
+        group["episodes"] += 1
+        group["successes"] += int(success)
+        group["collisions"] += int(ep_ever_collided_mj)
+        group["obstacle_collisions"] += int(ep_obstacle_collision)
+        group["self_collisions"] += int(ep_self_collision)
 
         total_reward += ep_reward
         total_tracking_error += np.mean(ep_tracking_errors) if ep_tracking_errors else 0.0
@@ -224,6 +255,10 @@ def evaluate_on_validation_set(agent, env, val_set: ValidationSet,
         results["scene_results"].append({
             "scene_id": scene["scene_id"],
             "success": success,
+            "scenario": str(scenario),
+            "collision": ep_ever_collided_mj,
+            "obstacle_collision": ep_obstacle_collision,
+            "self_collision": ep_self_collision,
             "reward": ep_reward,
             "tracking_error": np.mean(ep_tracking_errors) if ep_tracking_errors else 0.0,
             "min_distance": min_obs_dist,
@@ -236,5 +271,18 @@ def evaluate_on_validation_set(agent, env, val_set: ValidationSet,
     results["avg_tracking_error"] = total_tracking_error / num_scenes
     results["avg_min_distance"] = total_min_distance / num_scenes
     results["collision_rate"] = collisions / num_scenes
+    results["obstacle_collision_rate"] = obstacle_collisions / num_scenes
+    results["self_collision_rate"] = self_collisions / num_scenes
+    for scenario, counts in sorted(scenario_totals.items()):
+        episodes = counts["episodes"]
+        results["scenario_metrics"][scenario] = {
+            "episodes": episodes,
+            "success_rate": counts["successes"] / episodes,
+            "collision_rate": counts["collisions"] / episodes,
+            "obstacle_collision_rate": (
+                counts["obstacle_collisions"] / episodes
+            ),
+            "self_collision_rate": counts["self_collisions"] / episodes,
+        }
 
     return results

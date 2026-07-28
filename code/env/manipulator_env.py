@@ -95,18 +95,18 @@ class ManipulatorEnv:
                  w_manip: float = ENVIRONMENT.w_manip,
                  w_energy: float = ENVIRONMENT.w_energy,
                  w_action: float = ENVIRONMENT.w_action,
-                 w_null: float = 0.0,
+                 w_null: float = ENVIRONMENT.w_null,
                  d_safe: float = ENVIRONMENT.d_safe,
                  use_cbf: bool = False,
                  cbf_alpha: float = 1.0,
                  success_bonus: float = ENVIRONMENT.success_bonus,
                  reward_min: Optional[float] = None,
-                 reward_scale: float = 1.0,
+                 reward_scale: float = ENVIRONMENT.reward_scale,
                  lr_lag: float = 0.01,
                  lag_target: float = 0.05,
                  gate_enabled: bool = True,
                  obs_waypoint_steps: list | None = None,
-                 obs_scene_embed: int = 0,
+                 obs_scene_embed: int = ENVIRONMENT.obs_scene_embed,
                  frame_stack: int = 1):
         """
         Parameters
@@ -143,7 +143,10 @@ class ManipulatorEnv:
         self.gate_enabled = gate_enabled
 
         # Observation dimensions
-        self.obs_waypoint_steps = obs_waypoint_steps or []
+        self.obs_waypoint_steps = (
+            list(ENVIRONMENT.obs_waypoint_steps)
+            if obs_waypoint_steps is None else list(obs_waypoint_steps)
+        )
         self.obs_scene_embed = obs_scene_embed
         self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1 + 3  # fallback, overwritten below
         self.act_dim = n_joints  # 7D: 3 (task relaxation) + 4 (nullspace, = n-3)
@@ -200,15 +203,15 @@ class ManipulatorEnv:
         if self.obs_scene_embed > 0:
             # Scene-embed observation: no top-K (redundant with scene_embed)
             self.obs_dim = (self.n * 2 + 3 + 3    # q, dq, x_ee, x_d
-                            + self._capsule_dists_dim
+                            + self._capsule_dists_dim * 4
                             + self._self_dists_dim
-                            + self.obs_scene_embed * 4
+                            + self.obs_scene_embed * 5
                             + len(self.obs_waypoint_steps) * 3
                             + 1                   # path_progress s
                             + 1)                  # sigma gate
         else:
             self.obs_dim = (self.n * 2 + 3 + 3
-                            + self._capsule_dists_dim
+                            + self._capsule_dists_dim * 4
                             + self._self_dists_dim
                             + 1
                             + 1)                  # sigma gate
@@ -532,8 +535,11 @@ class ManipulatorEnv:
         self.ee_trajectory.append(x_ee.copy())
 
         # Per-capsule distances (MuJoCo geometry).
-        capsule_dists = self._mujoco_per_capsule_distances()
+        capsule_dists, capsule_directions = (
+            self._mujoco_per_capsule_obstacle_features()
+        )
         self._cached_capsule_dists = capsule_dists
+        self._cached_capsule_directions = capsule_directions
 
         reward, reward_info = self.reward_fn.compute(
             q=self.q, dq=self.dq, x_ee=x_ee,
@@ -541,6 +547,13 @@ class ManipulatorEnv:
             d_obs=d_obs, w=w,
             action=action, prev_dq=prev_dq,
             capsule_dists=capsule_dists,
+        )
+        # Structured policies can otherwise exploit large null-space motions
+        # that preserve end-effector tracking while increasing full-arm risk.
+        null_penalty = self.w_null * float(np.square(action[3:]).sum())
+        reward -= null_penalty
+        reward_info["r_action"] = (
+            float(reward_info.get("r_action", 0.0)) - null_penalty
         )
         # Clip per-step reward to prevent Q-value divergence from collision spikes
         if self.reward_min is not None:
@@ -552,6 +565,8 @@ class ManipulatorEnv:
             _, n_self = self.collision_detector.detect_self_collisions()
             collision = (n_obs + n_self) > 0
         else:
+            n_obs = 0
+            n_self = 0
             collision = False
         reward = self._apply_collision_event_penalty(
             reward, reward_info, collision
@@ -582,6 +597,8 @@ class ManipulatorEnv:
                 "constraint_distance": constraint_distance,
                 "w": w, "success": success,
                 "collision": collision, "cost": cost,
+                "obstacle_collision": n_obs > 0,
+                "self_collision": n_self > 0,
                 "path_param": self.path_param, "tracking_error": tracking_error,
                 "termination_reason": termination_reason,
                 "success_hold_count": self._success_hold_count,
@@ -722,6 +739,7 @@ class ManipulatorEnv:
         self._cached_x_ee = None
         self._cached_w = None
         self._cached_capsule_dists = None
+        self._cached_capsule_directions = None
 
         if self.use_trajectory_generator and self.traj_gen is not None:
             # Generate new scene using TrajectoryGenerator
@@ -912,7 +930,7 @@ class ManipulatorEnv:
     def _mujoco_obstacle_geom_ids(self):
         """Return list of obstacle geom IDs currently in the scene."""
         ids = []
-        for i in range(20):  # generous upper bound
+        for i in range(self.sdf.n_obs):
             gid = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_GEOM, f"obs{i}")
             if gid < 0:
                 break
@@ -956,20 +974,26 @@ class ManipulatorEnv:
                     min_dist = d
         return float(min_dist)
 
-    def _mujoco_per_capsule_distances(self) -> np.ndarray:
-        """
-        Per-capsule (per-robot-geom) minimum signed distance to nearest
-        obstacle, computed from MuJoCo geometry.
+    def _mujoco_per_capsule_obstacle_features(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return nearest-obstacle distance and avoidance direction per capsule.
+
+        Directions point from the nearest obstacle centre toward the closest
+        point on the capsule axis. Unlike a distance scalar, this makes left-
+        versus right-side blockers distinguishable to the policy.
         """
         if self.mj_data is None or not self._robot_geom_ids:
-            return np.array([], dtype=np.float32)
+            empty = np.array([], dtype=np.float32)
+            return empty, np.empty((0, 3), dtype=np.float32)
 
         obs_ids = self._mujoco_obstacle_geom_ids()
         if not obs_ids:
-            return np.full(len(self._robot_geom_ids), 0.5, dtype=np.float32)
+            n_caps = len(self._robot_geom_ids)
+            return (np.full(n_caps, 0.5, dtype=np.float32),
+                    np.zeros((n_caps, 3), dtype=np.float32))
 
         n_caps = len(self._robot_geom_ids)
         dists = np.full(n_caps, 0.5, dtype=np.float32)
+        directions = np.zeros((n_caps, 3), dtype=np.float32)
 
         for j, rgid in enumerate(self._robot_geom_ids):
             pos = self.mj_data.geom_xpos[rgid]
@@ -978,21 +1002,31 @@ class ManipulatorEnv:
             mat = self.mj_data.geom_xmat[rgid].reshape(3, 3)
             z = mat[:, 2]
 
-            p1 = pos - h * z
-            p2 = pos + h * z
             d_min = np.inf
+            nearest_direction = np.zeros(3, dtype=np.float32)
             for ogid in obs_ids:
                 opos = self.mj_data.geom_xpos[ogid]
                 orad = self.mj_model.geom_size[ogid, 0]
                 t = np.dot(opos - pos, z)
                 t = np.clip(t, -h, h)
                 closest = pos + t * z
-                d = np.linalg.norm(opos - closest) - r - orad
+                away = closest - opos
+                centre_distance = np.linalg.norm(away)
+                d = centre_distance - r - orad
                 if d < d_min:
                     d_min = d
+                    if centre_distance > 1e-8:
+                        nearest_direction = (away / centre_distance).astype(
+                            np.float32
+                        )
             dists[j] = float(np.clip(d_min, -0.5, 0.5))
+            directions[j] = nearest_direction
 
-        return dists
+        return dists, directions
+
+    def _mujoco_per_capsule_distances(self) -> np.ndarray:
+        """Backward-compatible distance-only view used by reward code/tests."""
+        return self._mujoco_per_capsule_obstacle_features()[0]
 
     def _sync_obstacles_to_mujoco(self):
         """Sync SDF obstacle centers and radius to MuJoCo mocap bodies and geoms."""
@@ -1099,20 +1133,32 @@ class ManipulatorEnv:
                     wp = (1.0 - future_param) * self.x_start + future_param * self.x_goal
                 waypoints.append(wp - x_ee)  # relative to end-effector
 
-            # Scene embedding: all obstacle positions (relative to EE) and radii
-            # Provides full global layout — no top-K (redundant with full scene)
-            scene_embed = np.zeros(self.obs_scene_embed * 4, dtype=np.float32)
+            # Sort by current surface distance so the representation is
+            # permutation-stable. Each slot is [relative xyz, radius, mask].
+            scene_embed = np.zeros(self.obs_scene_embed * 5, dtype=np.float32)
             n_embed = min(self.obs_scene_embed, self.sdf.n_obs)
-            for i in range(n_embed):
-                rel_pos = self.sdf.centers[i] - x_ee
-                scene_embed[i*4:i*4+3] = rel_pos
-                scene_embed[i*4+3] = self.sdf.radii[i]
+            if n_embed:
+                rel = self.sdf.centers - x_ee
+                order = np.argsort(
+                    np.linalg.norm(rel, axis=1) - self.sdf.radii
+                )[:n_embed]
+                for slot, obstacle_index in enumerate(order):
+                    offset = slot * 5
+                    scene_embed[offset:offset+3] = rel[obstacle_index]
+                    scene_embed[offset+3] = self.sdf.radii[obstacle_index]
+                    scene_embed[offset+4] = 1.0
 
-            # Per-capsule minimum distances to nearest obstacle
-            if self._cached_capsule_dists is not None:
+            if (self._cached_capsule_dists is not None
+                    and self._cached_capsule_directions is not None):
                 capsule_dists = self._cached_capsule_dists
+                capsule_directions = self._cached_capsule_directions
             else:
-                capsule_dists = self._mujoco_per_capsule_distances()
+                capsule_dists, capsule_directions = (
+                    self._mujoco_per_capsule_obstacle_features()
+                )
+            capsule_features = np.concatenate(
+                [capsule_dists[:, None], capsule_directions], axis=1
+            ).reshape(-1)
 
             # Per-capsule-pair self-collision distances
             # (n_self_pairs scalars — direct signal for link-to-link proximity)
@@ -1121,7 +1167,7 @@ class ManipulatorEnv:
             obs = np.concatenate([
                 self.q, self.dq, x_ee, self.x_d,
                 *waypoints,
-                capsule_dists,
+                capsule_features,
                 self_dists,
                 scene_embed,
                 [self.path_param],
@@ -1129,15 +1175,22 @@ class ManipulatorEnv:
             ])
         else:
             # Legacy observation
-            if self._cached_capsule_dists is not None:
+            if (self._cached_capsule_dists is not None
+                    and self._cached_capsule_directions is not None):
                 capsule_dists = self._cached_capsule_dists
+                capsule_directions = self._cached_capsule_directions
             else:
-                capsule_dists = self._mujoco_per_capsule_distances()
+                capsule_dists, capsule_directions = (
+                    self._mujoco_per_capsule_obstacle_features()
+                )
+            capsule_features = np.concatenate(
+                [capsule_dists[:, None], capsule_directions], axis=1
+            ).reshape(-1)
             self_dists = self.kin.compute_self_distances(self.q)
 
             obs = np.concatenate([
                 self.q, self.dq, x_ee, self.x_d,
-                capsule_dists, self_dists, [self.path_param],
+                capsule_features, self_dists, [self.path_param],
                 [self._last_sigma],
             ])
 

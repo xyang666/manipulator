@@ -79,8 +79,11 @@ class VanillaEnv(ManipulatorEnv):
             self.ee_trajectory.pop(0)
         self.ee_trajectory.append(x_ee.copy())
 
-        capsule_dists = self._mujoco_per_capsule_distances()
+        capsule_dists, capsule_directions = (
+            self._mujoco_per_capsule_obstacle_features()
+        )
         self._cached_capsule_dists = capsule_dists
+        self._cached_capsule_directions = capsule_directions
 
         reward, reward_info = self.reward_fn.compute(
             q=self.q, dq=self.dq, x_ee=x_ee,
@@ -97,6 +100,8 @@ class VanillaEnv(ManipulatorEnv):
             _, n_self = self.collision_detector.detect_self_collisions()
             collision = (n_obs + n_self) > 0
         else:
+            n_obs = 0
+            n_self = 0
             collision = False
         reward = self._apply_collision_event_penalty(
             reward, reward_info, collision
@@ -122,6 +127,8 @@ class VanillaEnv(ManipulatorEnv):
             "w": w,
             "success": success,
             "collision": collision,
+            "obstacle_collision": n_obs > 0,
+            "self_collision": n_self > 0,
             "cost": cost,
             "path_param": self.path_param,
             "tracking_error": tracking_error,

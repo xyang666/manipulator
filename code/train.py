@@ -165,6 +165,9 @@ def parse_args():
     # --- 动力学正则化 ---
     # 超出 URDF 关节力矩上限的惩罚权重；0 表示不使用动力学正则项。
     p.add_argument("--lambda_dyn",  type=float, default=ALGORITHM.lambda_dyn)
+    # 从关节力矩上限的这一比例开始施加软动力学惩罚。
+    p.add_argument("--physics_soft_limit_ratio", type=float,
+                   default=ALGORITHM.physics_soft_limit_ratio)
 
     # --- SAC/约束 SAC 优化参数 ---
     # actor、critic 的 Adam 学习率。
@@ -173,6 +176,8 @@ def parse_args():
     p.add_argument("--tau",           type=float, default=ALGORITHM.tau)
     # SAC 初始熵温度；控制探索强度。
     p.add_argument("--alpha",         type=float, default=ALGORITHM.alpha)
+    # 熵温度下限；避免复杂绕障任务中过早失去探索。
+    p.add_argument("--min_alpha",     type=float, default=ALGORITHM.minimum_alpha)
     # 目标策略熵；None 时依据动作维度自动设置。
     p.add_argument("--target_entropy",type=float, default=None)
     # critic 先单独学习多少次更新，再开始更新 actor。
@@ -207,7 +212,7 @@ def parse_args():
     # 动作幅值和平滑性惩罚权重。
     p.add_argument("--w_action",     type=float, default=ENVIRONMENT.w_action)
     # 额外零空间动作幅值惩罚权重。
-    p.add_argument("--w_null",       type=float, default=0.0)
+    p.add_argument("--w_null",       type=float, default=ENVIRONMENT.w_null)
     # 机器人胶囊表面到障碍物表面的期望安全间距（m）。
     p.add_argument("--d_safe",       type=float, default=ENVIRONMENT.d_safe)
     # 成功到达并保持目标后一次性加入的奖励。
@@ -215,7 +220,7 @@ def parse_args():
     # 单步原始奖励的下限；None 表示不截断负奖励。
     p.add_argument("--reward_min",   type=float, default=None)
     # 最终奖励除以该值，用于控制 Q 值的数值范围。
-    p.add_argument("--reward_scale", type=float, default=1.0)
+    p.add_argument("--reward_scale", type=float, default=ENVIRONMENT.reward_scale)
     # 允许参考轨迹继续推进的误差死区尺度（m）。
     p.add_argument("--path_deadzone",type=float, default=0.20)
 
@@ -234,9 +239,13 @@ def parse_args():
     # 每次验证评估的场景数量。
     p.add_argument("--val_scenes",   type=int,   default=10)
     # 观测中编码的障碍物数量；每个障碍占中心 xyz 和半径 4 维。
-    p.add_argument("--obs_scene_embed", type=int, default=0)
+    p.add_argument("--obs_scene_embed", type=int,
+                   default=ENVIRONMENT.obs_scene_embed)
     # 观测未来路径点的步数偏移，逗号分隔，例如 "10,25,50"。
-    p.add_argument("--obs_waypoint_steps", type=str, default=None)
+    p.add_argument(
+        "--obs_waypoint_steps", type=str,
+        default=",".join(str(x) for x in ENVIRONMENT.obs_waypoint_steps)
+    )
     # 自适应场景采样中均匀分布所占比例，防止遗忘已学会场景。
     p.add_argument("--scene_uniform_mix", type=float,
                    default=ALGORITHM.uniform_scene_mix)
@@ -394,8 +403,10 @@ def setup_agent_and_buffer(args, state_dim, action_dim, dyn, ref_env, device):
         state_dim=state_dim, action_dim=action_dim, dynamics=dyn,
         hidden_dims=args.hidden_dims,
         lambda_dyn=args.lambda_dyn,
+        physics_soft_limit_ratio=args.physics_soft_limit_ratio,
         task_scale=args.task_scale, nullspace_scale=args.nullspace_scale,
         lr=args.lr, alpha=args.alpha, target_entropy=args.target_entropy,
+        min_alpha=args.min_alpha,
         device=device,
         critic_warmup=args.critic_warmup,
         total_steps=args.steps,
@@ -634,6 +645,7 @@ def _run_render_loop(agent, env, buffer, args, hyperparams, logger, val_set,
             avg_actor_total_loss=last_losses.get("actor_loss"),
             lag_loss=last_losses.get("lag_loss"),
             lag=last_losses.get("lag"),
+            predicted_cost=last_losses.get("predicted_cost"),
             success=int(ep_success),
             ever_collided=int(ep_ever_collided),
             **avg_r,
@@ -666,6 +678,13 @@ def _run_render_loop(agent, env, buffer, args, hyperparams, logger, val_set,
             print(f"Avg Track Error:   {val_results['avg_tracking_error']:.4f}m")
             print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
             print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
+            print(f"  Obstacle:        {val_results['obstacle_collision_rate']*100:.1f}%")
+            print(f"  Self collision:  {val_results['self_collision_rate']*100:.1f}%")
+            for name, metrics in val_results["scenario_metrics"].items():
+                print(
+                    f"  {name}: success={metrics['success_rate']*100:.1f}% "
+                    f"collision={metrics['collision_rate']*100:.1f}%"
+                )
             print(f"{'='*60}\n")
             logger.log_validation(total_steps, episode, val_results)
             if is_better_validation(val_results, best_validation):
@@ -834,6 +853,7 @@ def _train_sac_parallel(agent, buffer, pool, ref_env, args, hyperparams, logger,
                     avg_actor_total_loss=last_losses.get("actor_loss"),
                     lag_loss=last_losses.get("lag_loss"),
                     lag=last_losses.get("lag"),
+                    predicted_cost=last_losses.get("predicted_cost"),
                     avg_w=avg_w,
                     collision_penalty=avg_collision_penalty,
                     success=int(ep_success),
@@ -876,6 +896,13 @@ def _train_sac_parallel(agent, buffer, pool, ref_env, args, hyperparams, logger,
                     print(f"Avg Track Error:   {val_results['avg_tracking_error']:.4f}m")
                     print(f"Avg Min Distance:  {val_results['avg_min_distance']:.4f}m")
                     print(f"Collision Rate:    {val_results['collision_rate']*100:.1f}%")
+                    print(f"  Obstacle:        {val_results['obstacle_collision_rate']*100:.1f}%")
+                    print(f"  Self collision:  {val_results['self_collision_rate']*100:.1f}%")
+                    for name, metrics in val_results["scenario_metrics"].items():
+                        print(
+                            f"  {name}: success={metrics['success_rate']*100:.1f}% "
+                            f"collision={metrics['collision_rate']*100:.1f}%"
+                        )
                     print(f"{'='*60}\n")
                     logger.log_validation(total_steps, episode, val_results)
                     if is_better_validation(val_results, best_validation):
@@ -990,12 +1017,14 @@ def main():
         "update_to_data_ratio": args.grad_steps / max(1, args.n_envs),
         "buffer_size": args.buffer_size,
         "lambda_dyn": args.lambda_dyn, "lr": args.lr,
+        "physics_soft_limit_ratio": args.physics_soft_limit_ratio,
         "lr_lag": args.lr_lag, "lag_init": args.lag_init,
         "lag_max": args.lag_max, "cost_limit": args.cost_limit,
         "scene_uniform_mix": args.scene_uniform_mix,
         "scene_weight_ratio_max": args.scene_weight_ratio_max,
         "collision_event_penalty": args.collision_event_penalty,
         "alpha": args.alpha, "gamma": 0.99, "tau": args.tau,
+        "min_alpha": args.min_alpha,
         "state_dim": state_dim, "action_dim": action_dim,
         "episode_len": args.episode_len,
         "trajectory_steps": args.trajectory_steps,

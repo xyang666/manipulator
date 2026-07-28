@@ -30,6 +30,8 @@ def _structured_agent(env, checkpoint: Path, args) -> SACAgent:
         task_scale=ALGORITHM.task_scale, nullspace_scale=ALGORITHM.nullspace_scale,
         n_critics=ALGORITHM.n_critics, use_safety_critic=args.safety_critic,
         lag_max=ALGORITHM.lagrange_maximum,
+        min_alpha=ALGORITHM.minimum_alpha,
+        physics_soft_limit_ratio=ALGORITHM.physics_soft_limit_ratio,
         device=args.device,
     )
     metadata = agent.load(str(checkpoint), load_optimizers=False)
@@ -121,8 +123,12 @@ def run(args) -> list[dict]:
         w_track=ENVIRONMENT.w_track, w_obs=ENVIRONMENT.w_obs,
         w_manip=ENVIRONMENT.w_manip, w_energy=ENVIRONMENT.w_energy,
         w_collision=ENVIRONMENT.w_collision, w_action=ENVIRONMENT.w_action,
+        w_null=ENVIRONMENT.w_null,
         collision_event_penalty=ENVIRONMENT.collision_event_penalty,
         d_safe=ENVIRONMENT.d_safe, success_bonus=ENVIRONMENT.success_bonus,
+        reward_scale=ENVIRONMENT.reward_scale,
+        obs_scene_embed=ENVIRONMENT.obs_scene_embed,
+        obs_waypoint_steps=list(ENVIRONMENT.obs_waypoint_steps),
         use_cbf=args.method == "cbf_qp",
         gate_enabled=args.method in ("ours_full", "sac_residual"),
     )

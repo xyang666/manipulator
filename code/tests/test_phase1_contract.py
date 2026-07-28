@@ -4,10 +4,12 @@ import torch
 from agent.physics_policy import PhysicsInformedActor
 from agent.sac_agent import normalized_discounted_cost, scaled_sigmoid_inverse
 from agent.vanilla_sac_agent import VanillaSACAgent
-from experiment_config import ALGORITHM, EVALUATION, PHASE1_METHODS, PHASE1_SCENARIOS
+from experiment_config import (ALGORITHM, ENVIRONMENT, EVALUATION,
+                               PHASE1_METHODS, PHASE1_SCENARIOS)
 from experiments.manifest import build_manifest
 from experiments.split_scenes import scene_fingerprint, split_scenes
 from env.manipulator_env import ManipulatorEnv, dense_safety_cost
+from robot_config import DEFAULT_URDF, DEFAULT_XML
 from train import is_better_validation, scene_sampling_weights
 from utils.replay_buffer import ReplayBuffer
 
@@ -51,6 +53,10 @@ def test_manifest_covers_all_methods_scenarios_and_seeds(tmp_path):
                for job in manifest["evaluation_jobs"])
     assert all("--val_every_steps" in job["command"]
                for job in manifest["training_jobs"])
+    assert len(manifest["diagnostic_jobs"]) == 1
+    assert "whole_body/train.json" in " ".join(
+        manifest["diagnostic_jobs"][0]["command"]
+    )
 
 
 def test_dense_safety_cost_tracks_margin_violation():
@@ -117,6 +123,28 @@ def test_scene_sampling_caps_extreme_imbalance():
     )
     uniform = 1.0 / weights.size
     assert weights.max() <= uniform * 3.0 + 1e-12
+
+
+def test_v5_observation_contains_direction_scene_mask_and_waypoints():
+    env = ManipulatorEnv(
+        urdf_path=DEFAULT_URDF, xml_path=DEFAULT_XML, n_obstacles=3
+    )
+    env.reset(seed=3)
+    obs = env._get_obs()
+    expected = (
+        env.n * 2 + 3 + 3
+        + len(ENVIRONMENT.obs_waypoint_steps) * 3
+        + env._capsule_dists_dim * 4
+        + env._self_dists_dim
+        + ENVIRONMENT.obs_scene_embed * 5
+        + 2
+    )
+    assert env.obs_dim == expected
+    assert obs.shape == (expected,)
+    distances, directions = env._mujoco_per_capsule_obstacle_features()
+    assert distances.shape == (env._capsule_dists_dim,)
+    assert directions.shape == (env._capsule_dists_dim, 3)
+    assert np.all(np.isfinite(obs))
 
 
 def test_scene_split_is_disjoint_and_deterministic():
