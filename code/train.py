@@ -56,15 +56,32 @@ def is_better_validation(candidate, incumbent):
     return incumbent is None or validation_rank(candidate) > validation_rank(incumbent)
 
 
-def scene_sampling_weights(success_ema, uniform_mix=0.20):
-    """Prioritize low-success scenes while retaining uniform coverage."""
+def scene_sampling_weights(success_ema, uniform_mix=0.50, max_ratio=3.0):
+    """Prioritize failures while bounding imbalance and retaining coverage."""
     values = np.asarray(success_ema, dtype=np.float64)
-    if values.size == 0 or not 0.0 <= uniform_mix <= 1.0:
+    if (values.size == 0 or not 0.0 <= uniform_mix <= 1.0
+            or max_ratio < 1.0):
         raise ValueError("invalid scene EMA or uniform mixture")
     difficulty = np.clip(1.0 - values, 0.05, 1.0)
     prioritized = difficulty / difficulty.sum()
     uniform = np.full(values.size, 1.0 / values.size)
-    return uniform_mix * uniform + (1.0 - uniform_mix) * prioritized
+    weights = uniform_mix * uniform + (1.0 - uniform_mix) * prioritized
+    floor = uniform / max_ratio
+    cap = uniform * max_ratio
+    weights = np.maximum(weights, floor)
+    # Project onto the probability simplex with an explicit upper bound.
+    # A final renormalization would violate the cap when one hard scene is
+    # clipped, so redistribute its excess only into available headroom.
+    for _ in range(values.size + 1):
+        over = weights > cap
+        if not np.any(over):
+            break
+        excess = float(np.sum(weights[over] - cap[over]))
+        weights[over] = cap[over]
+        under = weights < cap
+        headroom = cap[under] - weights[under]
+        weights[under] += excess * headroom / headroom.sum()
+    return weights / weights.sum()
 
 
 # ========================================================================
@@ -164,6 +181,8 @@ def parse_args():
     p.add_argument("--lr_lag",        type=float, default=ALGORITHM.lagrange_learning_rate)
     # Lagrange 乘子的初始值。
     p.add_argument("--lag_init",      type=float, default=ALGORITHM.lagrange_initial_value)
+    # Lagrange 乘子的硬上限，防止安全项完全压倒任务奖励。
+    p.add_argument("--lag_max",       type=float, default=ALGORITHM.lagrange_maximum)
     # 兼容旧实验的约束目标参数；当前协议优先使用 cost_limit。
     p.add_argument("--lag_target",    type=float, default=0.05)
     # 允许的平均安全代价上限；超过后 Lagrange 惩罚增强。
@@ -178,6 +197,9 @@ def parse_args():
     p.add_argument("--w_obs",        type=float, default=ENVIRONMENT.w_obs)
     # 实际发生碰撞时惩罚的权重。
     p.add_argument("--w_collision",  type=float, default=ENVIRONMENT.w_collision)
+    # 每次真实碰撞额外施加的固定终止惩罚，避免浅接触惩罚过小。
+    p.add_argument("--collision_event_penalty", type=float,
+                   default=ENVIRONMENT.collision_event_penalty)
     # 低可操作度（接近奇异位形）惩罚权重。
     p.add_argument("--w_manip",      type=float, default=ENVIRONMENT.w_manip)
     # 关节运动/动力学能耗惩罚权重。
@@ -201,7 +223,7 @@ def parse_args():
     # 训练场景 JSON；None 时由 E-Walker 环境在线生成场景。
     p.add_argument("--scene_json",   type=str,   default=None)
     # 固定训练 JSON 中的单个场景编号；-1 表示从全部场景采样。
-    p.add_argument("--scene_id",     type=int,   default=-1)
+    p.add_argument("--scene_id",     type=str,   default=None)
     # 独立验证场景 JSON，用于选择 best checkpoint。
     p.add_argument("--val_json",     type=str,   default=None)
     # 兼容旧配置：每多少个 episode 验证一次。
@@ -215,6 +237,12 @@ def parse_args():
     p.add_argument("--obs_scene_embed", type=int, default=0)
     # 观测未来路径点的步数偏移，逗号分隔，例如 "10,25,50"。
     p.add_argument("--obs_waypoint_steps", type=str, default=None)
+    # 自适应场景采样中均匀分布所占比例，防止遗忘已学会场景。
+    p.add_argument("--scene_uniform_mix", type=float,
+                   default=ALGORITHM.uniform_scene_mix)
+    # 任一场景采样概率相对均匀概率的最大倍数。
+    p.add_argument("--scene_weight_ratio_max", type=float,
+                   default=ALGORITHM.scene_weight_ratio_max)
 
     # --- 经验回放 ---
     # 启用优先经验回放（PER），优先采样 TD error 较大的 transition。
@@ -296,7 +324,7 @@ def setup_scene_loading(args):
 
     if args.scene_json is not None:
         vs = ValidationSet(args.scene_json)
-        if args.scene_id >= 0:
+        if args.scene_id is not None:
             scene_data = (vs, vs.get_scene(args.scene_id))
             n_obs = len(scene_data[1]["obstacles"])
             print(f"[train] Fixed scene mode: scene_id={args.scene_id}, obstacles={n_obs}")
@@ -305,7 +333,7 @@ def setup_scene_loading(args):
             n_obs = len(vs.scenes[0]["obstacles"])
             print(f"[train] Scene cycle mode: {len(vs.scenes)} scenes, obs/scene={n_obs}")
 
-        if args.n_envs > 1 and scene_data is not None and args.scene_id < 0:
+        if args.n_envs > 1 and scene_data is not None and args.scene_id is None:
             n_scenes = len(scene_data[1])
             scene_weights = Array('d', [1.0] * n_scenes)
             scene_lock = Lock()
@@ -325,6 +353,7 @@ def make_env_kwargs(args, n_obs, obs_waypoint_steps):
         collision_term=not args.no_collision_term,
         path_deadzone=args.path_deadzone,
         w_obs=args.w_obs, w_collision=args.w_collision, w_track=args.w_track,
+        collision_event_penalty=args.collision_event_penalty,
         w_manip=args.w_manip, w_energy=args.w_energy, w_action=args.w_action, w_null=args.w_null,
         d_safe=args.d_safe, success_bonus=args.success_bonus,
         lr_lag=args.lr_lag, lag_target=args.lag_target,
@@ -382,6 +411,7 @@ def setup_agent_and_buffer(args, state_dim, action_dim, dyn, ref_env, device):
         grad_steps=args.grad_steps,
         lr_lag=args.lr_lag,
         lag_init=args.lag_init,
+        lag_max=args.lag_max,
         use_safety_critic=not args.no_safety_critic,
     )
     if args.per:
@@ -463,7 +493,8 @@ def handle_resume(args, agent, buffer, scene_ema, scene_counts, scene_weights, l
                 scene_ema[:] = meta["scene_ema"]
                 scene_counts[:] = meta["scene_counts"]
                 weights = scene_sampling_weights(
-                    scene_ema, ALGORITHM.uniform_scene_mix
+                    scene_ema, args.scene_uniform_mix,
+                    args.scene_weight_ratio_max,
                 )
                 for s in range(len(weights)):
                     scene_weights[s] = weights[s]
@@ -767,7 +798,8 @@ def _train_sac_parallel(agent, buffer, pool, ref_env, args, hyperparams, logger,
                     scene_counts[scene_id] += 1
                     if scene_counts.min() >= 1:
                         weights = scene_sampling_weights(
-                            scene_ema, ALGORITHM.uniform_scene_mix
+                            scene_ema, args.scene_uniform_mix,
+                            args.scene_weight_ratio_max,
                         )
                         if scene_lock is not None:
                             scene_lock.acquire()
@@ -958,6 +990,11 @@ def main():
         "update_to_data_ratio": args.grad_steps / max(1, args.n_envs),
         "buffer_size": args.buffer_size,
         "lambda_dyn": args.lambda_dyn, "lr": args.lr,
+        "lr_lag": args.lr_lag, "lag_init": args.lag_init,
+        "lag_max": args.lag_max, "cost_limit": args.cost_limit,
+        "scene_uniform_mix": args.scene_uniform_mix,
+        "scene_weight_ratio_max": args.scene_weight_ratio_max,
+        "collision_event_penalty": args.collision_event_penalty,
         "alpha": args.alpha, "gamma": 0.99, "tau": args.tau,
         "state_dim": state_dim, "action_dim": action_dim,
         "episode_len": args.episode_len,
@@ -988,7 +1025,7 @@ def main():
         env = env_class(**env_kwargs)
         if scene_data is not None:
             vs, scenes = scene_data
-            if args.scene_id >= 0:
+            if args.scene_id is not None:
                 vs.apply_scene_to_env(env, scenes)
                 env.reset = lambda seed=None: (vs.apply_scene_to_env(env, scenes), env._get_obs())[1]
             else:
@@ -1012,7 +1049,7 @@ def main():
             e = env_class(**env_kwargs)
             if scene_data is not None:
                 vs, scenes = scene_data
-                if args.scene_id >= 0:
+                if args.scene_id is not None:
                     vs.apply_scene_to_env(e, scenes)
 
                     def _reset_fixed(seed=None):

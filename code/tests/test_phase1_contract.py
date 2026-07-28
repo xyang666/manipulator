@@ -4,7 +4,7 @@ import torch
 from agent.physics_policy import PhysicsInformedActor
 from agent.sac_agent import normalized_discounted_cost, scaled_sigmoid_inverse
 from agent.vanilla_sac_agent import VanillaSACAgent
-from experiment_config import EVALUATION, PHASE1_METHODS, PHASE1_SCENARIOS
+from experiment_config import ALGORITHM, EVALUATION, PHASE1_METHODS, PHASE1_SCENARIOS
 from experiments.manifest import build_manifest
 from experiments.split_scenes import scene_fingerprint, split_scenes
 from env.manipulator_env import ManipulatorEnv, dense_safety_cost
@@ -75,8 +75,8 @@ def test_validation_selection_prioritizes_success_then_safety():
 
 
 def test_lagrange_raw_parameter_represents_paper_initial_value():
-    raw = scaled_sigmoid_inverse(0.1, 100.0)
-    actual = 100.0 / (1.0 + np.exp(-raw))
+    raw = scaled_sigmoid_inverse(0.1, ALGORITHM.lagrange_maximum)
+    actual = ALGORITHM.lagrange_maximum / (1.0 + np.exp(-raw))
     assert np.isclose(actual, 0.1)
 
 
@@ -103,10 +103,20 @@ def test_tracking_progress_gate_uses_configured_error_band():
 
 
 def test_scene_sampling_keeps_uniform_probability_floor():
-    weights = scene_sampling_weights(np.array([1.0, 0.0]), uniform_mix=0.2)
+    weights = scene_sampling_weights(
+        np.array([1.0, 0.0]), uniform_mix=0.5, max_ratio=3.0
+    )
     assert np.isclose(weights.sum(), 1.0)
-    assert np.all(weights >= 0.1)
+    assert np.all(weights >= 1.0 / 2.0 / 3.0)
     assert weights[1] > weights[0]
+
+
+def test_scene_sampling_caps_extreme_imbalance():
+    weights = scene_sampling_weights(
+        np.array([1.0] * 99 + [0.0]), uniform_mix=0.5, max_ratio=3.0
+    )
+    uniform = 1.0 / weights.size
+    assert weights.max() <= uniform * 3.0 + 1e-12
 
 
 def test_scene_split_is_disjoint_and_deterministic():

@@ -1,7 +1,7 @@
 # E-Walker 项目现状、缺口与训练计划
 
-> 更新日期：2026-07-27  
-> 当前代码提交：`e016512`  
+> 更新日期：2026-07-28  
+> 当前稳定基线提交：`6bdb785`（训练稳定化修改待提交）  
 > 适用模型：`E-Walker-inspired 7-DoF` 研究重建  
 > 重要边界：本项目不声称该模型是 E-Walker 官方模型、在轨型号或飞行硬件。
 
@@ -126,24 +126,18 @@ results/ewalker_scenes/curriculum/validation.json  # 40
 - 当前回归结果为 21 项测试通过。
 - 本机没有 `latexmk`，尚未重新编译论文 PDF。
 
-## 4. 当前正在运行的训练
+## 4. 最近训练诊断与稳定化协议
 
 服务器：
 
 ```text
 root@connect.nmb1.seetacloud.com:30068
 项目目录：/root/manipulator
-Git HEAD：e016512
+同步前 Git HEAD：6bdb785
 GPU：RTX 4080 SUPER
 ```
 
-当前会话：
-
-```text
-screen: ewalker_structured_s11
-```
-
-训练配置：
+旧试跑配置：
 
 ```text
 模型：E-Walker-inspired 7-DoF
@@ -159,49 +153,41 @@ lambda_dyn：默认 1
 风险门控：开启
 ```
 
-因此该参数组合在算法意义上等价于 `Ours-Full`。但当前目录使用：
+该参数组合在算法意义上等价于 `Ours-Full`，但属于 protocol v3 链路试跑，
+已在约 382k 步停止。旧目录和最佳模型保留：
 
 ```text
 structured/curriculum/seed_11
 ```
 
-而正式实验约定目录应为：
-
 ```text
-ours_full/curriculum/seed_11
-```
-
-故当前任务应视为完整链路试跑。在确认结果有效后，可以迁移 checkpoint，
-或者按正式名称重新运行；不得在汇总程序中直接把 `structured` 静默当作
-`ours_full`。
-
-本文档编写时的状态快照：
-
-```text
-训练进度：约 186k / 500k 环境步
-已保存 step checkpoint：约 50k、100k、150k
-已生成 best checkpoint
-训练日志中未发现 Traceback
-```
-
-路径：
-
-```text
-日志：
-/root/autodl-tmp/manipulator/logs/ewalker_structured_curriculum_s11.log
-
-checkpoint：
 /root/autodl-tmp/manipulator/checkpoints/ewalker_phase1/structured/curriculum/seed_11
 ```
 
-监控：
+固定验证集上的关键结果：
 
-```bash
-ssh -p 30068 root@connect.nmb1.seetacloud.com
-screen -ls
-tail -f /root/autodl-tmp/manipulator/logs/ewalker_structured_curriculum_s11.log
-nvidia-smi
-```
+| 环境步 | 成功率 | 碰撞率 |
+|---:|---:|---:|
+| 275k（best） | 65.0% | 35.0% |
+| 300k | 20.0% | 80.0% |
+| 350k | 7.5% | 92.5% |
+| 375k | 10.0% | 90.0% |
+
+这不是验证噪声，而是训练后期失稳。停止时 Lagrange 乘子已从最佳点附近的
+约 52.9 增长到约 94，并逼近旧硬上限 100；困难场景自适应采样同时削弱了
+已学会场景的覆盖；按穿透深度计算的碰撞奖励又会低估浅接触终止。
+
+protocol v4 作如下修正：
+
+- Lagrange 学习率由 `1e-3` 降至 `1e-4`，最大值由 100 限制为 10；
+- 场景采样的均匀混合比例由 20% 提高到 50%；
+- 单场景采样概率不得超过均匀概率的 3 倍；
+- MuJoCo 判定真实碰撞时，额外加入固定 `-500` 终止惩罚；
+- protocol v3 checkpoint 禁止直接续训，只可单独评估或显式迁移 actor。
+
+下一次试跑使用全新正式目录
+`ours_full/curriculum/seed_11`，不复用 v3 的 critic、优化器或经验池。先以
+单 seed 验证 300k 步后不再出现灾难性回退，再扩展五 seed 和其他方法。
 
 ## 5. 尚未实现或尚未验证
 

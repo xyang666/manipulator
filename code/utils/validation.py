@@ -37,12 +37,19 @@ class ValidationSet:
             scenes = json.load(f)
         return scenes
 
-    def get_scene(self, scene_id: int) -> Dict:
-        """Get scene by ID."""
+    def get_scene(self, scene_id: int | str) -> Dict:
+        """Get scene by ID (string) or index (int)."""
         for scene in self.scenes:
             if scene["scene_id"] == scene_id:
                 return scene
-        raise ValueError(f"Scene {scene_id} not found")
+        # Fallback: treat as numeric index
+        try:
+            idx = int(scene_id)
+            if 0 <= idx < len(self.scenes):
+                return self.scenes[idx]
+        except (ValueError, TypeError):
+            pass
+        raise ValueError(f"Scene {scene_id} not found in {self.json_path}")
 
     def apply_scene_to_env(self, env, scene: Dict):
         """

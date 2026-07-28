@@ -20,7 +20,7 @@ PHASE1_SCENARIOS = (
     "confined_space",
     "generalization",
 )
-TRAINING_PROTOCOL_VERSION = 3
+TRAINING_PROTOCOL_VERSION = 4
 TRAIN_SEEDS = (11, 23, 37, 53, 71)
 
 
@@ -39,13 +39,15 @@ class AlgorithmDefaults:
     task_scale: float = 1.0
     nullspace_scale: float = 0.5
     cost_limit: float = 0.10
-    lagrange_learning_rate: float = 0.001
+    lagrange_learning_rate: float = 0.0001
     lagrange_initial_value: float = 0.1
+    lagrange_maximum: float = 10.0
     parallel_envs: int = 32
     gradient_steps: int = 8
     validation_interval_steps: int = 25_000
     checkpoint_interval_steps: int = 50_000
-    uniform_scene_mix: float = 0.20
+    uniform_scene_mix: float = 0.50
+    scene_weight_ratio_max: float = 3.0
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,7 @@ class EnvironmentDefaults:
     w_manip: float = 0.05
     w_energy: float = 0.001
     w_collision: float = 100.0
+    collision_event_penalty: float = 500.0
     w_action: float = 0.5
     success_bonus: float = 50.0
 

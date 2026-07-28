@@ -1,223 +1,69 @@
-python -u code/train.py \
-  --steps 5000000 --n_envs 1 \
-  --batch_size 512 --buffer_size 500000 --start_steps 5000 --grad_steps 1 \
-  --lambda_dyn 3.0 --alpha 0.05 --lr 3e-4 \
-  --w_track 1.0 --w_obs 1.0 --w_collision 10.0 --success_bonus 5.0 \
-  --w_manip 0 --w_energy 0 --w_action 0 \
-  --d_safe 0.01 --episode_len 100 \
-  --val_every 1000 --val_scenes 100 --checkpoint_every 1000 \
-  --no_collision_term \
-  --reward_min -10 \
-  --reward_scale 1 \
-  --nullspace_scale 5 \
-  --cost_scale 100 \
-  --cost_limit 50 \
-  --task_scale 1 \
-  --obs_scene_embed 5 \
-  --obs_waypoint_steps 10,20,50 \
-  --critic_warmup 50000 \
-  --scene_json results/challenge_stage3.json \
-  --val_json results/challenge_stage3.json \
-  --save_path /root/autodl-tmp 2>&1 | tee log/stage3_V1.log
+# ====================================================================
+# E-Walker 一期实验命令
+# 场景: results/ewalker_scenes/curriculum/{train,validation}.json
+# 服务器: root@connect.nmb1.seetacloud.com:30068
+# 项目: /root/manipulator
+# ====================================================================
 
-python -u code/train.py \
-  --steps 5000000 --n_envs 1 \
-  --batch_size 1024 --buffer_size 500000 --start_steps 5000 --grad_steps 1 \
-  --lambda_dyn 3.0 --alpha 0.05 --lr 3e-4 \
-  --w_track 1.0 --w_obs 1.0 --w_collision 10.0 --success_bonus 5.0 \
-  --w_manip 0 --w_energy 0 --w_action 0 \
-  --d_safe 0.01 --episode_len 100 \
-  --val_every 1000 --val_scenes 100 --checkpoint_every 1000 \
-  --no_collision_term \
-  --reward_min -10 \
-  --reward_scale 1 \
-  --cost_scale 100 \
-  --cost_limit 50 \
-  --nullspace_scale 1 \
-  --task_scale 1 \
-  --obs_scene_embed 5 \
-  --obs_waypoint_steps 10,20,50 \
-  --critic_warmup 50000 \
-  --hidden_dims 512,256 \
-  --n_critics 2 \
-  --scene_json results/challenge_stage3.json \
-  --val_json results/challenge_stage3.json \
-  --resume /root/autodl-tmp/sac_20260615_215701/ckpt_ep02000.pt \
-  --save_path /root/autodl-tmp 2>&1 | tee log/stage3_V2.log
+# ── 当前正在跑的训练 ──────────────────────────────────────────────────
+# Ours-Full / curriculum / seed 11（试跑，已完成 ~250k/500k）
+# screen: ewalker_structured_s11
 
-# ====================================================================
-# 实验 A: costfix（已跑完，参见日志）
-#   - cost 从 SDF 距离 → MuJoCo 碰撞旗标（0/1）
-#   - 从 V2 best 续训，重置 critic + alpha
-# ====================================================================
-code/.venv/bin/python -u code/train.py \
-  --resume /root/autodl-tmp/sac_20260616_163332/ckpt_best.pt \
-  --reset_critic --reset_alpha \
-  --steps 5000000 --n_envs 1 \
-  --batch_size 1024 --buffer_size 500000 --start_steps 5000 --grad_steps 1 \
-  --lambda_dyn 3.0 --alpha 0.05 --lr 3e-4 \
-  --w_track 1.0 --w_obs 1.0 --w_collision 10.0 --success_bonus 5.0 \
-  --w_manip 0 --w_energy 0 --w_action 0 \
-  --d_safe 0.01 --episode_len 100 \
-  --val_every 50 --val_scenes 100 --checkpoint_every 1000 \
-  --no_collision_term \
-  --reward_min -10 --reward_scale 1 \
-  --cost_scale 1 --cost_limit 1 \
-  --nullspace_scale 1 --task_scale 1 \
-  --obs_scene_embed 5 --obs_waypoint_steps 10,20,50 \
-  --critic_warmup 50000 \
-  --hidden_dims 512,256 --n_critics 2 \
-  --scene_json results/challenge_stage3.json \
-  --val_json results/challenge_stage3.json \
-  --save_path /root/autodl-tmp \
-  2>&1 | tee log/stage3_costfix.log
+cd /root/manipulator/code
+PYTHONPATH=. .venv/bin/python -u code/train.py \
+  --steps 500000 --seed 11 --n_envs 32 --grad_steps 8 --batch_size 256 \
+  --agent_type structured \
+  --scene_json results/ewalker_scenes/curriculum/train.json \
+  --val_json results/ewalker_scenes/curriculum/validation.json \
+  --val_every_steps 25000 --val_scenes 40 \
+  --run_name structured/curriculum/seed_11 \
+  --save_path /root/autodl-tmp/manipulator/checkpoints/ewalker_phase1 \
+  > /root/autodl-tmp/manipulator/logs/ewalker_structured_curriculum_s11.log 2>&1
 
-# ====================================================================
-# 实验 B: λ 参数化修复 + safety critic 续训（已跑完，参见日志）
-# ====================================================================
-code/.venv/bin/python -u code/train.py \
-  --resume /root/autodl-tmp/sac_20260616_224225/ckpt_ep03000.pt \
-  --steps 5000000 --n_envs 1 \
-  --batch_size 1024 --buffer_size 500000 --start_steps 5000 --grad_steps 1 \
-  --lambda_dyn 3.0 --alpha 0.05 --lr 3e-4 \
-  --w_track 1.0 --w_obs 1.0 --w_collision 10.0 --success_bonus 5.0 \
-  --w_manip 0 --w_energy 0 --w_action 0 \
-  --d_safe 0.01 --episode_len 100 \
-  --val_every 50 --val_scenes 100 --checkpoint_every 1000 \
-  --no_collision_term \
-  --reward_min -10 --reward_scale 1 \
-  --cost_scale 1 --cost_limit 1 \
-  --nullspace_scale 1 --task_scale 1 \
-  --obs_scene_embed 5 --obs_waypoint_steps 10,20,50 \
-  --critic_warmup 50000 \
-  --hidden_dims 512,256 --n_critics 2 \
-  --scene_json results/challenge_stage3.json \
-  --val_json results/challenge_stage3.json \
-  --save_path /root/autodl-tmp \
-  2>&1 | tee log/stage3_lambda_fix.log
+# ── 正式训练：5 方法 × 2 协议 × 5 seed ──────────────────────────────
+# 所有超参由 code/experiments/experiment_config.py 统一管理
+# 生成完整命令清单：
+.venv/bin/python -m experiments.manifest \
+  --checkpoint-root /root/autodl-tmp/manipulator/checkpoints/phase1 \
+  --result-root ../results/phase1 \
+  --output ../results/phase1/manifest.json
 
-# ====================================================================
-# 实验 C: 核心改动——无 collision_term + 强成功奖励 + binary cost
-#   - 去 --no_collision_term：碰撞 = 回合结束，game over
-#   - success_bonus=20：成功奖励更强（原来是5）
-#   - w_obs=2.0, d_safe=0.03：避障稍微提前
-#   - w_collision=10 保持不变（碰撞终止已经够了）
-#   - 重置 critic（新 cost 信号），保留 V2 actor
-#   - 不重置 alpha（保留已学的熵温度）
-#   - cost_scale=1, cost_limit=1（binary cost，已改）
-# ====================================================================
-code/.venv/bin/python -u code/train.py \
-  --resume /root/autodl-tmp/sac_20260616_163332/ckpt_best.pt \
-  --reset_critic \
-  --steps 5000000 --n_envs 1 \
-  --batch_size 1024 --buffer_size 500000 --start_steps 5000 --grad_steps 1 \
-  --lambda_dyn 3.0 --alpha 0.05 --lr 3e-4 \
-  --w_track 1.0 --w_obs 2.0 --w_collision 10.0 --success_bonus 20.0 \
-  --w_manip 0 --w_energy 0 --w_action 0 \
-  --d_safe 0.03 --episode_len 100 \
-  --val_every 50 --val_scenes 100 --checkpoint_every 1000 \
-  --reward_min -10 --reward_scale 1 \
-  --cost_scale 1 --cost_limit 1 \
-  --nullspace_scale 1 --task_scale 1 \
-  --obs_scene_embed 5 --obs_waypoint_steps 10,20,50 \
-  --critic_warmup 50000 \
-  --hidden_dims 512,256 --n_critics 2 \
-  --scene_json results/challenge_stage3.json \
-  --val_json results/challenge_stage3.json \
-  --save_path /root/autodl-tmp \
-  2>&1 | tee log/stage3_terminal.log
+# 单任务示例（Ours-Full / curriculum / seed 11）：
+.venv/bin/python -u train.py \
+  --seed 11 --run_name ours_full/curriculum/seed_11 \
+  --save_path /root/autodl-tmp/manipulator/checkpoints/phase1 \
+  --scene_json results/ewalker_scenes/curriculum/train.json \
+  --val_json results/ewalker_scenes/curriculum/validation.json \
+  --n_envs 32 --grad_steps 8 --val_every_steps 25000 --val_scenes 40 \
+  --agent_type structured --lambda_dyn 1.0 \
+  --task_scale 1.0 --nullspace_scale 0.5 \
+  --hidden_dims 256,256 --n_critics 5 \
+  --episode_len 500 --batch_size 256 --start_steps 10000 --buffer_size 500000 \
+  --lr 3e-4 --tau 0.005 --alpha 0.1 \
+  --w_track 12.0 --w_obs 5.0 --w_collision 100.0 \
+  --success_bonus 50.0 --d_safe 0.06 \
+  --cost_scale 1.0 --cost_limit 0.1 \
+  --reward_scale 1.0 --reward_min -10.0
 
-# ====================================================================
-# 实验 D: 瞬时 sigma + 碰撞终止 + 强成功奖励（关键改动）
-#   manipulator_env.py:319-324 已改：sigma 从 Lagrangian 积累 → d_obs 瞬时计算
-#   - d_obs >= 2*d_safe：sigma=0（纯跟踪，安全）
-#   - d_obs <= 0：sigma=1（完全 RL 控制）
-#   - 中间：smoothstep 渐变
-#   - 这解决了 RL 的 Δẋ_RL（任务空间扰动）一直被 sigma≈0 锁死的结构性瓶颈
-#   - 保持碰撞终止 + success_bonus=20
-#   - 重置 critic（旧的 Q 值建立在 sigma≈0 的动力学上，已失效）
-#   - 保留 V2 actor 的跟踪能力和动作先验
-# ====================================================================
-code/.venv/bin/python -u code/train.py \
-  --resume /root/autodl-tmp/sac_20260616_163332/ckpt_best.pt \
-  --reset_critic \
-  --steps 5000000 --n_envs 1 \
-  --batch_size 1024 --buffer_size 500000 --start_steps 5000 --grad_steps 1 \
-  --lambda_dyn 3.0 --alpha 0.05 --lr 3e-4 \
-  --w_track 1.0 --w_obs 2.0 --w_collision 10.0 --success_bonus 20.0 \
-  --w_manip 0 --w_energy 0 --w_action 0 \
-  --d_safe 0.03 --episode_len 100 \
-  --val_every 50 --val_scenes 100 --checkpoint_every 1000 \
-  --reward_min -10 --reward_scale 1 \
-  --cost_scale 1 --cost_limit 1 \
-  --nullspace_scale 1 --task_scale 1 \
-  --obs_scene_embed 5 --obs_waypoint_steps 10,20,50 \
-  --critic_warmup 50000 \
-  --hidden_dims 512,256 --n_critics 2 \
-  --scene_json results/challenge_stage3.json \
-  --val_json results/challenge_stage3.json \
-  --save_path /root/autodl-tmp \
-  2>&1 | tee log/stage3_immediate_sigma.log
+# ── 本地可视化 ─────────────────────────────────────────────────────────
+# KP 跟踪（无 RL，纯看场景）
+PYTHONPATH=code code/.venv/bin/python code/test.py --method kp --render \
+  --scene_json results/ewalker_scenes/curriculum/train.json \
+  --scene_id 0 --steps 500
 
-# ====================================================================
-# 实验 F: 标准 SAC（--no_safety_critic）+ MuJoCo 碰撞几何 + 从头训
-#   manipulator_env.py 改动：
-#     - sigma 瞬时计算（Lagrangian 积累 → 实时 d_obs 响应）
-#     - cost 为 MuJoCo 碰撞旗标 0/1
-#     - d_obs / per-capsule 全用 MuJoCo 实际碰撞几何（非 SDF 胶囊体近似）
-#     - 碰撞 = 回合结束（collision_term 默认 true）
-#   sac_agent.py 改动：
-#     - --no_safety_critic 关闭安全 critic + λ，标准 SAC
-#   train.py:
-#     --no_safety_critic 参数
-# ====================================================================
-code/.venv/bin/python -u code/train.py \
-  --no_safety_critic \
-  --steps 5000000 --n_envs 1 \
-  --batch_size 1024 --buffer_size 500000 --start_steps 5000 --grad_steps 1 \
-  --lambda_dyn 3.0 --alpha 0.05 --lr 3e-4 \
-  --w_track 1.0 --w_obs 2.0 --w_collision 10.0 --success_bonus 20.0 \
-  --w_manip 0 --w_energy 0 --w_action 0 \
-  --d_safe 0.03 --episode_len 100 \
-  --val_every 50 --val_scenes 100 --checkpoint_every 1000 \
-  --reward_min -10 --reward_scale 1 \
-  --cost_scale 1 --cost_limit 1 \
-  --nullspace_scale 1 --task_scale 1 \
-  --obs_scene_embed 5 --obs_waypoint_steps 10,20,50 \
-  --critic_warmup 50000 \
-  --hidden_dims 512,256 --n_critics 2 \
-  --scene_json results/challenge_stage3.json \
-  --val_json results/challenge_stage3.json \
-  --save_path /root/autodl-tmp \
-  2>&1 | tee log/stage3_mj_geo.log
+# 训练渲染版（单进程，含 RL 策略）
+PYTHONPATH=code code/.venv/bin/python code/train.py --render --steps 5000 --n_envs 1 \
+  --scene_json results/ewalker_scenes/curriculum/train.json \
+  --scene_id 0 --agent_type structured \
+  --trajectory_steps 80 --episode_len 100 \
+  --w_track 1.0 --w_obs 2.0 --w_collision 10.0 --success_bonus 20.0 --d_safe 0.03
 
-python -u code/train.py \
-  --steps 5000000 --n_envs 1 \
-  --no_safety_critic \
-  --batch_size 512 --buffer_size 500000 --start_steps 0 --grad_steps 1 \
-  --nullspace_scale 5 \
-  --task_scale 0.0 \
-  --obs_scene_embed 5 --obs_waypoint_steps 10,20,50 \
-  --scene_json results/challenge_stage3.json \
-  --scene_id 80 \
-  --w_track 1.0 --w_obs 2.0 --w_collision 10.0 --success_bonus 20.0 \
-  --w_manip 0 --w_energy 0 --w_action 0 \
-  --d_safe 0.03 --episode_len 100 \
-  --no_collision_term \
-  --render \
-  --hidden_dims 256,256 --n_critics 2 \
-  2>&1 | tee log/1.log
+# ── KP 基线评测 ─────────────────────────────────────────────────────────
+PYTHONPATH=code .venv/bin/python -u utils/eval_kp.py \
+  /root/manipulator/results/ewalker_scenes/curriculum/train.json
 
-python -u code/train.py \
-  --steps 5000000 --n_envs 1 \
-  --batch_size 512 --buffer_size 500000 --start_steps 0 --grad_steps 1 \
-  --nullspace_scale 5 \
-  --task_scale 0.0 \
-  --obs_scene_embed 5 --obs_waypoint_steps 10,20,50 \
-  --scene_json results/challenge_stage3.json \
-  --scene_id 80 \
-  --w_track 1.0 --w_obs 2.0 --w_collision 10.0 --success_bonus 20.0 \
-  --w_manip 0 --w_energy 0 --w_action 0 \
-  --d_safe 0.03 --episode_len 100 \
-  --hidden_dims 256,256 --n_critics 2 \
-  2>&1 | tee log/2.log
+# ── 常用监控 ───────────────────────────────────────────────────────────
+ssh -p 30068 root@connect.nmb1.seetacloud.com
+screen -ls
+tail -f /root/autodl-tmp/manipulator/logs/ewalker_structured_curriculum_s11.log
+nvidia-smi

@@ -98,6 +98,9 @@ class VanillaEnv(ManipulatorEnv):
             collision = (n_obs + n_self) > 0
         else:
             collision = False
+        reward = self._apply_collision_event_penalty(
+            reward, reward_info, collision
+        )
 
         self._ever_collided = self._ever_collided or collision
 

@@ -90,6 +90,7 @@ class ManipulatorEnv:
                  path_deadzone: float = 0.20,
                  w_obs: float = ENVIRONMENT.w_obs,
                  w_collision: float = ENVIRONMENT.w_collision,
+                 collision_event_penalty: float = ENVIRONMENT.collision_event_penalty,
                  w_track: float = ENVIRONMENT.w_track,
                  w_manip: float = ENVIRONMENT.w_manip,
                  w_energy: float = ENVIRONMENT.w_energy,
@@ -247,6 +248,9 @@ class ManipulatorEnv:
         self.success_bonus = success_bonus
         self.reward_min = reward_min
         self.reward_scale = reward_scale
+        if collision_event_penalty < 0.0:
+            raise ValueError("collision_event_penalty must be non-negative")
+        self.collision_event_penalty = float(collision_event_penalty)
         self.w_null = w_null
         self.sdf = ObstacleSDF(n_obstacles, obs_radius)
 
@@ -372,6 +376,16 @@ class ManipulatorEnv:
         else:
             reason = None
         return success, done, reason
+
+    def _apply_collision_event_penalty(self, reward, reward_info, collision):
+        """Align the scalar reward with authoritative MuJoCo contact events."""
+        if not collision or self.collision_event_penalty == 0.0:
+            return reward
+        reward_info["r_collision"] = (
+            float(reward_info.get("r_collision", 0.0))
+            - self.collision_event_penalty
+        )
+        return reward - self.collision_event_penalty
 
     def set_parametric_trajectory(self, pos_func, vel_func):
         """
@@ -539,6 +553,9 @@ class ManipulatorEnv:
             collision = (n_obs + n_self) > 0
         else:
             collision = False
+        reward = self._apply_collision_event_penalty(
+            reward, reward_info, collision
+        )
 
         # Track cumulative collision flag for the entire episode
         self._ever_collided = self._ever_collided or collision

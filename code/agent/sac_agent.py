@@ -74,8 +74,9 @@ class SACAgent:
                  n_dec_layers: int   = 2,
                  dropout:      float = 0.1,
                  grad_steps:   int   = 1,
-                 lr_lag:       float = 0.01,
+                 lr_lag:       float = 1e-4,
                  lag_init:     float = 0.1,
+                 lag_max:      float = 10.0,
                  use_safety_critic: bool = True):
         self.gamma       = gamma
         self.use_safety_critic = use_safety_critic
@@ -129,7 +130,9 @@ class SACAgent:
         self.safety_critic_opt = None
         self._lag_raw = None
         self.lag_opt = None
-        self._lambda_max = 100.0
+        if lag_max <= 0.0:
+            raise ValueError("lag_max must be positive")
+        self._lambda_max = float(lag_max)
         if self.use_safety_critic:
             self.safety_critic = SoftmaxCritic(critic_state_dim, action_dim, list(hidden_dims),
                                                n_critics=n_critics).to(self.device)

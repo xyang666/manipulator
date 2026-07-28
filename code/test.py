@@ -45,7 +45,7 @@ _DEFAULT_SCENE_JSON = os.path.join(_ROOT, "results/trajectories.json")
 # Scene loading from JSON
 # ---------------------------------------------------------------------------
 
-def load_scene_from_json(json_path: str, scene_id: int) -> dict:
+def load_scene_from_json(json_path: str, scene_id: int | str) -> dict:
     """
     Load a scene from a trajectory JSON file.
 
@@ -63,9 +63,17 @@ def load_scene_from_json(json_path: str, scene_id: int) -> dict:
     """
     with open(json_path) as f:
         scenes = json.load(f)
+    # Try exact string match first
     for s in scenes:
         if s["scene_id"] == scene_id:
             return s
+    # Fallback: try numeric index (0 = first scene, 1 = second, ...)
+    try:
+        idx = int(scene_id)
+        if 0 <= idx < len(scenes):
+            return scenes[idx]
+    except (ValueError, TypeError):
+        pass
     available = [s["scene_id"] for s in scenes]
     raise ValueError(f"Scene {scene_id} not found in {json_path}. "
                      f"Available scene IDs: {available}")
@@ -536,7 +544,7 @@ def run_rrt_star(env, args):
             obstacles.append([float(c[0]), float(c[1]), float(c[2]), float(r)])
     if not obstacles and hasattr(args, 'scene_json') and args.scene_json is not None:
         # Fall back to reading from JSON if env doesn't have obstacles set
-        sid = max(args.scene_id, 0)
+        sid = args.scene_id if args.scene_id is not None else "0"
         scene = load_scene_from_json(args.scene_json, sid)
         obstacles = scene.get("obstacles", [])
 
@@ -554,7 +562,7 @@ def run_rrt_star(env, args):
     from planner.rrt_star import capsule_sphere_distance
     q_goal = None
     try:
-        if args.scene_json is not None and args.scene_id >= 0:
+        if args.scene_json is not None and args.scene_id is not None:
             scene = load_scene_from_json(args.scene_json, args.scene_id)
             if "goal_q" in scene:
                 q_stored = np.array(scene["goal_q"])
@@ -851,7 +859,7 @@ def parse_args():
                    help="Use TrajectoryGenerator for random collision-free scenes")
     p.add_argument("--scene_json", type=str, default=None,
                    help=f"Path to scene JSON (default: {_DEFAULT_SCENE_JSON})")
-    p.add_argument("--scene_id", type=int, default=-1,
+    p.add_argument("--scene_id", type=str, default=None,
                    help="Scene ID to load from --scene_json (default: auto-detect)")
 
     # Paper experiment scenarios
@@ -902,7 +910,7 @@ def setup_env(args):
     # When loading from JSON, obstacle count is determined by the scene
     n_obstacles = args.n_obstacles
     if args.scene_json is not None:
-        sid = max(args.scene_id, 0)
+        sid = args.scene_id if args.scene_id is not None else "0"
         scene = load_scene_from_json(args.scene_json, sid)
         n_obstacles = len(scene["obstacles"])
 
@@ -933,7 +941,7 @@ def setup_env(args):
 
     # Override with JSON scene if specified (takes second priority)
     elif args.scene_json is not None:
-        sid = max(args.scene_id, 0)  # default to scene 0 if not set
+        sid = args.scene_id if args.scene_id is not None else "0"  # default to scene 0 if not set
         scene = load_scene_from_json(args.scene_json, sid)
         if not apply_scene(env, scene):
             sys.exit(1)
