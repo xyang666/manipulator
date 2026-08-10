@@ -10,7 +10,8 @@ from experiments.manifest import build_manifest
 from experiments.split_scenes import scene_fingerprint, split_scenes
 from env.manipulator_env import ManipulatorEnv, dense_safety_cost
 from robot_config import DEFAULT_URDF, DEFAULT_XML
-from train import is_better_validation, scene_sampling_weights
+from train import (is_better_validation, prune_step_checkpoints,
+                   scene_sampling_weights)
 from utils.replay_buffer import ReplayBuffer
 
 
@@ -123,6 +124,21 @@ def test_scene_sampling_caps_extreme_imbalance():
     )
     uniform = 1.0 / weights.size
     assert weights.max() <= uniform * 3.0 + 1e-12
+
+
+def test_periodic_checkpoint_retention_keeps_only_newest(tmp_path):
+    for step in (100, 200, 300):
+        (tmp_path / f"ckpt_step{step:09d}.pt").write_bytes(b"model")
+        (tmp_path / f"ckpt_step{step:09d}.replay.npz").write_bytes(b"replay")
+    (tmp_path / "ckpt_best.pt").write_bytes(b"best")
+    prune_step_checkpoints(str(tmp_path), keep=1)
+    assert sorted(p.name for p in tmp_path.glob("ckpt_step*.pt")) == [
+        "ckpt_step000000300.pt"
+    ]
+    assert (tmp_path / "ckpt_step000000300.replay.npz").exists()
+    assert (tmp_path / "ckpt_best.pt").exists()
+    prune_step_checkpoints(str(tmp_path), keep=0)
+    assert not list(tmp_path.glob("ckpt_step*"))
 
 
 def test_v5_observation_contains_direction_scene_mask_and_waypoints():

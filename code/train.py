@@ -281,6 +281,8 @@ def parse_args():
     # 每采集多少环境步保存一次 checkpoint；当前协议优先使用该参数。
     p.add_argument("--checkpoint_every_steps", type=int,
                    default=ALGORITHM.checkpoint_interval_steps)
+    # 最多保留多少个带 replay 的周期恢复点；训练结束后周期点会全部清理。
+    p.add_argument("--max_step_checkpoints", type=int, default=1)
     # 不因碰撞立即终止 episode；碰撞惩罚和安全代价仍然计算。
     p.add_argument("--no_collision_term", action="store_true")
 
@@ -447,6 +449,25 @@ def save_training_checkpoint(agent, buffer, checkpoint_path, metadata, per=False
     agent.save(checkpoint_path, metadata=metadata)
     if save_replay:
         buffer.save(replay_path)
+
+
+def prune_step_checkpoints(run_dir: str, keep: int = 1) -> None:
+    """Keep only the newest periodic recovery checkpoints and replays."""
+    if keep < 0:
+        raise ValueError("keep must be non-negative")
+    step_paths = sorted(
+        (name for name in os.listdir(run_dir)
+         if name.startswith("ckpt_step") and name.endswith(".pt")),
+        reverse=True,
+    )
+    for name in step_paths[keep:]:
+        checkpoint_path = os.path.join(run_dir, name)
+        os.remove(checkpoint_path)
+        stem = os.path.splitext(checkpoint_path)[0]
+        for suffix in (".replay.npz", ".replay.pkl.gz"):
+            replay_path = stem + suffix
+            if os.path.exists(replay_path):
+                os.remove(replay_path)
 
 
 def handle_resume(args, agent, buffer, scene_ema, scene_counts, scene_weights, logger):
@@ -660,6 +681,7 @@ def _run_render_loop(agent, env, buffer, args, hyperparams, logger, val_set,
                 agent, buffer, logger.checkpoint_path(f"step{total_steps:09d}"),
                 ckpt_meta, per=args.per, save_replay=True,
             )
+            prune_step_checkpoints(logger.run_dir, args.max_step_checkpoints)
             while next_checkpoint_step <= total_steps:
                 next_checkpoint_step += args.checkpoint_every_steps
         if ep_reward > logger.best_reward:
@@ -875,6 +897,9 @@ def _train_sac_parallel(agent, buffer, pool, ref_env, args, hyperparams, logger,
                         agent, buffer, logger.checkpoint_path(f"step{total_steps:09d}"),
                         ckpt_meta, per=args.per, save_replay=True,
                     )
+                    prune_step_checkpoints(
+                        logger.run_dir, args.max_step_checkpoints
+                    )
                     while next_checkpoint_step <= total_steps:
                         next_checkpoint_step += args.checkpoint_every_steps
                 if env_rewards[i] > best_reward:
@@ -953,6 +978,8 @@ def main():
         raise ValueError("step-based validation/checkpoint intervals must be positive")
     if args.grad_steps <= 0:
         raise ValueError("grad_steps must be positive")
+    if args.max_step_checkpoints < 0:
+        raise ValueError("max_step_checkpoints must be non-negative")
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -1153,6 +1180,7 @@ def main():
         agent, buffer, logger.checkpoint_path("final"), final_meta,
         per=args.per, save_replay=True,
     )
+    prune_step_checkpoints(logger.run_dir, keep=0)
     best_reward = train_state["best_reward"]
     logger.close()
     print(f"\nTraining done. Best reward: {best_reward:.3f}")
