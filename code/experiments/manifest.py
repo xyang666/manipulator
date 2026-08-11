@@ -10,7 +10,7 @@ from experiment_config import (ALGORITHM, EVALUATION, PHASE1_METHODS, PHASE1_SCE
 
 LEARNED_METHODS = {
     "sac_joint", "sac_residual", "ours_no_physics", "ours_physics",
-    "ours_full",
+    "ours_shielded", "ours_full",
 }
 
 
@@ -23,6 +23,10 @@ def build_manifest(checkpoint_root: Path, result_root: Path,
         "sac_residual": ["--agent_type", "residual", "--lambda_dyn", "0", "--no_safety_critic"],
         "ours_no_physics": ["--agent_type", "structured", "--lambda_dyn", "0", "--no_safety_critic", "--disable_gate"],
         "ours_physics": ["--agent_type", "structured", "--lambda_dyn", "1", "--no_safety_critic", "--disable_gate"],
+        "ours_shielded": ["--agent_type", "structured", "--lambda_dyn", "0",
+                           "--no_safety_critic", "--disable_gate", "--use_cbf",
+                           "--cbf_self_distance", "0.02",
+                           "--cbf_multi_self_constraints"],
         "ours_full": ["--agent_type", "structured", "--lambda_dyn", "1"],
     }
     protocols = {

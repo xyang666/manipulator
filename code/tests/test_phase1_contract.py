@@ -8,7 +8,7 @@ from agent.sac_agent import normalized_discounted_cost, scaled_sigmoid_inverse
 from agent.vanilla_sac_agent import VanillaSACAgent
 from experiment_config import (ALGORITHM, ENVIRONMENT, EVALUATION,
                                PHASE1_METHODS, PHASE1_SCENARIOS)
-from experiments.manifest import build_manifest
+from experiments.manifest import LEARNED_METHODS, build_manifest
 from experiments.runner import (checkpoint_action_scales,
                                 gradient_control_defaults,
                                 self_safety_distance_default)
@@ -48,7 +48,9 @@ def test_manifest_covers_all_methods_scenarios_and_seeds(tmp_path):
     manifest = build_manifest(tmp_path / "checkpoints", tmp_path / "results")
     expected = len(PHASE1_METHODS) * len(PHASE1_SCENARIOS) * len(EVALUATION.train_seeds)
     assert len(manifest["evaluation_jobs"]) == expected
-    assert len(manifest["training_jobs"]) == 10 * len(EVALUATION.train_seeds)
+    assert len(manifest["training_jobs"]) == (
+        len(LEARNED_METHODS) * 2 * len(EVALUATION.train_seeds)
+    )
     assert all(job["seed"] in EVALUATION.train_seeds
                for job in manifest["evaluation_jobs"])
     assert all("--episodes" in job["command"] for job in manifest["evaluation_jobs"])
@@ -61,6 +63,12 @@ def test_manifest_covers_all_methods_scenarios_and_seeds(tmp_path):
                for job in manifest["evaluation_jobs"])
     assert all("--val_every_steps" in job["command"]
                for job in manifest["training_jobs"])
+    shielded_jobs = [job for job in manifest["training_jobs"]
+                     if job["method"] == "ours_shielded"]
+    assert shielded_jobs
+    assert all("--use_cbf" in job["command"] and
+               "--cbf_multi_self_constraints" in job["command"]
+               for job in shielded_jobs)
     adaptive_jobs = [job for job in manifest["evaluation_jobs"]
                      if job["method"] == "adaptive_gradient_cbf"]
     assert adaptive_jobs

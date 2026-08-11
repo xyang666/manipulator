@@ -13,6 +13,7 @@ PHASE1_METHODS = (
     "sac_residual",
     "ours_no_physics",
     "ours_physics",
+    "ours_shielded",
     "ours_full",
 )
 PHASE1_SCENARIOS = (

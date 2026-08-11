@@ -171,11 +171,12 @@ def run(args) -> list[dict]:
         collision_event_penalty=ENVIRONMENT.collision_event_penalty,
         d_safe=ENVIRONMENT.d_safe, success_bonus=ENVIRONMENT.success_bonus,
         cbf_self_d_safe=args.cbf_self_distance,
-        cbf_multi_self_constraints=(args.method == "adaptive_gradient_cbf"),
+        cbf_multi_self_constraints=(args.method in (
+            "adaptive_gradient_cbf", "ours_shielded")),
         reward_scale=ENVIRONMENT.reward_scale,
         obs_scene_embed=ENVIRONMENT.obs_scene_embed,
         obs_waypoint_steps=list(ENVIRONMENT.obs_waypoint_steps),
-        use_cbf=(args.method in ("cbf_qp", "gradient_cbf") or
+        use_cbf=(args.method in ("cbf_qp", "gradient_cbf", "ours_shielded") or
                  (args.method == "adaptive_gradient_cbf" and
                   args.scenario != "confined_space")),
         gate_enabled=args.method in ("ours_full", "sac_residual"),
@@ -271,6 +272,9 @@ def parse_args():
                        "sac_joint", "sac_residual") and args.checkpoint is None:
         parser.error(f"--checkpoint is required for {args.method}")
     if args.method == "ours_no_physics":
+        args.lambda_dyn = 0.0
+        args.safety_critic = False
+    elif args.method == "ours_shielded":
         args.lambda_dyn = 0.0
         args.safety_critic = False
     elif args.method == "ours_physics":
