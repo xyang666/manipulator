@@ -64,6 +64,18 @@ def checkpoint_action_scales(checkpoint: Path,
     return float(task), float(nullspace)
 
 
+def checkpoint_cli_value(checkpoint: Path | None, key: str,
+                         fallback):
+    """Read one training CLI value when evaluation did not override it."""
+    if checkpoint is None:
+        return fallback
+    config_path = checkpoint.parent / "config.json"
+    if not config_path.exists():
+        return fallback
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    return config.get("cli_args", {}).get(key, fallback)
+
+
 def _structured_agent(env, checkpoint: Path, args) -> SACAgent:
     task_scale, nullspace_scale = checkpoint_action_scales(
         checkpoint, args.task_scale, args.nullspace_scale
@@ -259,9 +271,10 @@ def parse_args():
         args.gradient_smoothing,
     )
     if args.cbf_self_distance is None:
-        args.cbf_self_distance = self_safety_distance_default(
-            args.method, args.scenario
-        )
+        args.cbf_self_distance = float(checkpoint_cli_value(
+            args.checkpoint, "cbf_self_distance",
+            self_safety_distance_default(args.method, args.scenario),
+        ))
     if args.cbf_self_distance < 0.0:
         parser.error("--cbf-self-distance must be non-negative")
     if args.gradient_scale <= 0.0:

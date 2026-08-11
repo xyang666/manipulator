@@ -9,7 +9,7 @@ from agent.vanilla_sac_agent import VanillaSACAgent
 from experiment_config import (ALGORITHM, ENVIRONMENT, EVALUATION,
                                PHASE1_METHODS, PHASE1_SCENARIOS)
 from experiments.manifest import LEARNED_METHODS, build_manifest
-from experiments.runner import (checkpoint_action_scales,
+from experiments.runner import (checkpoint_action_scales, checkpoint_cli_value,
                                 gradient_control_defaults,
                                 self_safety_distance_default)
 from experiments.split_scenes import scene_fingerprint, split_scenes
@@ -228,6 +228,8 @@ def test_evaluation_recovers_action_scales_from_training_config(tmp_path):
     }))
     assert checkpoint_action_scales(checkpoint) == (0.1, 0.25)
     assert checkpoint_action_scales(checkpoint, task_override=0.2) == (0.2, 0.25)
+    assert checkpoint_cli_value(checkpoint, "task_scale", 1.0) == 0.1
+    assert checkpoint_cli_value(checkpoint, "cbf_self_distance", 0.02) == 0.02
 
 
 def test_scene_sampling_caps_extreme_imbalance():
