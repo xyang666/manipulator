@@ -51,7 +51,7 @@ def _vanilla_agent(env, checkpoint: Path, args) -> VanillaSACAgent:
     return agent
 
 
-def _gradient_projection_action(env) -> np.ndarray:
+def _gradient_projection_action(env, scale: float | None = None) -> np.ndarray:
     """Repel link capsules from spheres and express the joint gradient in B(q)."""
     if env.sdf.n_obs == 0:
         return np.zeros(env.act_dim)
@@ -66,8 +66,8 @@ def _gradient_projection_action(env) -> np.ndarray:
         gradient[joint] = (d_plus - d_minus) / (2 * eps)
     basis = env.kin.null_space_basis_position(env.q)
     action = np.zeros(env.act_dim)
-    action[3:] = np.clip(basis.T @ gradient, -ALGORITHM.nullspace_scale,
-                         ALGORITHM.nullspace_scale)
+    limit = ALGORITHM.nullspace_scale if scale is None else float(scale)
+    action[3:] = np.clip(basis.T @ gradient, -limit, limit)
     return action
 
 
@@ -156,7 +156,14 @@ def run(args) -> list[dict]:
         if args.method in ("pd", "cbf_qp"):
             action_fn = lambda obs: np.zeros(env.act_dim)
         elif args.method in ("gradient_projection", "gradient_cbf"):
-            action_fn = lambda obs: _gradient_projection_action(env)
+            previous_action = np.zeros(env.act_dim)
+
+            def action_fn(obs):
+                nonlocal previous_action
+                raw = _gradient_projection_action(env, args.gradient_scale)
+                beta = args.gradient_smoothing
+                previous_action = beta * previous_action + (1.0 - beta) * raw
+                return previous_action.copy()
         elif args.method == "sac_joint":
             action_fn = lambda obs: agent.select_action(obs, deterministic=True)
         elif args.method == "sac_residual":
@@ -187,8 +194,15 @@ def parse_args():
     parser.add_argument("--urdf", default=DEFAULT_URDF)
     parser.add_argument("--xml", default=DEFAULT_XML)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--gradient-scale", type=float,
+                        default=ALGORITHM.nullspace_scale)
+    parser.add_argument("--gradient-smoothing", type=float, default=0.0)
     parser.set_defaults(lambda_dyn=ALGORITHM.lambda_dyn, safety_critic=True)
     args = parser.parse_args()
+    if args.gradient_scale <= 0.0:
+        parser.error("--gradient-scale must be positive")
+    if not 0.0 <= args.gradient_smoothing < 1.0:
+        parser.error("--gradient-smoothing must be in [0, 1)")
     if args.method in ("ours_no_physics", "ours_physics", "ours_full",
                        "sac_joint", "sac_residual") and args.checkpoint is None:
         parser.error(f"--checkpoint is required for {args.method}")
