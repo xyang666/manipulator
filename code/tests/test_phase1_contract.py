@@ -7,7 +7,8 @@ from agent.vanilla_sac_agent import VanillaSACAgent
 from experiment_config import (ALGORITHM, ENVIRONMENT, EVALUATION,
                                PHASE1_METHODS, PHASE1_SCENARIOS)
 from experiments.manifest import build_manifest
-from experiments.runner import gradient_control_defaults
+from experiments.runner import (gradient_control_defaults,
+                                self_safety_distance_default)
 from experiments.split_scenes import scene_fingerprint, split_scenes
 from env.manipulator_env import ManipulatorEnv, dense_safety_cost
 from robot_config import DEFAULT_URDF, DEFAULT_XML
@@ -151,6 +152,12 @@ def test_scene_sampling_keeps_uniform_probability_floor():
     assert np.isclose(weights.sum(), 1.0)
     assert np.all(weights >= 1.0 / 2.0 / 3.0)
     assert weights[1] > weights[0]
+
+
+def test_adaptive_free_space_uses_predictive_self_collision_margin():
+    assert self_safety_distance_default("adaptive_gradient_cbf", "free_space") == 0.03
+    assert self_safety_distance_default("cbf_qp", "free_space") == 0.02
+    assert self_safety_distance_default("adaptive_gradient_cbf", "whole_body") == 0.02
 
 
 def test_scene_sampling_caps_extreme_imbalance():

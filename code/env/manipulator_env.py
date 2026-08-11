@@ -99,6 +99,7 @@ class ManipulatorEnv:
                  d_safe: float = ENVIRONMENT.d_safe,
                  use_cbf: bool = False,
                  cbf_alpha: float = 1.0,
+                 cbf_self_d_safe: float = 0.02,
                  success_bonus: float = ENVIRONMENT.success_bonus,
                  reward_min: Optional[float] = None,
                  reward_scale: float = ENVIRONMENT.reward_scale,
@@ -261,9 +262,10 @@ class ManipulatorEnv:
         self.cbf = None
         if use_cbf:
             self.cbf = CBFController(self.sdf, self.kin,
-                                     d_safe=d_safe, alpha=cbf_alpha)
+                                     d_safe=d_safe, alpha=cbf_alpha,
+                                     self_d_safe=cbf_self_d_safe)
             print(f"[env] CBF safety filter enabled (alpha={cbf_alpha}, "
-                  f"d_safe={d_safe})")
+                  f"d_safe={d_safe}, self_d_safe={cbf_self_d_safe})")
 
         # Lagrangian multiplier for constraint-based gating
         # λ ≥ 0, updated via dual ascent: λ += lr_lag * (violation - target)

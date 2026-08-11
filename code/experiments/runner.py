@@ -42,6 +42,13 @@ def gradient_control_defaults(method: str, scenario: str,
     return float(scale), float(smoothing)
 
 
+def self_safety_distance_default(method: str, scenario: str) -> float:
+    """Keep the baseline margin fixed; add look-ahead only to our controller."""
+    if method == "adaptive_gradient_cbf" and scenario == "free_space":
+        return 0.03
+    return 0.02
+
+
 def _structured_agent(env, checkpoint: Path, args) -> SACAgent:
     agent = SACAgent(
         state_dim=env.obs_dim, action_dim=env.act_dim, dynamics=env.dyn,
@@ -145,6 +152,7 @@ def run(args) -> list[dict]:
         w_null=ENVIRONMENT.w_null,
         collision_event_penalty=ENVIRONMENT.collision_event_penalty,
         d_safe=ENVIRONMENT.d_safe, success_bonus=ENVIRONMENT.success_bonus,
+        cbf_self_d_safe=args.cbf_self_distance,
         reward_scale=ENVIRONMENT.reward_scale,
         obs_scene_embed=ENVIRONMENT.obs_scene_embed,
         obs_waypoint_steps=list(ENVIRONMENT.obs_waypoint_steps),
@@ -218,12 +226,20 @@ def parse_args():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--gradient-scale", type=float, default=None)
     parser.add_argument("--gradient-smoothing", type=float, default=None)
+    parser.add_argument("--cbf-self-distance", type=float, default=None,
+                        help="CBF minimum non-adjacent-link clearance (m)")
     parser.set_defaults(lambda_dyn=ALGORITHM.lambda_dyn, safety_critic=True)
     args = parser.parse_args()
     args.gradient_scale, args.gradient_smoothing = gradient_control_defaults(
         args.method, args.scenario, args.gradient_scale,
         args.gradient_smoothing,
     )
+    if args.cbf_self_distance is None:
+        args.cbf_self_distance = self_safety_distance_default(
+            args.method, args.scenario
+        )
+    if args.cbf_self_distance < 0.0:
+        parser.error("--cbf-self-distance must be non-negative")
     if args.gradient_scale <= 0.0:
         parser.error("--gradient-scale must be positive")
     if not 0.0 <= args.gradient_smoothing < 1.0:
