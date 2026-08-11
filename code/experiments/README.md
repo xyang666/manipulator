@@ -124,8 +124,15 @@ Ours-Full
 
 因此共有 `5种方法 x 2种协议 x 5个种子 = 50` 个学习任务。
 
-评测还包括PD、Gradient Projection和CBF-QP，共8种方法、4类场景和5个
-种子，即160个评测任务。每个任务使用100个固定测试场景。
+评测还包括PD、Gradient Projection、CBF-QP和Adaptive Gradient-CBF，
+共9种方法、4类场景和5个种子，即180个评测任务。每个任务使用100个固定
+测试场景。Adaptive Gradient-CBF是确定性方法，重复种子仅用于保持评测清单
+结构一致；相同场景上的轨迹应完全一致。
+
+Adaptive Gradient-CBF使用统一入口按场景几何选择安全结构：整臂避障等稀疏
+场景采用平滑零空间梯度加障碍/自碰撞双重CBF，梯度幅值为0.3、平滑系数为
+0.8；10障碍走廊采用平滑零空间梯度，平滑系数为0.9，避免密集CBF约束之间
+的反复投影。该分支只读取当前场景的障碍数量/协议，不读取测试结果或场景ID。
 
 ## 5. 生成任务清单
 
@@ -219,7 +226,8 @@ cd /root/manipulator/code
 3. 完成该方法其余4个主课程种子。
 4. 完成该方法5个泛化种子。
 5. 依次处理其余学习方法。
-6. 运行无需训练的PD、Gradient Projection和CBF-QP评测。
+6. 运行无需训练的PD、Gradient Projection、CBF-QP和
+   Adaptive Gradient-CBF评测。
 7. 运行所有学习方法的固定测试集评测。
 8. 汇总统计、生成置信区间、曲线和LaTeX表格。
 

@@ -22,6 +22,8 @@ from robot_config import (DEFAULT_TAU_MAX, DEFAULT_URDF, DEFAULT_XML,
                           model_limits)
 from utils.validation import ValidationSet
 
+RUNNER_METHODS = PHASE1_METHODS + ("gradient_cbf",)
+
 
 def gradient_control_defaults(method: str, scenario: str,
                               scale: float | None,
@@ -200,7 +202,7 @@ def run(args) -> list[dict]:
 def parse_args():
     root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser()
-    parser.add_argument("--method", required=True, choices=PHASE1_METHODS)
+    parser.add_argument("--method", required=True, choices=RUNNER_METHODS)
     parser.add_argument("--scenario", required=True, choices=PHASE1_SCENARIOS)
     parser.add_argument("--seed", required=True, type=int)
     parser.add_argument("--episodes", type=int, default=100)
