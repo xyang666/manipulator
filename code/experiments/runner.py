@@ -45,7 +45,7 @@ def gradient_control_defaults(method: str, scenario: str,
 def self_safety_distance_default(method: str, scenario: str) -> float:
     """Keep the baseline margin fixed; add look-ahead only to our controller."""
     if method == "adaptive_gradient_cbf" and scenario == "free_space":
-        return 0.03
+        return 0.025
     return 0.02
 
 

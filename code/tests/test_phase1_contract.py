@@ -155,7 +155,7 @@ def test_scene_sampling_keeps_uniform_probability_floor():
 
 
 def test_adaptive_free_space_uses_predictive_self_collision_margin():
-    assert self_safety_distance_default("adaptive_gradient_cbf", "free_space") == 0.03
+    assert self_safety_distance_default("adaptive_gradient_cbf", "free_space") == 0.025
     assert self_safety_distance_default("cbf_qp", "free_space") == 0.02
     assert self_safety_distance_default("adaptive_gradient_cbf", "whole_body") == 0.02
 
