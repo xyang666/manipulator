@@ -49,6 +49,19 @@ def dense_safety_cost(constraint_distance: float, d_safe: float) -> float:
     return float(np.clip(max(0.0, d_safe - constraint_distance) / d_safe,
                          0.0, 2.0))
 
+
+def combined_safety_cost(obstacle_distance: float, obstacle_safe: float,
+                         self_distance: float, self_safe: float) -> float:
+    """Worst normalized violation using each constraint's own margin.
+
+    Obstacle clearance and self-collision clearance deliberately use different
+    physical thresholds.  Comparing both distances against ``obstacle_safe``
+    makes ordinary, collision-free self configurations look unsafe to the
+    safety critic and trains a constraint that is inconsistent with evaluation.
+    """
+    return max(dense_safety_cost(obstacle_distance, obstacle_safe),
+               dense_safety_cost(self_distance, self_safe))
+
 try:
     from control.mpc_controller import MPCController
     HAS_MPC = True
@@ -250,6 +263,7 @@ class ManipulatorEnv:
             d_safe=d_safe,
             collision_detector=self.collision_detector)
         self.d_safe = d_safe
+        self.self_d_safe = cbf_self_d_safe
         self.success_bonus = success_bonus
         self.reward_min = reward_min
         self.reward_scale = reward_scale
@@ -597,7 +611,9 @@ class ManipulatorEnv:
         self_dists = self.kin.compute_self_distances(self.q)
         d_self = float(np.min(self_dists)) if len(self_dists) else float("inf")
         constraint_distance = min(float(d_obs), d_self)
-        cost = dense_safety_cost(constraint_distance, self.d_safe)
+        cost = combined_safety_cost(
+            float(d_obs), self.d_safe, d_self, self.self_d_safe
+        )
 
         info = {"d_obs": d_obs, "d_self": d_self,
                 "constraint_distance": constraint_distance,
