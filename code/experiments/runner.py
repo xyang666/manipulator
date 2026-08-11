@@ -23,6 +23,23 @@ from robot_config import (DEFAULT_TAU_MAX, DEFAULT_URDF, DEFAULT_XML,
 from utils.validation import ValidationSet
 
 
+def gradient_control_defaults(method: str, scenario: str,
+                              scale: float | None,
+                              smoothing: float | None) -> tuple[float, float]:
+    """Resolve reproducible defaults for each gradient-based controller."""
+    if scale is None:
+        scale = (0.3 if method in ("gradient_cbf", "adaptive_gradient_cbf")
+                 else ALGORITHM.nullspace_scale)
+    if smoothing is None:
+        if method == "adaptive_gradient_cbf":
+            smoothing = 0.9 if scenario == "confined_space" else 0.8
+        elif method == "gradient_cbf":
+            smoothing = 0.8
+        else:
+            smoothing = 0.0
+    return float(scale), float(smoothing)
+
+
 def _structured_agent(env, checkpoint: Path, args) -> SACAgent:
     agent = SACAgent(
         state_dim=env.obs_dim, action_dim=env.act_dim, dynamics=env.dyn,
@@ -129,7 +146,9 @@ def run(args) -> list[dict]:
         reward_scale=ENVIRONMENT.reward_scale,
         obs_scene_embed=ENVIRONMENT.obs_scene_embed,
         obs_waypoint_steps=list(ENVIRONMENT.obs_waypoint_steps),
-        use_cbf=args.method in ("cbf_qp", "gradient_cbf"),
+        use_cbf=(args.method in ("cbf_qp", "gradient_cbf") or
+                 (args.method == "adaptive_gradient_cbf" and
+                  args.scenario != "confined_space")),
         gate_enabled=args.method in ("ours_full", "sac_residual"),
     )
     agent = None
@@ -155,7 +174,8 @@ def run(args) -> list[dict]:
             )
         if args.method in ("pd", "cbf_qp"):
             action_fn = lambda obs: np.zeros(env.act_dim)
-        elif args.method in ("gradient_projection", "gradient_cbf"):
+        elif args.method in ("gradient_projection", "gradient_cbf",
+                             "adaptive_gradient_cbf"):
             previous_action = np.zeros(env.act_dim)
 
             def action_fn(obs):
@@ -194,11 +214,14 @@ def parse_args():
     parser.add_argument("--urdf", default=DEFAULT_URDF)
     parser.add_argument("--xml", default=DEFAULT_XML)
     parser.add_argument("--device", default="cpu")
-    parser.add_argument("--gradient-scale", type=float,
-                        default=ALGORITHM.nullspace_scale)
-    parser.add_argument("--gradient-smoothing", type=float, default=0.0)
+    parser.add_argument("--gradient-scale", type=float, default=None)
+    parser.add_argument("--gradient-smoothing", type=float, default=None)
     parser.set_defaults(lambda_dyn=ALGORITHM.lambda_dyn, safety_critic=True)
     args = parser.parse_args()
+    args.gradient_scale, args.gradient_smoothing = gradient_control_defaults(
+        args.method, args.scenario, args.gradient_scale,
+        args.gradient_smoothing,
+    )
     if args.gradient_scale <= 0.0:
         parser.error("--gradient-scale must be positive")
     if not 0.0 <= args.gradient_smoothing < 1.0:

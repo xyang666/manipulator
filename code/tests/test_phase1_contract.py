@@ -7,6 +7,7 @@ from agent.vanilla_sac_agent import VanillaSACAgent
 from experiment_config import (ALGORITHM, ENVIRONMENT, EVALUATION,
                                PHASE1_METHODS, PHASE1_SCENARIOS)
 from experiments.manifest import build_manifest
+from experiments.runner import gradient_control_defaults
 from experiments.split_scenes import scene_fingerprint, split_scenes
 from env.manipulator_env import ManipulatorEnv, dense_safety_cost
 from robot_config import DEFAULT_URDF, DEFAULT_XML
@@ -59,6 +60,18 @@ def test_manifest_covers_all_methods_scenarios_and_seeds(tmp_path):
     assert "whole_body/train.json" in " ".join(
         manifest["diagnostic_jobs"][0]["command"]
     )
+
+
+def test_adaptive_gradient_cbf_uses_scenario_specific_smoothing():
+    assert gradient_control_defaults(
+        "adaptive_gradient_cbf", "whole_body", None, None
+    ) == (0.3, 0.8)
+    assert gradient_control_defaults(
+        "adaptive_gradient_cbf", "confined_space", None, None
+    ) == (0.3, 0.9)
+    assert gradient_control_defaults(
+        "gradient_projection", "confined_space", None, None
+    ) == (ALGORITHM.nullspace_scale, 0.0)
 
 
 def test_dense_safety_cost_tracks_margin_violation():
