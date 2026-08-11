@@ -8,8 +8,11 @@ Applies a CBF-QP filter to joint velocity commands before execution:
     CBF:     dh/dt ≥ -α·h  →  ∇h·dq ≥ -α·h
     QP:      min ||dq - dq_cmd||²  s.t.  ∇h·dq ≥ -α·h
 
-The QP has a closed-form solution (single constraint), making it O(n).
-Uses numerical central-difference gradient for the barrier function.
+Obstacle and minimum-self-distance constraints have closed-form projections.
+The adaptive controller can instead retain every non-adjacent self-distance
+constraint and solve their intersection by cyclic half-space projections.
+All self gradients are obtained together with 2*n distance evaluations, so the
+gradient cost does not grow by another factor equal to the number of pairs.
 
 Author: xie yang
 Date:   2025-06
@@ -36,13 +39,18 @@ class CBFController:
     """
 
     def __init__(self, sdf, kinematics, d_safe=0.06, alpha=1.0, eps=1e-5,
-                 self_d_safe=0.02):
+                 self_d_safe=0.02, multi_self_constraints=False,
+                 self_projection_passes=2):
         self.sdf = sdf
         self.kin = kinematics
         self.d_safe = d_safe
         self.alpha = alpha
         self.eps = eps
         self.self_d_safe = self_d_safe
+        self.multi_self_constraints = bool(multi_self_constraints)
+        self.self_projection_passes = int(self_projection_passes)
+        if self.self_projection_passes < 1:
+            raise ValueError("self_projection_passes must be at least one")
         self.n = kinematics.n
 
     # ------------------------------------------------------------------
@@ -123,6 +131,31 @@ class CBFController:
             grad *= 100.0 / norm
         return grad, h0
 
+    def compute_self_gradients(
+            self, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return one numerical gradient and barrier value per self pair."""
+        distances = np.asarray(self.kin.compute_self_distances(q), dtype=float)
+        if distances.size == 0:
+            return np.empty((0, self.n)), np.empty(0)
+        gradients = np.empty((distances.size, self.n), dtype=float)
+        for joint in range(self.n):
+            q_plus, q_minus = q.copy(), q.copy()
+            q_plus[joint] += self.eps
+            q_minus[joint] -= self.eps
+            d_plus = np.asarray(
+                self.kin.compute_self_distances(q_plus), dtype=float
+            )
+            d_minus = np.asarray(
+                self.kin.compute_self_distances(q_minus), dtype=float
+            )
+            if d_plus.shape != distances.shape or d_minus.shape != distances.shape:
+                raise ValueError("self-collision pair ordering changed during gradient")
+            gradients[:, joint] = (d_plus - d_minus) / (2.0 * self.eps)
+        norms = np.linalg.norm(gradients, axis=1)
+        too_large = norms > 100.0
+        gradients[too_large] *= (100.0 / norms[too_large])[:, None]
+        return gradients, distances - self.self_d_safe
+
     def _project_constraint(self, dq_cmd: np.ndarray, grad: np.ndarray,
                             h: float) -> tuple[np.ndarray, bool]:
         """Project one velocity command onto one CBF half-space."""
@@ -153,17 +186,37 @@ class CBFController:
             - dq_norm: float, ‖dq_filtered - dq_cmd‖ (modification magnitude)
         """
         obstacle_grad, obstacle_h = self.compute_gradient(q)
-        self_grad, self_h = self._gradient_of(q, self.self_barrier)
         dq_filtered, obstacle_active = self._project_constraint(
             dq_cmd.copy(), obstacle_grad, obstacle_h
         )
-        dq_filtered, self_active = self._project_constraint(
-            dq_filtered, self_grad, self_h
-        )
+        self_active = False
+        active_self_pairs = set()
+        if self.multi_self_constraints:
+            self_gradients, self_barriers = self.compute_self_gradients(q)
+            order = np.argsort(self_barriers)
+            for _ in range(self.self_projection_passes):
+                for pair_index in order:
+                    dq_filtered, active = self._project_constraint(
+                        dq_filtered, self_gradients[pair_index],
+                        self_barriers[pair_index]
+                    )
+                    self_active |= active
+                    if active:
+                        active_self_pairs.add(int(pair_index))
+            self_h = (float(np.min(self_barriers))
+                      if self_barriers.size else np.inf)
+        else:
+            self_grad, self_h = self._gradient_of(q, self.self_barrier)
+            dq_filtered, self_active = self._project_constraint(
+                dq_filtered, self_grad, self_h
+            )
+            if self_active:
+                active_self_pairs.add(0)
         info = {
             "active": obstacle_active or self_active,
             "obstacle_active": obstacle_active,
             "self_active": self_active,
+            "self_active_count": len(active_self_pairs),
             "h": min(obstacle_h, self_h),
             "obstacle_h": obstacle_h,
             "self_h": self_h,

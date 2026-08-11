@@ -127,6 +127,32 @@ def test_cbf_filters_motion_toward_self_collision_without_obstacles():
     assert filtered[0] >= -cbf.alpha * info["self_h"] - 1e-9
 
 
+def test_multi_self_cbf_enforces_all_pair_constraints():
+    class EmptySDF:
+        def min_distance(self, *args, **kwargs):
+            return np.inf
+
+    class TwoJointKinematics:
+        n = 2
+
+        def forward_kinematics(self, q):
+            return np.zeros(3), np.eye(3)
+
+        def compute_self_distances(self, q):
+            return np.array([q[0], q[1]])
+
+    cbf = CBFController(
+        EmptySDF(), TwoJointKinematics(), self_d_safe=0.02,
+        multi_self_constraints=True,
+    )
+    filtered, info = cbf.filter(np.array([-1.0, -2.0]),
+                                np.array([0.03, 0.04]))
+    assert info["self_active"]
+    assert info["self_active_count"] == 2
+    assert filtered[0] >= -0.01 - 1e-9
+    assert filtered[1] >= -0.02 - 1e-9
+
+
 def test_minimum_jerk_progress_has_stationary_endpoints():
     fn = ManipulatorEnv._minimum_jerk_progress
     eps = 1e-5
