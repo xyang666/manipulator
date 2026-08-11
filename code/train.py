@@ -154,6 +154,10 @@ def parse_args():
     p.add_argument("--use_cbf",          action="store_true")
     # CBF 收敛/保守系数；增大通常更积极地修正接近障碍的动作。
     p.add_argument("--cbf_alpha",        type=float, default=1.0)
+    # CBF 使用的非相邻连杆最小自碰撞间距（米）。
+    p.add_argument("--cbf_self_distance", type=float, default=0.02)
+    # 同时投影全部非相邻胶囊对，而不是只约束当前最小距离对。
+    p.add_argument("--cbf_multi_self_constraints", action="store_true")
     # 关闭独立安全 critic，退化为只优化奖励的 SAC。
     p.add_argument("--no_safety_critic", action="store_true")
     # 关闭风险门控，使任务空间 RL 修正不再按障碍距离衰减。
@@ -380,6 +384,8 @@ def make_env_kwargs(args, n_obs, obs_waypoint_steps):
         reward_min=args.reward_min,
         reward_scale=args.reward_scale,
         use_cbf=args.use_cbf, cbf_alpha=args.cbf_alpha,
+        cbf_self_d_safe=args.cbf_self_distance,
+        cbf_multi_self_constraints=args.cbf_multi_self_constraints,
         gate_enabled=not args.disable_gate,
     )
 
