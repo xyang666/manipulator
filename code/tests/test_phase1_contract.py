@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import torch
 
@@ -7,7 +9,8 @@ from agent.vanilla_sac_agent import VanillaSACAgent
 from experiment_config import (ALGORITHM, ENVIRONMENT, EVALUATION,
                                PHASE1_METHODS, PHASE1_SCENARIOS)
 from experiments.manifest import build_manifest
-from experiments.runner import (gradient_control_defaults,
+from experiments.runner import (checkpoint_action_scales,
+                                gradient_control_defaults,
                                 self_safety_distance_default)
 from experiments.split_scenes import scene_fingerprint, split_scenes
 from env.manipulator_env import (ManipulatorEnv, combined_safety_cost,
@@ -205,6 +208,18 @@ def test_formal_methods_use_same_self_collision_margin():
     assert self_safety_distance_default("adaptive_gradient_cbf", "free_space") == 0.02
     assert self_safety_distance_default("cbf_qp", "free_space") == 0.02
     assert self_safety_distance_default("adaptive_gradient_cbf", "whole_body") == 0.02
+
+
+def test_evaluation_recovers_action_scales_from_training_config(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    checkpoint = run_dir / "ckpt_best.pt"
+    checkpoint.write_bytes(b"placeholder")
+    (run_dir / "config.json").write_text(json.dumps({
+        "cli_args": {"task_scale": 0.1, "nullspace_scale": 0.25}
+    }))
+    assert checkpoint_action_scales(checkpoint) == (0.1, 0.25)
+    assert checkpoint_action_scales(checkpoint, task_override=0.2) == (0.2, 0.25)
 
 
 def test_scene_sampling_caps_extreme_imbalance():

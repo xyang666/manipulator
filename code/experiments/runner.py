@@ -47,11 +47,31 @@ def self_safety_distance_default(method: str, scenario: str) -> float:
     return 0.02
 
 
+def checkpoint_action_scales(checkpoint: Path,
+                             task_override: float | None = None,
+                             nullspace_override: float | None = None
+                             ) -> tuple[float, float]:
+    """Recover action units used in training, with explicit CLI precedence."""
+    cli = {}
+    config_path = checkpoint.parent / "config.json"
+    if config_path.exists():
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        cli = config.get("cli_args", {})
+    task = (task_override if task_override is not None
+            else cli.get("task_scale", ALGORITHM.task_scale))
+    nullspace = (nullspace_override if nullspace_override is not None
+                 else cli.get("nullspace_scale", ALGORITHM.nullspace_scale))
+    return float(task), float(nullspace)
+
+
 def _structured_agent(env, checkpoint: Path, args) -> SACAgent:
+    task_scale, nullspace_scale = checkpoint_action_scales(
+        checkpoint, args.task_scale, args.nullspace_scale
+    )
     agent = SACAgent(
         state_dim=env.obs_dim, action_dim=env.act_dim, dynamics=env.dyn,
         hidden_dims=ALGORITHM.hidden_dims, lambda_dyn=args.lambda_dyn,
-        task_scale=ALGORITHM.task_scale, nullspace_scale=ALGORITHM.nullspace_scale,
+        task_scale=task_scale, nullspace_scale=nullspace_scale,
         n_critics=ALGORITHM.n_critics, use_safety_critic=args.safety_critic,
         lag_max=ALGORITHM.lagrange_maximum,
         min_alpha=ALGORITHM.minimum_alpha,
@@ -225,6 +245,10 @@ def parse_args():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--gradient-scale", type=float, default=None)
     parser.add_argument("--gradient-smoothing", type=float, default=None)
+    parser.add_argument("--task-scale", type=float, default=None,
+                        help="Override checkpoint task-action scale")
+    parser.add_argument("--nullspace-scale", type=float, default=None,
+                        help="Override checkpoint null-space action scale")
     parser.add_argument("--cbf-self-distance", type=float, default=None,
                         help="CBF minimum non-adjacent-link clearance (m)")
     parser.set_defaults(lambda_dyn=ALGORITHM.lambda_dyn, safety_critic=True)
