@@ -135,6 +135,11 @@ def test_distance_gradient_prior_is_bounded_and_smoothed():
     second = env._distance_gradient_prior(basis)
     assert np.allclose(first, [0.15, 0.0, 0.0, 0.0], atol=1e-8)
     assert np.allclose(second, [0.225, 0.0, 0.0, 0.0], atol=1e-8)
+    env.confined_deterministic_prior = True
+    env._current_scenario = "confined_space"
+    env._gradient_prior_z.fill(0.0)
+    confined_first = env._distance_gradient_prior(basis)
+    assert np.allclose(confined_first, [0.03, 0.0, 0.0, 0.0], atol=1e-8)
 
 
 def test_validation_selection_prioritizes_success_then_safety():

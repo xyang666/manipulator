@@ -141,6 +141,7 @@ class ManipulatorEnv:
                  gradient_prior_scale: float = 0.0,
                  gradient_prior_smoothing: float = 0.8,
                  learned_residual_scale: float = 1.0,
+                 confined_deterministic_prior: bool = False,
                  obs_waypoint_steps: list | None = None,
                  obs_scene_embed: int = ENVIRONMENT.obs_scene_embed,
                  frame_stack: int = 1):
@@ -186,6 +187,7 @@ class ManipulatorEnv:
         self.gradient_prior_scale = float(gradient_prior_scale)
         self.gradient_prior_smoothing = float(gradient_prior_smoothing)
         self.learned_residual_scale = float(learned_residual_scale)
+        self.confined_deterministic_prior = bool(confined_deterministic_prior)
 
         # Observation dimensions
         self.obs_waypoint_steps = (
@@ -494,8 +496,14 @@ class ManipulatorEnv:
 
         else:
             # Decompose 7D action into task relaxation + null-space coefficients
-            delta_x_rl = self.learned_residual_scale * action[:3]
-            z = self.learned_residual_scale * action[3:]
+            confined_prior_only = (
+                self.confined_deterministic_prior and
+                getattr(self, "_current_scenario", None) == "confined_space"
+            )
+            residual_scale = (0.0 if confined_prior_only
+                              else self.learned_residual_scale)
+            delta_x_rl = residual_scale * action[:3]
+            z = residual_scale * action[3:]
 
             # Compute nominal task-space velocity (PID tracking)
             dx_nom = self._compute_task_velocity()  # ẋ_d + Kp(x_d - x) + Ki*∫(x_d - x)dt
@@ -523,7 +531,8 @@ class ManipulatorEnv:
             # Reconstruct 7D nullspace velocity from 4D coefficients via SVD basis
             B = self.kin.null_space_basis_position(self.q)  # (7, 4), J_pos @ B ≈ 0
             obstacle_constraint = None
-            if self.gradient_prior_scale > 0.0 and self.cbf is not None:
+            if (self.gradient_prior_scale > 0.0 and self.cbf is not None
+                    and not confined_prior_only):
                 obstacle_constraint = self.cbf.compute_gradient(self.q)
             prior_z = self._distance_gradient_prior(
                 B, obstacle_constraint[0] if obstacle_constraint else None
@@ -545,7 +554,7 @@ class ManipulatorEnv:
             # (buffer stores raw RL action, CBF is part of the environment dynamics)
             self._cbf_active = False
             self._cbf_mod = 0.0
-            if self.cbf is not None:
+            if self.cbf is not None and not confined_prior_only:
                 dq_cmd, cbf_info = self.cbf.filter(
                     dq_cmd, self.q,
                     obstacle_constraint=obstacle_constraint,
@@ -1168,7 +1177,10 @@ class ManipulatorEnv:
             gradient = np.asarray(joint_gradient, dtype=float)
         raw = np.clip(basis.T @ gradient, -self.gradient_prior_scale,
                       self.gradient_prior_scale)
-        beta = self.gradient_prior_smoothing
+        beta = (max(self.gradient_prior_smoothing, 0.9)
+                if (getattr(self, "confined_deterministic_prior", False) and
+                    getattr(self, "_current_scenario", None) == "confined_space")
+                else self.gradient_prior_smoothing)
         self._gradient_prior_z = beta * self._gradient_prior_z + (1.0 - beta) * raw
         return self._gradient_prior_z.copy()
 

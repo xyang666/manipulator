@@ -63,6 +63,8 @@ class ValidationSet:
         """
         # Extract scene data
         env._current_scene_id = scene.get("scene_id", -1)
+        env._current_scenario = (scene.get("scenario") or scene.get("kind") or
+                                 str(env._current_scene_id).split("-validation-")[0])
         env.x_start = np.array(scene["start"])
         env.x_goal = np.array(scene["goal"])
 
@@ -137,6 +139,8 @@ class ValidationSet:
         env.reward_fn._prev_dist_to_goal = None
         env.ee_trajectory.clear()
         env._lag_lambda = 0.0
+        if hasattr(env, "_gradient_prior_z"):
+            env._gradient_prior_z.fill(0.0)
 
 
 def evaluate_on_validation_set(agent, env, val_set: ValidationSet,
