@@ -35,12 +35,14 @@ class CBFController:
     eps        : finite-difference step size for numerical gradient
     """
 
-    def __init__(self, sdf, kinematics, d_safe=0.06, alpha=1.0, eps=1e-5):
+    def __init__(self, sdf, kinematics, d_safe=0.06, alpha=1.0, eps=1e-5,
+                 self_d_safe=0.02):
         self.sdf = sdf
         self.kin = kinematics
         self.d_safe = d_safe
         self.alpha = alpha
         self.eps = eps
+        self.self_d_safe = self_d_safe
         self.n = kinematics.n
 
     # ------------------------------------------------------------------
@@ -98,6 +100,41 @@ class CBFController:
 
         return grad, h0
 
+    def self_barrier(self, q: np.ndarray) -> float:
+        """Minimum non-adjacent link clearance above the self margin."""
+        distances = self.kin.compute_self_distances(q)
+        if len(distances) == 0:
+            return np.inf
+        return float(np.min(distances)) - self.self_d_safe
+
+    def _gradient_of(self, q: np.ndarray, barrier_fn) -> tuple[np.ndarray, float]:
+        """Central-difference gradient shared by obstacle and self barriers."""
+        h0 = barrier_fn(q)
+        if not np.isfinite(h0):
+            return np.zeros(self.n), h0
+        grad = np.zeros(self.n)
+        for i in range(self.n):
+            q_plus, q_minus = q.copy(), q.copy()
+            q_plus[i] += self.eps
+            q_minus[i] -= self.eps
+            grad[i] = (barrier_fn(q_plus) - barrier_fn(q_minus)) / (2 * self.eps)
+        norm = np.linalg.norm(grad)
+        if norm > 100.0:
+            grad *= 100.0 / norm
+        return grad, h0
+
+    def _project_constraint(self, dq_cmd: np.ndarray, grad: np.ndarray,
+                            h: float) -> tuple[np.ndarray, bool]:
+        """Project one velocity command onto one CBF half-space."""
+        norm_sq = float(np.dot(grad, grad))
+        if not np.isfinite(h) or norm_sq < 1e-12:
+            return dq_cmd, False
+        lhs = float(np.dot(grad, dq_cmd))
+        rhs = -self.alpha * max(h, -0.5)
+        if lhs >= rhs:
+            return dq_cmd, False
+        return dq_cmd + ((rhs - lhs) / norm_sq) * grad, True
+
     def filter(self, dq_cmd: np.ndarray, q: np.ndarray) -> tuple:
         """
         Apply CBF-QP safety filter.
@@ -115,33 +152,23 @@ class CBFController:
             - h     : float, current barrier value
             - dq_norm: float, ‖dq_filtered - dq_cmd‖ (modification magnitude)
         """
-        grad, h = self.compute_gradient(q)
-        info = {"active": False, "h": h, "dq_norm": 0.0}
-
-        # No obstacles or barrier undefined → pass through
-        if not np.isfinite(h):
-            return dq_cmd.copy(), info
-
-        grad_norm_sq = np.dot(grad, grad)
-
-        # If gradient is flat, CBF cannot provide guidance → pass through
-        if grad_norm_sq < 1e-12:
-            return dq_cmd.copy(), info
-
-        # CBF condition: ∇h · dq_cmd ≥ -α · h
-        lhs = np.dot(grad, dq_cmd)
-        rhs = -self.alpha * max(h, -0.5)  # clamp h to avoid excessive correction
-
-        if lhs >= rhs:
-            # Constraint already satisfied
-            return dq_cmd.copy(), info
-
-        # QP closed-form: μ = (rhs - lhs) / ‖grad‖²
-        mu = (rhs - lhs) / grad_norm_sq
-        dq_filtered = dq_cmd + mu * grad
-
-        info["active"] = True
-        info["dq_norm"] = float(np.linalg.norm(mu * grad))
+        obstacle_grad, obstacle_h = self.compute_gradient(q)
+        self_grad, self_h = self._gradient_of(q, self.self_barrier)
+        dq_filtered, obstacle_active = self._project_constraint(
+            dq_cmd.copy(), obstacle_grad, obstacle_h
+        )
+        dq_filtered, self_active = self._project_constraint(
+            dq_filtered, self_grad, self_h
+        )
+        info = {
+            "active": obstacle_active or self_active,
+            "obstacle_active": obstacle_active,
+            "self_active": self_active,
+            "h": min(obstacle_h, self_h),
+            "obstacle_h": obstacle_h,
+            "self_h": self_h,
+            "dq_norm": float(np.linalg.norm(dq_filtered - dq_cmd)),
+        }
 
         return dq_filtered, info
 

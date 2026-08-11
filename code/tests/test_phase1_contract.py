@@ -12,6 +12,7 @@ from env.manipulator_env import ManipulatorEnv, dense_safety_cost
 from robot_config import DEFAULT_URDF, DEFAULT_XML
 from train import (is_better_validation, prune_step_checkpoints,
                    scene_sampling_weights)
+from utils.cbf import CBFController
 from utils.replay_buffer import ReplayBuffer
 
 
@@ -89,6 +90,27 @@ def test_lagrange_raw_parameter_represents_paper_initial_value():
 
 def test_discounted_safety_value_is_normalized_to_per_step_scale():
     assert np.isclose(normalized_discounted_cost(5.0, 0.99), 0.05)
+
+
+def test_cbf_filters_motion_toward_self_collision_without_obstacles():
+    class EmptySDF:
+        def min_distance(self, *args, **kwargs):
+            return np.inf
+
+    class OneJointKinematics:
+        n = 1
+
+        def forward_kinematics(self, q):
+            return np.zeros(3), np.eye(3)
+
+        def compute_self_distances(self, q):
+            return np.array([q[0]])
+
+    cbf = CBFController(EmptySDF(), OneJointKinematics(), self_d_safe=0.02)
+    filtered, info = cbf.filter(np.array([-1.0]), np.array([0.03]))
+    assert info["self_active"]
+    assert not info["obstacle_active"]
+    assert filtered[0] >= -cbf.alpha * info["self_h"] - 1e-9
 
 
 def test_minimum_jerk_progress_has_stationary_endpoints():
