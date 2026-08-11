@@ -27,6 +27,12 @@ Projection，Generalization 和 Free-space 取 CBF-QP）。优势主要体现在
 与综合控制品质，并非每个次级指标都占优：自由空间的跟踪、平滑度和力矩变化
 率仍弱于 CBF-QP，Whole-body 的能耗也高于 CBF-QP。
 
+四个固定测试集按 `scene_id` 与上述逐场景最强经典基线配对后，Adaptive 独有
+成功12次、基线独有成功2次；双侧精确 McNemar 检验 `p=0.01294`。因此合并的
+400场景矩阵支持整体成功率优势，但单场景100次的差异证据仍弱：Whole-body
+与Free-space均为4比0个不一致对（各自 `p=0.125`），Generalization为4比2
+（`p=0.6875`），Confined两者均100%成功。
+
 曾冻结2.5 cm候选参数后，另用 seed 20260811 生成100个未参与调参的自由空间初始
 构型做了盲测。Adaptive Gradient-CBF和CBF-QP均为100%成功、0碰撞；前者
 能耗2.883，后者2.897，但前者跟踪RMS（0.840 cm对0.679 cm）、平滑度
@@ -99,6 +105,17 @@ Whole-body 为91%成功/9%碰撞，低于 Adaptive Gradient-CBF 的92%/8%；
 Free-space与Confined的确定性分支均为100%/0。因此 Hybrid 应作为负结果与
 结构消融保留，当前不能替代 Adaptive Gradient-CBF 成为论文主方法，也不能用
 97.5%验证值声称测试集优势。
+
+Hybrid 的任务自适应确定性分支在固定测试集进一步得到：Generalization
+94%/6%，与 Adaptive Gradient-CBF 相同；Confined 100%/0%；Free-space
+100%/0%。由于 Whole-body 学习残差分支只有91%/9%，四场景平均成功率为
+96.25%，仍低于 Adaptive Gradient-CBF 的96.5%。这说明按验证集挑选学习
+残差没有带来可泛化的主结果。
+
+算法冻结后又用 seed 20260814 独立生成100个新的Free-space初始构型。多约束
+确定性分支为99%成功/1%自碰撞；这批结果推翻了“自由空间绝对零碰撞”的过强
+表述，并再次显示胶囊代理与MuJoCo接触之间仍有极少数边界不一致。同一盲测集
+的单约束CBF-QP对照正在补跑，在完成前不判断99%是相对优势还是持平。
 
 ## 结果边界与下一步
 
