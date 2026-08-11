@@ -31,7 +31,7 @@ class _ALGORITHM:
     tau: float = 0.005
     alpha: float = 0.05               # v4 降低探索噪声
     lambda_dyn: float = 1.0
-    task_scale: float = 1.0
+    task_scale: float = 0.1
     nullspace_scale: float = 0.5
     hidden_dims: list = field(default_factory=lambda: [256, 256])
     n_critics: int = 5

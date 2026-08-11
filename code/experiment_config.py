@@ -39,7 +39,10 @@ class AlgorithmDefaults:
     n_critics: int = 5
     lambda_dyn: float = 1.0
     physics_soft_limit_ratio: float = 0.80
-    task_scale: float = 1.0
+    # Learned task-space correction is a residual around the PID command.
+    # Keep it on the same physical scale as the nominal 0.1--0.2 m/s motion;
+    # 1.0 m/s caused collision-dominated exploration and physics-loss collapse.
+    task_scale: float = 0.1
     nullspace_scale: float = 0.5
     cost_limit: float = 0.10
     lagrange_learning_rate: float = 0.0001
