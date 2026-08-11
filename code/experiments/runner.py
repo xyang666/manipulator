@@ -129,7 +129,7 @@ def run(args) -> list[dict]:
         reward_scale=ENVIRONMENT.reward_scale,
         obs_scene_embed=ENVIRONMENT.obs_scene_embed,
         obs_waypoint_steps=list(ENVIRONMENT.obs_waypoint_steps),
-        use_cbf=args.method == "cbf_qp",
+        use_cbf=args.method in ("cbf_qp", "gradient_cbf"),
         gate_enabled=args.method in ("ours_full", "sac_residual"),
     )
     agent = None
@@ -155,7 +155,7 @@ def run(args) -> list[dict]:
             )
         if args.method in ("pd", "cbf_qp"):
             action_fn = lambda obs: np.zeros(env.act_dim)
-        elif args.method == "gradient_projection":
+        elif args.method in ("gradient_projection", "gradient_cbf"):
             action_fn = lambda obs: _gradient_projection_action(env)
         elif args.method == "sac_joint":
             action_fn = lambda obs: agent.select_action(obs, deterministic=True)

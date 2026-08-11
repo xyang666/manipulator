@@ -8,6 +8,7 @@ PHASE1_METHODS = (
     "pd",
     "gradient_projection",
     "cbf_qp",
+    "gradient_cbf",
     "sac_joint",
     "sac_residual",
     "ours_no_physics",
