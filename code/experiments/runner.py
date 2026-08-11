@@ -193,6 +193,8 @@ def run(args) -> list[dict]:
         learned_residual_scale=args.learned_residual_scale,
         confined_deterministic_prior=args.confined_deterministic_prior,
         free_deterministic_cbf=args.free_deterministic_cbf,
+        generalization_deterministic_cbf=(
+            args.generalization_deterministic_cbf),
         use_cbf=(args.method in (
             "cbf_qp", "gradient_cbf", "ours_shielded", "ours_hybrid") or
                  (args.method == "adaptive_gradient_cbf" and
@@ -275,6 +277,8 @@ def parse_args():
                         default=None)
     parser.add_argument("--free-deterministic-cbf", action="store_true",
                         default=None)
+    parser.add_argument("--generalization-deterministic-cbf",
+                        action="store_true", default=None)
     parser.add_argument("--cbf-self-distance", type=float, default=None,
                         help="CBF minimum non-adjacent-link clearance (m)")
     parser.set_defaults(lambda_dyn=ALGORITHM.lambda_dyn, safety_critic=True)
@@ -304,6 +308,10 @@ def parse_args():
     args.free_deterministic_cbf = bool(checkpoint_cli_value(
         args.checkpoint, "free_deterministic_cbf", False
     ) if args.free_deterministic_cbf is None else args.free_deterministic_cbf)
+    args.generalization_deterministic_cbf = bool(checkpoint_cli_value(
+        args.checkpoint, "generalization_deterministic_cbf", False
+    ) if args.generalization_deterministic_cbf is None
+        else args.generalization_deterministic_cbf)
     if args.cbf_self_distance < 0.0:
         parser.error("--cbf-self-distance must be non-negative")
     if args.gradient_scale <= 0.0:

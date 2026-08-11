@@ -143,6 +143,7 @@ class ManipulatorEnv:
                  learned_residual_scale: float = 1.0,
                  confined_deterministic_prior: bool = False,
                  free_deterministic_cbf: bool = False,
+                 generalization_deterministic_cbf: bool = False,
                  obs_waypoint_steps: list | None = None,
                  obs_scene_embed: int = ENVIRONMENT.obs_scene_embed,
                  frame_stack: int = 1):
@@ -190,6 +191,9 @@ class ManipulatorEnv:
         self.learned_residual_scale = float(learned_residual_scale)
         self.confined_deterministic_prior = bool(confined_deterministic_prior)
         self.free_deterministic_cbf = bool(free_deterministic_cbf)
+        self.generalization_deterministic_cbf = bool(
+            generalization_deterministic_cbf
+        )
 
         # Observation dimensions
         self.obs_waypoint_steps = (
@@ -506,7 +510,12 @@ class ManipulatorEnv:
                 self.free_deterministic_cbf and
                 getattr(self, "_current_scenario", None) == "free_space"
             )
-            residual_scale = (0.0 if (confined_prior_only or free_cbf_only)
+            generalization_cbf_only = (
+                self.generalization_deterministic_cbf and
+                getattr(self, "_current_scenario", None) == "generalization"
+            )
+            residual_scale = (0.0 if (confined_prior_only or free_cbf_only or
+                                      generalization_cbf_only)
                               else self.learned_residual_scale)
             delta_x_rl = residual_scale * action[:3]
             z = residual_scale * action[3:]

@@ -172,6 +172,8 @@ def parse_args():
     p.add_argument("--confined_deterministic_prior", action="store_true")
     # 在无障碍场景关闭学习残差，仅保留PD与多约束自碰撞CBF。
     p.add_argument("--free_deterministic_cbf", action="store_true")
+    # 在泛化场景关闭学习残差，使用梯度先验与多约束CBF。
+    p.add_argument("--generalization_deterministic_cbf", action="store_true")
     # structured=3D任务修正+4D零空间；joint=直接7D；residual=PD上叠加7D残差。
     p.add_argument("--agent_type", choices=["structured", "joint", "residual"],
                    default="structured")
@@ -402,6 +404,8 @@ def make_env_kwargs(args, n_obs, obs_waypoint_steps):
         learned_residual_scale=args.learned_residual_scale,
         confined_deterministic_prior=args.confined_deterministic_prior,
         free_deterministic_cbf=args.free_deterministic_cbf,
+        generalization_deterministic_cbf=(
+            args.generalization_deterministic_cbf),
     )
 
 
