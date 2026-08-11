@@ -8,6 +8,12 @@ from experiment_config import (ALGORITHM, EVALUATION, PHASE1_METHODS, PHASE1_SCE
                                phase1_defaults)
 
 
+LEARNED_METHODS = {
+    "sac_joint", "sac_residual", "ours_no_physics", "ours_physics",
+    "ours_full",
+}
+
+
 def build_manifest(checkpoint_root: Path, result_root: Path,
                    scene_json: Path = Path("../results/ewalker_scenes/curriculum/train.json"),
                    val_json: Path = Path("../results/ewalker_scenes/curriculum/validation.json")) -> dict:
@@ -78,7 +84,7 @@ def build_manifest(checkpoint_root: Path, result_root: Path,
                 ]
                 scene_path = Path("../results/ewalker_scenes") / scenario / "test.json"
                 command.extend(["--scene-json", str(scene_path)])
-                if method not in ("pd", "gradient_projection", "cbf_qp"):
+                if method in LEARNED_METHODS:
                     command.extend(["--checkpoint", str(checkpoint)])
                 jobs.append({"method": method, "scenario": scenario, "seed": seed,
                              "checkpoint": str(checkpoint) if "--checkpoint" in command else None,

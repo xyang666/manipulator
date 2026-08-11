@@ -57,6 +57,11 @@ def test_manifest_covers_all_methods_scenarios_and_seeds(tmp_path):
                for job in manifest["evaluation_jobs"])
     assert all("--val_every_steps" in job["command"]
                for job in manifest["training_jobs"])
+    adaptive_jobs = [job for job in manifest["evaluation_jobs"]
+                     if job["method"] == "adaptive_gradient_cbf"]
+    assert adaptive_jobs
+    assert all(job["checkpoint"] is None for job in adaptive_jobs)
+    assert all("--checkpoint" not in job["command"] for job in adaptive_jobs)
     assert len(manifest["diagnostic_jobs"]) == 1
     assert "whole_body/train.json" in " ".join(
         manifest["diagnostic_jobs"][0]["command"]
