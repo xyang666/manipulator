@@ -188,6 +188,9 @@ def run(args) -> list[dict]:
         reward_scale=ENVIRONMENT.reward_scale,
         obs_scene_embed=ENVIRONMENT.obs_scene_embed,
         obs_waypoint_steps=list(ENVIRONMENT.obs_waypoint_steps),
+        gradient_prior_scale=args.gradient_prior_scale,
+        gradient_prior_smoothing=args.gradient_prior_smoothing,
+        learned_residual_scale=args.learned_residual_scale,
         use_cbf=(args.method in ("cbf_qp", "gradient_cbf", "ours_shielded") or
                  (args.method == "adaptive_gradient_cbf" and
                   args.scenario != "confined_space")),
@@ -262,6 +265,9 @@ def parse_args():
                         help="Override checkpoint task-action scale")
     parser.add_argument("--nullspace-scale", type=float, default=None,
                         help="Override checkpoint null-space action scale")
+    parser.add_argument("--gradient-prior-scale", type=float, default=None)
+    parser.add_argument("--gradient-prior-smoothing", type=float, default=None)
+    parser.add_argument("--learned-residual-scale", type=float, default=None)
     parser.add_argument("--cbf-self-distance", type=float, default=None,
                         help="CBF minimum non-adjacent-link clearance (m)")
     parser.set_defaults(lambda_dyn=ALGORITHM.lambda_dyn, safety_critic=True)
@@ -275,6 +281,15 @@ def parse_args():
             args.checkpoint, "cbf_self_distance",
             self_safety_distance_default(args.method, args.scenario),
         ))
+    args.gradient_prior_scale = float(checkpoint_cli_value(
+        args.checkpoint, "gradient_prior_scale", 0.0
+    ) if args.gradient_prior_scale is None else args.gradient_prior_scale)
+    args.gradient_prior_smoothing = float(checkpoint_cli_value(
+        args.checkpoint, "gradient_prior_smoothing", 0.8
+    ) if args.gradient_prior_smoothing is None else args.gradient_prior_smoothing)
+    args.learned_residual_scale = float(checkpoint_cli_value(
+        args.checkpoint, "learned_residual_scale", 1.0
+    ) if args.learned_residual_scale is None else args.learned_residual_scale)
     if args.cbf_self_distance < 0.0:
         parser.error("--cbf-self-distance must be non-negative")
     if args.gradient_scale <= 0.0:

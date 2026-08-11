@@ -138,6 +138,9 @@ class ManipulatorEnv:
                  lr_lag: float = 0.01,
                  lag_target: float = 0.05,
                  gate_enabled: bool = True,
+                 gradient_prior_scale: float = 0.0,
+                 gradient_prior_smoothing: float = 0.8,
+                 learned_residual_scale: float = 1.0,
                  obs_waypoint_steps: list | None = None,
                  obs_scene_embed: int = ENVIRONMENT.obs_scene_embed,
                  frame_stack: int = 1):
@@ -174,6 +177,15 @@ class ManipulatorEnv:
         self.path_deadzone = path_deadzone
         self.frame_stack = frame_stack
         self.gate_enabled = gate_enabled
+        if gradient_prior_scale < 0.0:
+            raise ValueError("gradient_prior_scale must be non-negative")
+        if not 0.0 <= gradient_prior_smoothing < 1.0:
+            raise ValueError("gradient_prior_smoothing must be in [0, 1)")
+        if not 0.0 <= learned_residual_scale <= 1.0:
+            raise ValueError("learned_residual_scale must be in [0, 1]")
+        self.gradient_prior_scale = float(gradient_prior_scale)
+        self.gradient_prior_smoothing = float(gradient_prior_smoothing)
+        self.learned_residual_scale = float(learned_residual_scale)
 
         # Observation dimensions
         self.obs_waypoint_steps = (
@@ -482,8 +494,8 @@ class ManipulatorEnv:
 
         else:
             # Decompose 7D action into task relaxation + null-space coefficients
-            delta_x_rl = action[:3]   # Δẋ_RL ∈ R^3: task-space relaxation (gated by σ)
-            z          = action[3:]   # z ∈ R^{n-3} (nullspace coefficients, via SVD basis)
+            delta_x_rl = self.learned_residual_scale * action[:3]
+            z = self.learned_residual_scale * action[3:]
 
             # Compute nominal task-space velocity (PID tracking)
             dx_nom = self._compute_task_velocity()  # ẋ_d + Kp(x_d - x) + Ki*∫(x_d - x)dt
@@ -510,7 +522,8 @@ class ManipulatorEnv:
 
             # Reconstruct 7D nullspace velocity from 4D coefficients via SVD basis
             B = self.kin.null_space_basis_position(self.q)  # (7, 4), J_pos @ B ≈ 0
-            dq0 = B @ z  # (7,) nullspace self-motion
+            prior_z = self._distance_gradient_prior(B)
+            dq0 = B @ (z + prior_z)  # learned residual around deterministic prior
 
             # Combine: q̇ = J_pos⁺(dx_nom + delta_x_gated) + B·z
             dq_cmd = self.kin.combine_velocities_with_relaxation_position(
@@ -768,6 +781,7 @@ class ManipulatorEnv:
         self._last_dx_nom = np.zeros(3, dtype=np.float32)
         self._cbf_active = False
         self._cbf_mod = 0.0
+        self._gradient_prior_z = np.zeros(self.n - 3, dtype=float)
 
         # Cached values for _get_obs() to avoid recomputation
         self._cached_x_ee = None
@@ -1120,6 +1134,30 @@ class ManipulatorEnv:
         dx_cmd[:] = self.dx_d[:3] + Kp * pos_err + Ki * self._integral_err
 
         return dx_cmd
+
+    def _distance_gradient_prior(self, basis: np.ndarray) -> np.ndarray:
+        """Smoothed capsule-clearance gradient expressed in null coordinates."""
+        if self.gradient_prior_scale <= 0.0 or self.sdf.n_obs == 0:
+            self._gradient_prior_z.fill(0.0)
+            return self._gradient_prior_z.copy()
+        gradient = np.zeros(self.n, dtype=float)
+        eps = 1e-4
+        for joint in range(self.n):
+            q_plus, q_minus = self.q.copy(), self.q.copy()
+            q_plus[joint] += eps
+            q_minus[joint] -= eps
+            d_plus = self.sdf.min_distance(
+                np.zeros(3), q_plus, kinematics=self.kin
+            )
+            d_minus = self.sdf.min_distance(
+                np.zeros(3), q_minus, kinematics=self.kin
+            )
+            gradient[joint] = (d_plus - d_minus) / (2.0 * eps)
+        raw = np.clip(basis.T @ gradient, -self.gradient_prior_scale,
+                      self.gradient_prior_scale)
+        beta = self.gradient_prior_smoothing
+        self._gradient_prior_z = beta * self._gradient_prior_z + (1.0 - beta) * raw
+        return self._gradient_prior_z.copy()
 
     def _mujoco_step(self, dq_cmd):
         # Direct kinematic control: set joint positions directly

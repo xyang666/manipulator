@@ -114,6 +114,29 @@ def test_disabling_gate_keeps_task_relaxation_always_on():
     assert 0.0 < task_relaxation_gate(0.06, 0.06, enabled=True) < 1.0
 
 
+def test_distance_gradient_prior_is_bounded_and_smoothed():
+    class LinearSDF:
+        n_obs = 1
+
+        @staticmethod
+        def min_distance(_x, q, kinematics=None):
+            return float(q[0])
+
+    env = ManipulatorEnv.__new__(ManipulatorEnv)
+    env.n = 7
+    env.q = np.zeros(7)
+    env.sdf = LinearSDF()
+    env.kin = object()
+    env.gradient_prior_scale = 0.3
+    env.gradient_prior_smoothing = 0.5
+    env._gradient_prior_z = np.zeros(4)
+    basis = np.eye(7)[:, :4]
+    first = env._distance_gradient_prior(basis)
+    second = env._distance_gradient_prior(basis)
+    assert np.allclose(first, [0.15, 0.0, 0.0, 0.0], atol=1e-8)
+    assert np.allclose(second, [0.225, 0.0, 0.0, 0.0], atol=1e-8)
+
+
 def test_validation_selection_prioritizes_success_then_safety():
     incumbent = {"success_rate": 0.5, "collision_rate": 0.3,
                  "avg_tracking_error": 0.02}

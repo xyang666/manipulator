@@ -162,6 +162,12 @@ def parse_args():
     p.add_argument("--no_safety_critic", action="store_true")
     # 关闭风险门控，使任务空间 RL 修正不再按障碍距离衰减。
     p.add_argument("--disable_gate", action="store_true")
+    # 确定性胶囊距离梯度先验的零空间尺度；0 表示关闭。
+    p.add_argument("--gradient_prior_scale", type=float, default=0.0)
+    # 距离梯度先验的一阶平滑系数。
+    p.add_argument("--gradient_prior_smoothing", type=float, default=0.8)
+    # 学习动作相对确定性先验的残差权重。
+    p.add_argument("--learned_residual_scale", type=float, default=1.0)
     # structured=3D任务修正+4D零空间；joint=直接7D；residual=PD上叠加7D残差。
     p.add_argument("--agent_type", choices=["structured", "joint", "residual"],
                    default="structured")
@@ -387,6 +393,9 @@ def make_env_kwargs(args, n_obs, obs_waypoint_steps):
         cbf_self_d_safe=args.cbf_self_distance,
         cbf_multi_self_constraints=args.cbf_multi_self_constraints,
         gate_enabled=not args.disable_gate,
+        gradient_prior_scale=args.gradient_prior_scale,
+        gradient_prior_smoothing=args.gradient_prior_smoothing,
+        learned_residual_scale=args.learned_residual_scale,
     )
 
 
