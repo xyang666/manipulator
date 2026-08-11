@@ -168,7 +168,9 @@ class CBFController:
             return dq_cmd, False
         return dq_cmd + ((rhs - lhs) / norm_sq) * grad, True
 
-    def filter(self, dq_cmd: np.ndarray, q: np.ndarray) -> tuple:
+    def filter(self, dq_cmd: np.ndarray, q: np.ndarray,
+               obstacle_constraint: tuple[np.ndarray, float] | None = None
+               ) -> tuple:
         """
         Apply CBF-QP safety filter.
 
@@ -185,7 +187,10 @@ class CBFController:
             - h     : float, current barrier value
             - dq_norm: float, ‖dq_filtered - dq_cmd‖ (modification magnitude)
         """
-        obstacle_grad, obstacle_h = self.compute_gradient(q)
+        if obstacle_constraint is None:
+            obstacle_grad, obstacle_h = self.compute_gradient(q)
+        else:
+            obstacle_grad, obstacle_h = obstacle_constraint
         dq_filtered, obstacle_active = self._project_constraint(
             dq_cmd.copy(), obstacle_grad, obstacle_h
         )

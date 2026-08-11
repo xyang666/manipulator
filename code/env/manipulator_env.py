@@ -522,7 +522,12 @@ class ManipulatorEnv:
 
             # Reconstruct 7D nullspace velocity from 4D coefficients via SVD basis
             B = self.kin.null_space_basis_position(self.q)  # (7, 4), J_pos @ B ≈ 0
-            prior_z = self._distance_gradient_prior(B)
+            obstacle_constraint = None
+            if self.gradient_prior_scale > 0.0 and self.cbf is not None:
+                obstacle_constraint = self.cbf.compute_gradient(self.q)
+            prior_z = self._distance_gradient_prior(
+                B, obstacle_constraint[0] if obstacle_constraint else None
+            )
             dq0 = B @ (z + prior_z)  # learned residual around deterministic prior
 
             # Combine: q̇ = J_pos⁺(dx_nom + delta_x_gated) + B·z
@@ -541,7 +546,10 @@ class ManipulatorEnv:
             self._cbf_active = False
             self._cbf_mod = 0.0
             if self.cbf is not None:
-                dq_cmd, cbf_info = self.cbf.filter(dq_cmd, self.q)
+                dq_cmd, cbf_info = self.cbf.filter(
+                    dq_cmd, self.q,
+                    obstacle_constraint=obstacle_constraint,
+                )
                 self._cbf_active = cbf_info["active"]
                 self._cbf_mod = cbf_info["dq_norm"]
 
@@ -1135,24 +1143,29 @@ class ManipulatorEnv:
 
         return dx_cmd
 
-    def _distance_gradient_prior(self, basis: np.ndarray) -> np.ndarray:
+    def _distance_gradient_prior(
+            self, basis: np.ndarray,
+            joint_gradient: np.ndarray | None = None) -> np.ndarray:
         """Smoothed capsule-clearance gradient expressed in null coordinates."""
         if self.gradient_prior_scale <= 0.0 or self.sdf.n_obs == 0:
             self._gradient_prior_z.fill(0.0)
             return self._gradient_prior_z.copy()
-        gradient = np.zeros(self.n, dtype=float)
-        eps = 1e-4
-        for joint in range(self.n):
-            q_plus, q_minus = self.q.copy(), self.q.copy()
-            q_plus[joint] += eps
-            q_minus[joint] -= eps
-            d_plus = self.sdf.min_distance(
-                np.zeros(3), q_plus, kinematics=self.kin
-            )
-            d_minus = self.sdf.min_distance(
-                np.zeros(3), q_minus, kinematics=self.kin
-            )
-            gradient[joint] = (d_plus - d_minus) / (2.0 * eps)
+        if joint_gradient is None:
+            gradient = np.zeros(self.n, dtype=float)
+            eps = 1e-4
+            for joint in range(self.n):
+                q_plus, q_minus = self.q.copy(), self.q.copy()
+                q_plus[joint] += eps
+                q_minus[joint] -= eps
+                d_plus = self.sdf.min_distance(
+                    np.zeros(3), q_plus, kinematics=self.kin
+                )
+                d_minus = self.sdf.min_distance(
+                    np.zeros(3), q_minus, kinematics=self.kin
+                )
+                gradient[joint] = (d_plus - d_minus) / (2.0 * eps)
+        else:
+            gradient = np.asarray(joint_gradient, dtype=float)
         raw = np.clip(basis.T @ gradient, -self.gradient_prior_scale,
                       self.gradient_prior_scale)
         beta = self.gradient_prior_smoothing
