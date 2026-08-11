@@ -74,6 +74,32 @@ CBF-QP，不能声称每个指标均占优。
 82.7% ± 4.0%。它尚未超过确定性控制器，因此当前不能把强化学习训练称为
 论文主结果。
 
+### 协议五结构化策略复核与混合控制器
+
+后续复核发现三项会使结构化学习实验失真的实现问题，均已修正并增加回归测试：
+
+1. `--disable_gate` 原实现令 `sigma=0`，实际删除了前三维任务空间残差；现已按参数
+   语义修为 `sigma=1`（残差始终启用）。受此问题影响的旧 No-Physics/Physics
+   checkpoint 已标记为 `invalid_gate_zero`，不得用于论文表格。
+2. 安全 critic 原来错误地同时用 6 cm 障碍裕量约束自碰撞；现分别使用 6 cm
+   障碍裕量和 2 cm 自碰撞裕量，再取最大归一化违规。
+3. 评测器原来不恢复训练时的动作尺度；现从 checkpoint 同目录 `config.json`
+   恢复 `task_scale`、`nullspace_scale` 和 CBF 裕量。实验表明 1.0 m/s 任务残差
+   会导致碰撞主导探索和动力学损失崩溃，正式默认值已改为 0.1 m/s。
+
+修正后 seed 11 的课程验证最佳值为：No-Physics 72.5%，Physics 62.5%。训练期
+加入障碍 CBF 和全部24对自碰撞 CBF 的 `ours_shielded` 在40场景验证集达到
+92.5%成功率（Whole-body 90%，Confined 95%）。进一步构造的场景自适应
+`ours_hybrid` 仅在 Whole-body 使用“平滑距离梯度 + 20%学习残差 + CBF”，
+Confined 使用纯0.9平滑梯度，Free-space使用PD+多约束自碰撞CBF。它在同一
+验证集达到97.5%（Whole-body 95%，Confined 100%）。
+
+但验证提升没有在固定测试集复现：新训练的验证最优 Hybrid checkpoint 在
+Whole-body 为91%成功/9%碰撞，低于 Adaptive Gradient-CBF 的92%/8%；
+Free-space与Confined的确定性分支均为100%/0。因此 Hybrid 应作为负结果与
+结构消融保留，当前不能替代 Adaptive Gradient-CBF 成为论文主方法，也不能用
+97.5%验证值声称测试集优势。
+
 ## 结果边界与下一步
 
 1. 2.5 cm 自碰撞裕量是在原 free-space 测试集上做的探索性消融；新增盲测已
