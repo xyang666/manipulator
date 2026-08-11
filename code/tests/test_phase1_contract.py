@@ -73,7 +73,8 @@ def test_manifest_covers_all_methods_scenarios_and_seeds(tmp_path):
                    if job["method"] == "ours_hybrid"]
     assert hybrid_jobs
     assert all("--gradient_prior_scale" in job["command"] and
-               "--confined_deterministic_prior" in job["command"]
+               "--confined_deterministic_prior" in job["command"] and
+               "--free_deterministic_cbf" in job["command"]
                for job in hybrid_jobs)
     adaptive_jobs = [job for job in manifest["evaluation_jobs"]
                      if job["method"] == "adaptive_gradient_cbf"]
