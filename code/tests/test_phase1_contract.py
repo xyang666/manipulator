@@ -11,7 +11,7 @@ from experiments.runner import (gradient_control_defaults,
                                 self_safety_distance_default)
 from experiments.split_scenes import scene_fingerprint, split_scenes
 from env.manipulator_env import (ManipulatorEnv, combined_safety_cost,
-                                 dense_safety_cost)
+                                 dense_safety_cost, task_relaxation_gate)
 from robot_config import DEFAULT_URDF, DEFAULT_XML
 from train import (is_better_validation, prune_step_checkpoints,
                    scene_sampling_weights)
@@ -94,6 +94,13 @@ def test_combined_safety_cost_uses_distinct_physical_margins():
     assert combined_safety_cost(0.10, 0.06, 0.04, 0.02) == 0.0
     assert np.isclose(combined_safety_cost(0.03, 0.06, 0.04, 0.02), 0.5)
     assert np.isclose(combined_safety_cost(0.10, 0.06, 0.01, 0.02), 0.5)
+
+
+def test_disabling_gate_keeps_task_relaxation_always_on():
+    assert task_relaxation_gate(1.0, 0.06, enabled=False) == 1.0
+    assert task_relaxation_gate(0.12, 0.06, enabled=True) == 0.0
+    assert task_relaxation_gate(0.0, 0.06, enabled=True) == 1.0
+    assert 0.0 < task_relaxation_gate(0.06, 0.06, enabled=True) < 1.0
 
 
 def test_validation_selection_prioritizes_success_then_safety():

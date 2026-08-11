@@ -62,6 +62,24 @@ def combined_safety_cost(obstacle_distance: float, obstacle_safe: float,
     return max(dense_safety_cost(obstacle_distance, obstacle_safe),
                dense_safety_cost(self_distance, self_safe))
 
+
+def task_relaxation_gate(obstacle_distance: float, d_safe: float,
+                         enabled: bool = True) -> float:
+    """Return the multiplier applied to the learned task-space correction.
+
+    Disabling the gate means an always-on learned correction (sigma=1), not
+    deleting that part of the policy.  The latter silently changes the stated
+    7-D structured action ablation into a 4-D null-space-only controller.
+    """
+    if not enabled:
+        return 1.0
+    if obstacle_distance >= 2.0 * d_safe:
+        return 0.0
+    if obstacle_distance <= 0.0:
+        return 1.0
+    t = 1.0 - obstacle_distance / (2.0 * d_safe)
+    return float(t * t * (3.0 - 2.0 * t))
+
 try:
     from control.mpc_controller import MPCController
     HAS_MPC = True
@@ -475,9 +493,7 @@ class ManipulatorEnv:
             # sigma = clip(λ, 0, 1) gates RL vs tracking control.
             # sigma_override bypasses the gate (used for random exploration in start_steps)
             sigma_ov = getattr(self, 'sigma_override', None)
-            if not self.gate_enabled:
-                sigma = 0.0
-            elif sigma_ov is not None:
+            if sigma_ov is not None:
                 sigma = float(sigma_ov)
             else:
                 # Compute current d_obs for constraint violation (before integration)
@@ -487,13 +503,9 @@ class ManipulatorEnv:
                 # d_obs ≥ 2*d_safe → sigma=0  (pure tracking, safe)
                 # d_obs ≤ 0       → sigma=1  (full RL emergency)
                 # In between → smoothstep blend
-                if d_obs_cur >= 2.0 * self.d_safe:
-                    sigma = 0.0
-                elif d_obs_cur <= 0.0:
-                    sigma = 1.0
-                else:
-                    t = 1.0 - d_obs_cur / (2.0 * self.d_safe)
-                    sigma = float(t * t * (3.0 - 2.0 * t))  # smoothstep
+                sigma = task_relaxation_gate(
+                    d_obs_cur, self.d_safe, enabled=self.gate_enabled
+                )
             delta_x_gated = sigma * delta_x_rl  # diag(σ) · Δẋ_RL
 
             # Reconstruct 7D nullspace velocity from 4D coefficients via SVD basis
