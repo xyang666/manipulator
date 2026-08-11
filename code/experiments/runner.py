@@ -184,7 +184,7 @@ def run(args) -> list[dict]:
         d_safe=ENVIRONMENT.d_safe, success_bonus=ENVIRONMENT.success_bonus,
         cbf_self_d_safe=args.cbf_self_distance,
         cbf_multi_self_constraints=(args.method in (
-            "adaptive_gradient_cbf", "ours_shielded")),
+            "adaptive_gradient_cbf", "ours_shielded", "ours_hybrid")),
         reward_scale=ENVIRONMENT.reward_scale,
         obs_scene_embed=ENVIRONMENT.obs_scene_embed,
         obs_waypoint_steps=list(ENVIRONMENT.obs_waypoint_steps),
@@ -192,7 +192,8 @@ def run(args) -> list[dict]:
         gradient_prior_smoothing=args.gradient_prior_smoothing,
         learned_residual_scale=args.learned_residual_scale,
         confined_deterministic_prior=args.confined_deterministic_prior,
-        use_cbf=(args.method in ("cbf_qp", "gradient_cbf", "ours_shielded") or
+        use_cbf=(args.method in (
+            "cbf_qp", "gradient_cbf", "ours_shielded", "ours_hybrid") or
                  (args.method == "adaptive_gradient_cbf" and
                   args.scenario != "confined_space")),
         gate_enabled=args.method in ("ours_full", "sac_residual"),
@@ -310,6 +311,9 @@ def parse_args():
         args.lambda_dyn = 0.0
         args.safety_critic = False
     elif args.method == "ours_shielded":
+        args.lambda_dyn = 0.0
+        args.safety_critic = False
+    elif args.method == "ours_hybrid":
         args.lambda_dyn = 0.0
         args.safety_critic = False
     elif args.method == "ours_physics":

@@ -116,6 +116,7 @@ PHASE1_METHODS = [
     "ours_no_physics",
     "ours_physics",
     "ours_shielded",
+    "ours_hybrid",
     "ours_full",
 ]
 
