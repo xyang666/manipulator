@@ -39,9 +39,37 @@ Projection，Generalization 和 Free-space 取 CBF-QP）。优势主要体现在
 该结构改动没有降低Whole-body或Generalization成功率，并略微改善二者的能耗
 或平滑度。多约束过滤本机微基准为6.23 ms/步，单约束为5.47 ms/步。
 
+参数冻结后又分别生成100个Whole-body和Generalization障碍盲测场景：
+
+| 盲测场景 | 方法 | 成功 | 碰撞 | 跟踪 RMS (cm) | 最小间距 (cm) | 力矩变化率 |
+|---|---|---:|---:|---:|---:|---:|
+| Whole-body | Adaptive Gradient-CBF | 92% | 4% | 1.37 | 4.24 | 40.58 |
+| Whole-body | CBF-QP | 91% | 5% | 1.94 | 3.97 | 53.98 |
+| Whole-body | Gradient Projection | 80% | 20% | 0.017 | 3.84 | 96.53 |
+| Generalization | Adaptive Gradient-CBF | 93% | 7% | 1.21 | 4.30 | 73.16 |
+| Generalization | CBF-QP | 93% | 7% | 1.81 | 3.92 | 84.07 |
+| Generalization | Gradient Projection | 79% | 21% | 0.019 | 3.83 | 144.15 |
+
+Whole-body盲测复现了小幅安全优势和多项控制品质优势；Generalization安全率
+与CBF-QP持平，但跟踪、间距、完成时间和力矩变化率更优。Adaptive能耗仍高于
+CBF-QP，不能声称每个指标均占优。
+
 ## 学习方法现状
 
-采用双重 CBF 复评的 Ours-Full 三个独立种子在 Whole-body 上为：seed 11
+旧的协议3学习checkpoint输入维度为81，不能加载到当前协议5的141维观测，
+因此已用相同500k预算重训seed 11的SAC-Joint和SAC-Residual。最佳checkpoint
+在三个课程测试集上的结果为：
+
+| 方法 | Free-space | Whole-body | Confined | 备注 |
+|---|---:|---:|---:|---|
+| Adaptive Gradient-CBF | 100% | 92% | 100% | 确定性冻结方法 |
+| SAC-Joint | 0% | 0% | 65% | Confined平均力矩违规282.78次 |
+| SAC-Residual | 0% | 0% | 93% | Confined平均力矩违规231.72次 |
+
+两种SAC均完成500k而非提前停止；其Whole-body验证始终为0%。Generalization
+必须从单障碍训练集独立训练，当前不能用课程checkpoint代替。
+
+此前采用双重 CBF 复评的 Ours-Full 三个独立种子在 Whole-body 上为：seed 11
 85%/12%、seed 23 78%/17%、seed 37 85%/11%（成功/碰撞），平均成功率
 82.7% ± 4.0%。它尚未超过确定性控制器，因此当前不能把强化学习训练称为
 论文主结果。
@@ -50,8 +78,8 @@ Projection，Generalization 和 Free-space 取 CBF-QP）。优势主要体现在
 
 1. 2.5 cm 自碰撞裕量是在原 free-space 测试集上做的探索性消融；新增盲测已
    表明安全性与CBF-QP持平且次级指标更差，因此正式默认值已回退到公平的2 cm。
-2. 多约束CBF已经避免“最小距离对切换”造成的梯度不连续；下一步需要在新的
-   障碍盲测集上复核Whole-body与Generalization，而不再修改参数。
+2. 多约束CBF已经避免“最小距离对切换”造成的梯度不连续；新的Whole-body与
+   Generalization障碍盲测均已完成，后续不再依据这些盲测结果修改参数。
 3. 统一跑完 5 个训练种子和 9 方法 × 4 场景矩阵，报告 bootstrap 95% 置信区间
    与配对成功率检验，不重复计算确定性方法的相同轨迹作为独立样本。
 4. 对 capsule 距离和 MuJoCo contact 做逐对校准，并分类剩余的自碰撞、障碍
@@ -65,6 +93,7 @@ Projection，Generalization 和 Free-space 取 CBF-QP）。优势主要体现在
 /root/autodl-tmp/manipulator/results/v6_remaining_baselines/
 /root/autodl-tmp/manipulator/results/v7_self_margin/
 /root/autodl-tmp/manipulator/results/v8_multi_cbf/
+/root/autodl-tmp/manipulator/results/v8_learned_s11/
 ```
 
 其中 `free_space_blind_20260811.json`、`blind_cbf.jsonl` 和
