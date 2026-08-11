@@ -312,7 +312,14 @@ class SACAgent:
             with torch.no_grad():
                 a_, log_pi_, _ = self.actor.sample(s_)
                 qc_targets = self.safety_critic_target(s_critic_, a_)
-                qc_target = torch.min(torch.cat(qc_targets, dim=-1), dim=-1, keepdim=True).values
+                # Reward critics use the minimum estimate to avoid optimistic
+                # returns.  Safety critics need the opposite convention: an
+                # underestimated future cost makes the policy believe an
+                # unsafe action is feasible.  Use the ensemble maximum for a
+                # conservative cost target, consistently with the actor loss.
+                qc_target = torch.max(
+                    torch.cat(qc_targets, dim=-1), dim=-1, keepdim=True
+                ).values
                 qc_backup = cost * self.cost_scale + self.gamma * (1 - d) * qc_target
             for qc in self.safety_critic(s_critic, a):
                 safety_critic_loss += F.huber_loss(
