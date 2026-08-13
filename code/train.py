@@ -262,6 +262,11 @@ def parse_args():
         "--obs_waypoint_steps", type=str,
         default=",".join(str(x) for x in ENVIRONMENT.obs_waypoint_steps)
     )
+    # 观测噪声：高斯噪声标准差（绝对），仅污染感知分量（胶囊特征、场景、
+    # 路径点），不污染关节状态；内部 SDF/碰撞仍用真值。
+    p.add_argument("--obs_noise", type=float, default=0.0)
+    # 相对缩放：std = obs_noise * (1 + obs_noise_scale * |obs|)。
+    p.add_argument("--obs_noise_scale", type=float, default=0.0)
     # 自适应场景采样中均匀分布所占比例，防止遗忘已学会场景。
     p.add_argument("--scene_uniform_mix", type=float,
                    default=ALGORITHM.uniform_scene_mix)
@@ -386,6 +391,8 @@ def make_env_kwargs(args, n_obs, obs_waypoint_steps):
         lr_lag=args.lr_lag, lag_target=args.lag_target,
         obs_scene_embed=args.obs_scene_embed,
         obs_waypoint_steps=obs_waypoint_steps,
+        obs_noise=args.obs_noise,
+        obs_noise_scale=args.obs_noise_scale,
         frame_stack=args.frame_stack,
         episode_len=args.episode_len,
         trajectory_steps=args.trajectory_steps,

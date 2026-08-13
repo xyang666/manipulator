@@ -40,12 +40,13 @@ class CBFController:
 
     def __init__(self, sdf, kinematics, d_safe=0.06, alpha=1.0, eps=1e-5,
                  self_d_safe=0.02, multi_self_constraints=False,
-                 self_projection_passes=2):
+                 self_projection_passes=2, sensor_noise: float = 0.0):
         self.sdf = sdf
         self.kin = kinematics
         self.d_safe = d_safe
         self.alpha = alpha
         self.eps = eps
+        self.sensor_noise = float(sensor_noise)
         self.self_d_safe = self_d_safe
         self.multi_self_constraints = bool(multi_self_constraints)
         self.self_projection_passes = int(self_projection_passes)
@@ -68,6 +69,8 @@ class CBFController:
         d_obs = self.sdf.min_distance(x_ee, q, kinematics=self.kin)
         if not np.isfinite(d_obs):
             return np.inf
+        if self.sensor_noise > 0.0:
+            d_obs = d_obs + float(np.random.normal(0.0, self.sensor_noise))
         return float(d_obs) - self.d_safe
 
     def compute_gradient(self, q: np.ndarray) -> tuple:

@@ -1,0 +1,4 @@
+[kinematics] Loaded model, n_joints=7, ee_frame='ewalker_tcp_joint'
+[env] MuJoCo model loaded: /home/merlin/manipulator/models/ewalker_scene.xml
+[dynamics] Loaded model 'ewalker_inspired_7dof' with 7 DOF.
+[Validation] Loaded 100 validation scenes from /home/merlin/manipulator/results/ewalker_scenes/whole_body/test.json

@@ -107,8 +107,13 @@ def _vanilla_agent(env, checkpoint: Path, args) -> VanillaSACAgent:
     return agent
 
 
-def _gradient_projection_action(env, scale: float | None = None) -> np.ndarray:
-    """Repel link capsules from spheres and express the joint gradient in B(q)."""
+def _gradient_projection_action(env, scale: float | None = None,
+                                sensor_noise: float = 0.0) -> np.ndarray:
+    """Repel link capsules from spheres and express the joint gradient in B(q).
+
+    sensor_noise: std of Gaussian noise added to each SDF distance query,
+    simulating a noisy range sensor (classical methods assume exact distance).
+    """
     if env.sdf.n_obs == 0:
         return np.zeros(env.act_dim)
     gradient = np.zeros(env.n)
@@ -119,6 +124,9 @@ def _gradient_projection_action(env, scale: float | None = None) -> np.ndarray:
         q_minus[joint] -= eps
         d_plus = env.sdf.min_distance(np.zeros(3), q_plus, kinematics=env.kin)
         d_minus = env.sdf.min_distance(np.zeros(3), q_minus, kinematics=env.kin)
+        if sensor_noise > 0.0:
+            d_plus += float(np.random.normal(0.0, sensor_noise))
+            d_minus += float(np.random.normal(0.0, sensor_noise))
         gradient[joint] = (d_plus - d_minus) / (2 * eps)
     basis = env.kin.null_space_basis_position(env.q)
     action = np.zeros(env.act_dim)
@@ -188,6 +196,8 @@ def run(args) -> list[dict]:
         reward_scale=ENVIRONMENT.reward_scale,
         obs_scene_embed=ENVIRONMENT.obs_scene_embed,
         obs_waypoint_steps=list(ENVIRONMENT.obs_waypoint_steps),
+        obs_noise=args.obs_noise,
+        obs_noise_scale=args.obs_noise_scale,
         gradient_prior_scale=args.gradient_prior_scale,
         gradient_prior_smoothing=args.gradient_prior_smoothing,
         learned_residual_scale=args.learned_residual_scale,
@@ -201,6 +211,11 @@ def run(args) -> list[dict]:
                   args.scenario != "confined_space")),
         gate_enabled=args.method in ("ours_full", "sac_residual"),
     )
+    # Uniform sensor-noise semantics: --sensor-noise corrupts the classical
+    # methods' distance queries (GP gradient + CBF barrier), while
+    # --obs-noise corrupts the RL policy's observation.
+    if args.sensor_noise > 0.0 and env.cbf is not None:
+        env.cbf.sensor_noise = args.sensor_noise
     agent = None
     if args.method.startswith("ours_"):
         agent = _structured_agent(env, args.checkpoint, args)
@@ -230,7 +245,8 @@ def run(args) -> list[dict]:
 
             def action_fn(obs):
                 nonlocal previous_action
-                raw = _gradient_projection_action(env, args.gradient_scale)
+                raw = _gradient_projection_action(
+                    env, args.gradient_scale, sensor_noise=args.sensor_noise)
                 beta = args.gradient_smoothing
                 previous_action = beta * previous_action + (1.0 - beta) * raw
                 return previous_action.copy()
@@ -266,6 +282,11 @@ def parse_args():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--gradient-scale", type=float, default=None)
     parser.add_argument("--gradient-smoothing", type=float, default=None)
+    parser.add_argument("--sensor-noise", type=float, default=0.0,
+                        help="Gaussian std on classical SDF queries")
+    parser.add_argument("--obs-noise", type=float, default=0.0,
+                        help="Gaussian std on RL observation (perceptual)")
+    parser.add_argument("--obs-noise-scale", type=float, default=0.0)
     parser.add_argument("--task-scale", type=float, default=None,
                         help="Override checkpoint task-action scale")
     parser.add_argument("--nullspace-scale", type=float, default=None,

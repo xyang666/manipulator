@@ -46,10 +46,9 @@ PYTHONPATH=. .venv/bin/python -u code/train.py \
   --reward_scale 1.0 --reward_min -10.0
 
 # ── 本地可视化 ─────────────────────────────────────────────────────────
-# KP 跟踪（无 RL，纯看场景）
-PYTHONPATH=code code/.venv/bin/python code/test.py --method kp --render \
-  --scene_json results/ewalker_scenes/curriculum/train.json \
-  --scene_id 0 --steps 500
+# 查看场景和胶囊体；增加 --slow 可运行PD跟踪
+code/.venv/bin/python code/visualize_scene.py 0 \
+  --scene-json results/ewalker_scenes/curriculum/train.json --slow --steps 500
 
 # 训练渲染版（单进程，含 RL 策略）
 PYTHONPATH=code code/.venv/bin/python code/train.py --render --steps 5000 --n_envs 1 \

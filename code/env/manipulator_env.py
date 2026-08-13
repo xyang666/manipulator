@@ -146,6 +146,8 @@ class ManipulatorEnv:
                  generalization_deterministic_cbf: bool = False,
                  obs_waypoint_steps: list | None = None,
                  obs_scene_embed: int = ENVIRONMENT.obs_scene_embed,
+                 obs_noise: float = 0.0,
+                 obs_noise_scale: float = 0.0,
                  frame_stack: int = 1):
         """
         Parameters
@@ -258,7 +260,7 @@ class ManipulatorEnv:
             self.obs_dim = (self.n * 2 + 3 + 3    # q, dq, x_ee, x_d
                             + self._capsule_dists_dim * 4
                             + self._self_dists_dim
-                            + self.obs_scene_embed * 5
+                            + self.obs_scene_embed * 8   # xyz + r + mask + v_xyz
                             + len(self.obs_waypoint_steps) * 3
                             + 1                   # path_progress s
                             + 1)                  # sigma gate
@@ -269,6 +271,13 @@ class ManipulatorEnv:
                             + 1
                             + 1)                  # sigma gate
         self.act_dim = self.n  # 7D: 3 (task) + 4 (nullspace, via nullspace basis)
+
+        # Observation noise: std of Gaussian noise added to perceptual
+        # components (capsule features, scene embed, waypoints) in _get_obs.
+        # The internal SDF/collision state stays exact — only the policy's
+        # observation is corrupted, mirroring sensor noise on real hardware.
+        self.obs_noise = float(obs_noise)
+        self.obs_noise_scale = float(obs_noise_scale)
 
         # Frame stacking: store single-frame dim, then multiply obs_dim
         self._single_obs_dim = self.obs_dim
@@ -311,6 +320,10 @@ class ManipulatorEnv:
         self.w_null = w_null
         self.sdf = ObstacleSDF(n_obstacles, obs_radius)
 
+        # Dynamic obstacle support (optional per-obstacle velocity + bounce bounds)
+        self._obstacle_velocities = np.zeros((n_obstacles, 3), dtype=float)
+        self._obstacle_bounds = None  # (n_obs, 2, 3) [lower, upper] per obstacle
+
         # CBF safety filter (optional, post-hoc dq_cmd safety wrapper)
         self.cbf = None
         if use_cbf:
@@ -318,10 +331,12 @@ class ManipulatorEnv:
                                      d_safe=d_safe, alpha=cbf_alpha,
                                      self_d_safe=cbf_self_d_safe,
                                      multi_self_constraints=(
-                                         cbf_multi_self_constraints))
+                                         cbf_multi_self_constraints),
+                                     sensor_noise=obs_noise)
             print(f"[env] CBF safety filter enabled (alpha={cbf_alpha}, "
                   f"d_safe={d_safe}, self_d_safe={cbf_self_d_safe}, "
-                  f"multi_self={cbf_multi_self_constraints})")
+                  f"multi_self={cbf_multi_self_constraints}, "
+                  f"sensor_noise={obs_noise})")
 
         # Lagrangian multiplier for constraint-based gating
         # λ ≥ 0, updated via dual ascent: λ += lr_lag * (violation - target)
@@ -592,6 +607,10 @@ class ManipulatorEnv:
         else:
             self.q = q_new
             self.dq = dq_new
+
+        # Advance dynamic obstacles (before obs/reward so the policy and
+        # collision checks see the new positions)
+        self._move_dynamic_obstacles()
 
         # Tracking-error-gated minimum-jerk reference progression.
         x_ee, _ = self.kin.forward_kinematics(self.q)
@@ -1108,6 +1127,45 @@ class ManipulatorEnv:
         """Backward-compatible distance-only view used by reward code/tests."""
         return self._mujoco_per_capsule_obstacle_features()[0]
 
+    def set_dynamic_obstacles(self, velocities: np.ndarray,
+                              bounds: np.ndarray | None = None):
+        """Enable per-obstacle motion: centers += velocity * dt each step.
+
+        Parameters
+        ----------
+        velocities : (n_obs, 3) or None — velocity per obstacle (m/s)
+        bounds     : (n_obs, 2, 3) or None — [lower, upper] bounce box per
+                     obstacle; None disables bouncing (free drift)
+        """
+        self._obstacle_velocities = np.asarray(velocities, dtype=float)
+        self._obstacle_bounds = (np.asarray(bounds, dtype=float)
+                                 if bounds is not None else None)
+
+    def _move_dynamic_obstacles(self):
+        """Integrate obstacle positions one step, bouncing inside bounds."""
+        if self.sdf.n_obs == 0:
+            return
+        n = min(self.sdf.n_obs, len(self._obstacle_velocities))
+        if n == 0 or not np.any(self._obstacle_velocities[:n]):
+            return
+        centers = self.sdf.centers.copy()
+        vel = self._obstacle_velocities[:n]
+        centers[:n] += vel * self.dt
+        if self._obstacle_bounds is not None:
+            lo = self._obstacle_bounds[:n, 0]
+            hi = self._obstacle_bounds[:n, 1]
+            for axis in range(3):
+                below = centers[:n, axis] < lo[:, axis]
+                above = centers[:n, axis] > hi[:, axis]
+                centers[:n, axis] = np.where(
+                    below, 2.0 * lo[:, axis] - centers[:n, axis], centers[:n, axis])
+                centers[:n, axis] = np.where(
+                    above, 2.0 * hi[:, axis] - centers[:n, axis], centers[:n, axis])
+                vel[below, axis] = -vel[below, axis]
+                vel[above, axis] = -vel[above, axis]
+        self.sdf.centers = centers
+        self._sync_obstacles_to_mujoco()
+
     def _sync_obstacles_to_mujoco(self):
         """Sync SDF obstacle centers and radius to MuJoCo mocap bodies and geoms."""
         if self.mj_data is None:
@@ -1246,8 +1304,9 @@ class ManipulatorEnv:
                 waypoints.append(wp - x_ee)  # relative to end-effector
 
             # Sort by current surface distance so the representation is
-            # permutation-stable. Each slot is [relative xyz, radius, mask].
-            scene_embed = np.zeros(self.obs_scene_embed * 5, dtype=np.float32)
+            # permutation-stable. Each slot is [relative xyz, radius, mask,
+            # velocity xyz] (velocity zeros for static obstacles).
+            scene_embed = np.zeros(self.obs_scene_embed * 8, dtype=np.float32)
             n_embed = min(self.obs_scene_embed, self.sdf.n_obs)
             if n_embed:
                 rel = self.sdf.centers - x_ee
@@ -1255,10 +1314,14 @@ class ManipulatorEnv:
                     np.linalg.norm(rel, axis=1) - self.sdf.radii
                 )[:n_embed]
                 for slot, obstacle_index in enumerate(order):
-                    offset = slot * 5
+                    offset = slot * 8
                     scene_embed[offset:offset+3] = rel[obstacle_index]
                     scene_embed[offset+3] = self.sdf.radii[obstacle_index]
                     scene_embed[offset+4] = 1.0
+                    scene_embed[offset+5:offset+8] = (
+                        self._obstacle_velocities[obstacle_index]
+                        if obstacle_index < len(self._obstacle_velocities)
+                        else 0.0)
 
             if (self._cached_capsule_dists is not None
                     and self._cached_capsule_directions is not None):
@@ -1307,6 +1370,23 @@ class ManipulatorEnv:
             ])
 
         obs = obs.astype(np.float32)
+
+        # Sensor noise: corrupt the perceptual components (capsule features,
+        # scene embed, waypoints) but keep joint state exact. Noise std scales
+        # with the signal's own scale (obs_noise_scale) plus a floor.
+        if self.obs_noise > 0.0:
+            per_start = 7 + 7  # q, dq — keep exact
+            # perceptual components: capsule features, self dists, scene embed
+            if self.obs_noise_scale > 0.0:
+                std = self.obs_noise * (1.0 + self.obs_noise_scale *
+                                        np.abs(obs))
+                std = std[per_start:]
+            else:
+                std = np.full(obs[per_start:].shape, self.obs_noise,
+                              dtype=np.float32)
+            obs[per_start:] += np.random.normal(
+                0.0, std, size=obs[per_start:].shape
+            ).astype(np.float32)
 
         # Frame stacking: maintain sliding window of recent observations
         if self.frame_stack > 1:

@@ -3,7 +3,9 @@
 ## 工作目录
 - 所有命令在项目根目录 `/root/manipulator/` 下执行，不要 cd 到子目录
 - 训练脚本：`code/.venv/bin/python -u code/train.py [参数]`
-- 测试脚本：`code/.venv/bin/python -u code/test.py [参数]`
+- 统一评测：在 `code/` 目录运行 `.venv/bin/python -m experiments.runner [参数]`
+- 结果汇总：在 `code/` 目录运行 `.venv/bin/python -m experiments.report [JSONL...] --output-dir [目录]`
+- 场景可视化：`code/.venv/bin/python code/visualize_scene.py [scene_id] [参数]`
 
 ## 输出路径
 - checkpoint 保存在根目录：`checkpoints/{run_name}/`

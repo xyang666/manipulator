@@ -21,7 +21,12 @@
       "Bash(sed -i 's/Author: RSEI Lab/Author: xie yang/g' code/agent/*.py)",
       "Bash(ssh root@connect.nmb1.seetacloud.com -p 30068 ' *)",
       "Bash(ssh root@connect.nmb1.seetacloud.com -p 30068 \"ls /root/manipulator/ewalker_description/urdf/ewalker.urdf 2>/dev/null; echo '---'; ls /root/manipulator/models/ewalker_scene.xml 2>/dev/null\")",
-      "Bash(PYTHONPATH=code code/.venv/bin/python3 -c ' *)"
+      "Bash(PYTHONPATH=code code/.venv/bin/python3 -c ' *)",
+      "Bash",
+      "Bash(PYTHONPATH=code code/.venv/bin/python -m experiments.generate_dynamic_scenes --speed 0.15 0.25 --swing 0.05 --n-moving 2 --mode squeeze --output-dir results/ewalker_scenes/dynamic_squeeze_fast)",
+      "Bash(PYTHONPATH=code code/.venv/bin/python -m experiments.runner --method gradient_projection --scenario confined_space --seed 11 --episodes 10 --output /tmp/gp_squeeze_fast.jsonl --scene-json results/ewalker_scenes/dynamic_squeeze_fast/confined_space_test.json)",
+      "Read(//tmp/**)",
+      "Bash(python3 -c ' *)"
     ],
     "additionalDirectories": [
       "/home/merlin/manipulator/code/agent"

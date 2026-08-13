@@ -3,6 +3,11 @@
 本文档是一期实验的正式操作说明。场景定义、训练顺序、checkpoint选择和
 最终评测均以这里列出的接口为准。
 
+统一评测入口为 `python -m experiments.runner`，汇总入口为
+`python -m experiments.report`。旧版 `code/test.py` 已删除；它使用旧场景、
+旧checkpoint和另一套方法命名，不得用于论文结果。场景查看使用独立的
+`code/visualize_scene.py`。
+
 ## 1. 正式数据
 
 唯一正式场景目录为：

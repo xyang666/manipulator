@@ -75,6 +75,17 @@ class ValidationSet:
         # Update SDF
         env.sdf.set_static_obstacles(obstacle_centers, obstacle_radii)
 
+        # Dynamic obstacles: entries may carry optional velocity [x,y,z,r,vx,vy,vz]
+        velocities = np.zeros((len(obstacles), 3), dtype=float)
+        for i, obs in enumerate(obstacles):
+            if len(obs) >= 7:
+                velocities[i] = obs[4:7]
+        bounds = None
+        if "obstacle_bounds" in scene:
+            bounds = np.array(scene["obstacle_bounds"], dtype=float)
+        if np.any(velocities):
+            env.set_dynamic_obstacles(velocities, bounds)
+
         trajectory = scene.get("trajectory", {"type": "linear"})
         if trajectory.get("type") == "figure_eight":
             center = np.asarray(trajectory["center"], dtype=float)

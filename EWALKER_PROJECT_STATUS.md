@@ -416,8 +416,8 @@ tail -f /root/autodl-tmp/manipulator/logs/ewalker_structured_curriculum_s11.log
 
 ```bash
 cd /home/merlin/manipulator
-PYTHONPATH=code code/.venv/bin/python code/test.py \
-  --method kp --steps 500 --n_obstacles 3 --render
+code/.venv/bin/python code/visualize_scene.py 0 \
+  --scene-json results/ewalker_scenes/curriculum/train.json --slow --steps 500
 ```
 
 使用正式 curriculum 启动训练时必须显式指定：

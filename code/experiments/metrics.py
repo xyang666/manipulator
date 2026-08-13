@@ -29,6 +29,7 @@ class EpisodeMetrics:
     reference_correction: float
     gate_trigger_rate: float
     torque_violation_count: int
+    torque_violation_rate: float
     steps: int
 
     def to_dict(self) -> dict:
@@ -97,6 +98,8 @@ class EpisodeRecorder:
             reference_correction=_mean(self.reference_norms),
             gate_trigger_rate=float(np.mean(np.asarray(self.gates) > 1e-6)) if self.gates else 0.0,
             torque_violation_count=violations,
+            torque_violation_rate=(violations / len(torques)
+                                   if len(torques) else 0.0),
             steps=len(errors),
         )
 
@@ -113,6 +116,7 @@ def summarize_episodes(rows: Iterable[EpisodeMetrics | dict], confidence: float 
         "tracking_peak_m", "min_clearance_m", "joint_velocity_smoothness",
         "torque_rate_nm_s", "energy", "nullspace_utilization",
         "reference_correction", "gate_trigger_rate", "torque_violation_count",
+        "torque_violation_rate",
     ]
     z_score = NormalDist().inv_cdf(0.5 + confidence / 2.0)
     for name in metric_names:

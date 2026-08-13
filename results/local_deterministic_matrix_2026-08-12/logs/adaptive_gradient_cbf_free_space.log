@@ -1,0 +1,5 @@
+[kinematics] Loaded model, n_joints=7, ee_frame='ewalker_tcp_joint'
+[env] MuJoCo model loaded: /home/merlin/manipulator/models/ewalker_scene.xml
+[dynamics] Loaded model 'ewalker_inspired_7dof' with 7 DOF.
+[env] CBF safety filter enabled (alpha=1.0, d_safe=0.06, self_d_safe=0.02, multi_self=True)
+[Validation] Loaded 100 validation scenes from /home/merlin/manipulator/results/ewalker_scenes/free_space/test.json
