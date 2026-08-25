@@ -67,6 +67,24 @@ def predictive_dynamic_risk(capsules, centers: np.ndarray, radii: np.ndarray,
     return float(np.clip(worst, 0.0, 2.0))
 
 
+def predictive_obstacle_features(relative_position: np.ndarray,
+                                 velocity: np.ndarray, radius: float,
+                                 horizons: list[int], dt: float) -> np.ndarray:
+    """Encode measured-velocity extrapolations and closest-approach risk."""
+    relative_position = np.asarray(relative_position, dtype=float)
+    velocity = np.asarray(velocity, dtype=float)
+    future = [relative_position + velocity * (step * dt) for step in horizons]
+    speed_sq = float(np.dot(velocity, velocity))
+    window = max(horizons) * dt if horizons else 0.0
+    t_closest = (0.0 if speed_sq <= 1e-12 else float(np.clip(
+        -np.dot(relative_position, velocity) / speed_sq, 0.0, window)))
+    closest = relative_position + velocity * t_closest
+    clearance = float(np.linalg.norm(closest) - radius)
+    distance = max(float(np.linalg.norm(relative_position)), 1e-9)
+    closing_speed = float(-np.dot(relative_position, velocity) / distance)
+    return np.concatenate([*future, [t_closest, clearance, closing_speed]])
+
+
 def dense_safety_cost(constraint_distance: float, d_safe: float) -> float:
     """Normalized safety-margin violation, capped for numerical stability."""
     if d_safe <= 0:
@@ -174,6 +192,7 @@ class ManipulatorEnv:
                  generalization_deterministic_cbf: bool = False,
                  obs_waypoint_steps: list | None = None,
                  obs_scene_embed: int = ENVIRONMENT.obs_scene_embed,
+                 obs_prediction_horizons: list[int] | None = None,
                  obs_noise: float = 0.0,
                  obs_noise_scale: float = 0.0,
                  frame_stack: int = 1):
@@ -241,6 +260,13 @@ class ManipulatorEnv:
             if obs_waypoint_steps is None else list(obs_waypoint_steps)
         )
         self.obs_scene_embed = obs_scene_embed
+        self.obs_prediction_horizons = list(obs_prediction_horizons or [])
+        if any(step <= 0 for step in self.obs_prediction_horizons):
+            raise ValueError("observation prediction horizons must be positive")
+        self._scene_feature_width = (
+            8 if not self.obs_prediction_horizons
+            else 11 + 3 * len(self.obs_prediction_horizons)
+        )
         self.obs_dim = n_joints * 2 + 3 + 3 + 3 + 1 + 1 + 3  # fallback, overwritten below
         self.act_dim = n_joints  # 7D: 3 (task relaxation) + 4 (nullspace, = n-3)
 
@@ -298,7 +324,7 @@ class ManipulatorEnv:
             self.obs_dim = (self.n * 2 + 3 + 3    # q, dq, x_ee, x_d
                             + self._capsule_dists_dim * 4
                             + self._self_dists_dim
-                            + self.obs_scene_embed * 8   # xyz + r + mask + v_xyz
+                            + self.obs_scene_embed * self._scene_feature_width
                             + len(self.obs_waypoint_steps) * 3
                             + 1                   # path_progress s
                             + 1)                  # sigma gate
@@ -1373,9 +1399,13 @@ class ManipulatorEnv:
                 waypoints.append(wp - x_ee)  # relative to end-effector
 
             # Sort by current surface distance so the representation is
-            # permutation-stable. Each slot is [relative xyz, radius, mask,
-            # velocity xyz] (velocity zeros for static obstacles).
-            scene_embed = np.zeros(self.obs_scene_embed * 8, dtype=np.float32)
+            # permutation-stable. Base slot: [relative xyz, radius, mask,
+            # velocity xyz]. Optional suffix contains future relative positions,
+            # time-to-closest-approach, predicted clearance and closing speed.
+            scene_embed = np.zeros(
+                self.obs_scene_embed * self._scene_feature_width,
+                dtype=np.float32,
+            )
             n_embed = min(self.obs_scene_embed, self.sdf.n_obs)
             if n_embed:
                 rel = self.sdf.centers - x_ee
@@ -1383,7 +1413,7 @@ class ManipulatorEnv:
                     np.linalg.norm(rel, axis=1) - self.sdf.radii
                 )[:n_embed]
                 for slot, obstacle_index in enumerate(order):
-                    offset = slot * 8
+                    offset = slot * self._scene_feature_width
                     scene_embed[offset:offset+3] = rel[obstacle_index]
                     scene_embed[offset+3] = self.sdf.radii[obstacle_index]
                     scene_embed[offset+4] = 1.0
@@ -1391,6 +1421,15 @@ class ManipulatorEnv:
                         self._obstacle_velocities[obstacle_index]
                         if obstacle_index < len(self._obstacle_velocities)
                         else 0.0)
+                    if self.obs_prediction_horizons:
+                        scene_embed[offset+8:offset+self._scene_feature_width] = (
+                            predictive_obstacle_features(
+                                rel[obstacle_index],
+                                scene_embed[offset+5:offset+8],
+                                self.sdf.radii[obstacle_index],
+                                self.obs_prediction_horizons, self.dt,
+                            )
+                        )
 
             if (self._cached_capsule_dists is not None
                     and self._cached_capsule_directions is not None):

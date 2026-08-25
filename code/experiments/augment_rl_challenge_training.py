@@ -16,15 +16,20 @@ from pathlib import Path
 import numpy as np
 
 from experiments.generate_rl_challenge_scenes import (
+    endpoint_clearance,
     make_closing_gate,
     make_timed_crossing,
 )
+from env.kinematics import ManipulatorKinematics
+from robot_config import DEFAULT_URDF
 
 
 def build_training_set(whole_body_json: Path, base_challenge_json: Path,
                        output: Path, seed: int, gate_variants: int,
                        swing_range: tuple[float, float],
-                       duration_range: tuple[float, float]) -> dict:
+                       duration_range: tuple[float, float],
+                       min_endpoint_clearance: float = 0.0,
+                       urdf: str = DEFAULT_URDF) -> dict:
     """Create a controller-independent augmented training set and manifest."""
     rng = np.random.default_rng(seed)
     whole_body = json.loads(whole_body_json.read_text())
@@ -56,6 +61,11 @@ def build_training_set(whole_body_json: Path, base_challenge_json: Path,
             scene["augmentation_duration_s"] = duration
             scenes.append(scene)
 
+    before_clearance = len(scenes)
+    if min_endpoint_clearance > 0.0:
+        kin = ManipulatorKinematics(urdf, 7)
+        scenes = [scene for scene in scenes
+                  if endpoint_clearance(scene, kin) >= min_endpoint_clearance]
     rng.shuffle(scenes)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(scenes, indent=2) + "\n")
@@ -71,6 +81,8 @@ def build_training_set(whole_body_json: Path, base_challenge_json: Path,
         "gate_variants": gate_variants,
         "swing_range_m": list(swing_range),
         "duration_range_s": list(duration_range),
+        "min_endpoint_clearance_m": min_endpoint_clearance,
+        "rejected_endpoint_infeasible": before_clearance - len(scenes),
     }
     output.with_suffix(".manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n")
@@ -88,6 +100,8 @@ def main() -> int:
                         default=(0.04, 0.07), metavar=("MIN", "MAX"))
     parser.add_argument("--duration-range", nargs=2, type=float,
                         default=(6.0, 8.0), metavar=("MIN", "MAX"))
+    parser.add_argument("--min-endpoint-clearance", type=float, default=0.0)
+    parser.add_argument("--urdf", default=DEFAULT_URDF)
     args = parser.parse_args()
     if args.gate_variants <= 0:
         parser.error("--gate-variants must be positive")
@@ -95,10 +109,12 @@ def main() -> int:
         parser.error("--swing-range must satisfy 0 < MIN <= MAX")
     if not 0 < args.duration_range[0] <= args.duration_range[1]:
         parser.error("--duration-range must satisfy 0 < MIN <= MAX")
+    if args.min_endpoint_clearance < 0.0:
+        parser.error("--min-endpoint-clearance must be non-negative")
     manifest = build_training_set(
         args.whole_body_json, args.base_challenge_json, args.output,
         args.seed, args.gate_variants, tuple(args.swing_range),
-        tuple(args.duration_range))
+        tuple(args.duration_range), args.min_endpoint_clearance, args.urdf)
     print(json.dumps(manifest, indent=2))
     return 0
 

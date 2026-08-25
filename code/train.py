@@ -263,6 +263,8 @@ def parse_args():
     # 观测中编码的障碍物数量；每个障碍占中心 xyz 和半径 4 维。
     p.add_argument("--obs_scene_embed", type=int,
                    default=ENVIRONMENT.obs_scene_embed)
+    # 用当前障碍速度外推未来相对位置的步长；空字符串保持旧观测格式。
+    p.add_argument("--obs_prediction_horizons", type=str, default="")
     # 观测未来路径点的步数偏移，逗号分隔，例如 "10,25,50"。
     p.add_argument(
         "--obs_waypoint_steps", type=str,
@@ -394,6 +396,10 @@ def make_env_kwargs(args, n_obs, obs_waypoint_steps):
         int(value) for value in args.predictive_risk_horizons.split(",")
         if value.strip()
     ]
+    obs_prediction_horizons = [
+        int(value) for value in args.obs_prediction_horizons.split(",")
+        if value.strip()
+    ]
     return dict(
         urdf_path=args.urdf, xml_path=args.xml, obs_radius=0.03,
         n_obstacles=n_obs,
@@ -406,6 +412,7 @@ def make_env_kwargs(args, n_obs, obs_waypoint_steps):
         d_safe=args.d_safe, success_bonus=args.success_bonus,
         lr_lag=args.lr_lag, lag_target=args.lag_target,
         obs_scene_embed=args.obs_scene_embed,
+        obs_prediction_horizons=obs_prediction_horizons,
         obs_waypoint_steps=obs_waypoint_steps,
         obs_noise=args.obs_noise,
         obs_noise_scale=args.obs_noise_scale,

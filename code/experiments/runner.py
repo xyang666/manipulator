@@ -197,6 +197,7 @@ def run(args) -> list[dict]:
             "adaptive_gradient_cbf", "ours_shielded", "ours_hybrid")),
         reward_scale=ENVIRONMENT.reward_scale,
         obs_scene_embed=args.obs_scene_embed,
+        obs_prediction_horizons=args.obs_prediction_horizons,
         obs_waypoint_steps=args.obs_waypoint_steps,
         obs_noise=args.obs_noise,
         obs_noise_scale=args.obs_noise_scale,
@@ -290,6 +291,8 @@ def parse_args():
     parser.add_argument("--obs-noise", type=float, default=0.0,
                         help="Gaussian std on RL observation (perceptual)")
     parser.add_argument("--obs-noise-scale", type=float, default=0.0)
+    parser.add_argument("--obs-prediction-horizons", default=None,
+                        help="Override checkpoint prediction horizons")
     parser.add_argument("--task-scale", type=float, default=None,
                         help="Override checkpoint task-action scale")
     parser.add_argument("--nullspace-scale", type=float, default=None,
@@ -339,6 +342,14 @@ def parse_args():
     if isinstance(args.obs_waypoint_steps, str):
         args.obs_waypoint_steps = [
             int(s) for s in args.obs_waypoint_steps.replace(" ", "").split(",")
+        ]
+    args.obs_prediction_horizons = checkpoint_cli_value(
+        args.checkpoint, "obs_prediction_horizons", ""
+    ) if args.obs_prediction_horizons is None else args.obs_prediction_horizons
+    if isinstance(args.obs_prediction_horizons, str):
+        args.obs_prediction_horizons = [
+            int(s) for s in args.obs_prediction_horizons.replace(" ", "").split(",")
+            if s
         ]
     args.gradient_prior_scale = float(checkpoint_cli_value(
         args.checkpoint, "gradient_prior_scale", 0.0
