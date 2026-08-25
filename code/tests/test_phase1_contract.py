@@ -302,7 +302,7 @@ def test_v5_observation_contains_direction_scene_mask_and_waypoints():
         + len(ENVIRONMENT.obs_waypoint_steps) * 3
         + env._capsule_dists_dim * 4
         + env._self_dists_dim
-        + ENVIRONMENT.obs_scene_embed * 5
+        + ENVIRONMENT.obs_scene_embed * 8
         + 2
     )
     assert env.obs_dim == expected

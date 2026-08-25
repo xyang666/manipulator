@@ -23,7 +23,9 @@ PHASE1_SCENARIOS = (
     "confined_space",
     "generalization",
 )
-TRAINING_PROTOCOL_VERSION = 5
+# Protocol 6 adds per-obstacle velocity (3 values per scene slot) to the
+# observation.  Protocol-5 checkpoints use a different actor input shape.
+TRAINING_PROTOCOL_VERSION = 6
 TRAIN_SEEDS = (11, 23, 37, 53, 71)
 
 

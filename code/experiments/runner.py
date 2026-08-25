@@ -194,8 +194,8 @@ def run(args) -> list[dict]:
         cbf_multi_self_constraints=(args.method in (
             "adaptive_gradient_cbf", "ours_shielded", "ours_hybrid")),
         reward_scale=ENVIRONMENT.reward_scale,
-        obs_scene_embed=ENVIRONMENT.obs_scene_embed,
-        obs_waypoint_steps=list(ENVIRONMENT.obs_waypoint_steps),
+        obs_scene_embed=args.obs_scene_embed,
+        obs_waypoint_steps=args.obs_waypoint_steps,
         obs_noise=args.obs_noise,
         obs_noise_scale=args.obs_noise_scale,
         gradient_prior_scale=args.gradient_prior_scale,
@@ -313,6 +313,20 @@ def parse_args():
             args.checkpoint, "cbf_self_distance",
             self_safety_distance_default(args.method, args.scenario),
         ))
+    # Observation format must match the checkpoint's training config,
+    # otherwise the actor input dimension mismatches (e.g. scene_embed 5 vs 10).
+    args.obs_scene_embed = int(checkpoint_cli_value(
+        args.checkpoint, "obs_scene_embed", ENVIRONMENT.obs_scene_embed
+    ) if getattr(args, "obs_scene_embed", None) is None
+      else args.obs_scene_embed)
+    args.obs_waypoint_steps = checkpoint_cli_value(
+        args.checkpoint, "obs_waypoint_steps",
+        ",".join(str(x) for x in ENVIRONMENT.obs_waypoint_steps)
+    )
+    if isinstance(args.obs_waypoint_steps, str):
+        args.obs_waypoint_steps = [
+            int(s) for s in args.obs_waypoint_steps.replace(" ", "").split(",")
+        ]
     args.gradient_prior_scale = float(checkpoint_cli_value(
         args.checkpoint, "gradient_prior_scale", 0.0
     ) if args.gradient_prior_scale is None else args.gradient_prior_scale)

@@ -193,7 +193,10 @@ class SACAgent:
 
     @torch.no_grad()
     def select_action(self, state: np.ndarray, deterministic: bool = False) -> np.ndarray:
-        s = self.obs_normalizer(state)
+        # Evaluation uses frozen running statistics: updating the normalizer
+        # on out-of-distribution eval observations would drift mean/var and
+        # corrupt the policy output.
+        s = self.obs_normalizer.normalize(state)
         s = torch.as_tensor(s, dtype=torch.float32, device=self.device).unsqueeze(0)
         action, _, mean = self.actor.sample(s)
         if deterministic:
@@ -202,7 +205,8 @@ class SACAgent:
 
     def select_action_batch(self, states: np.ndarray, deterministic: bool = False) -> np.ndarray:
         """Batch action selection. states: (batch, dim) -> actions: (batch, act_dim)."""
-        s = torch.as_tensor(self.obs_normalizer(states), dtype=torch.float32, device=self.device)
+        s = torch.as_tensor(self.obs_normalizer.normalize(states),
+                            dtype=torch.float32, device=self.device)
         action, _, mean = self.actor.sample(s)
         if deterministic:
             return mean.detach().cpu().numpy()
