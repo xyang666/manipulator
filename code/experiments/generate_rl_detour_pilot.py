@@ -52,7 +52,8 @@ def _configuration_clearance(kin, q: np.ndarray, obstacles: list[list[float]]) -
 
 def _candidate_blockers(kin, q: np.ndarray, capsule_index: int,
                         rng: np.random.Generator,
-                        paired: bool) -> list[list[float]] | None:
+                        paired: bool,
+                        opposite_clearance: float) -> list[list[float]] | None:
     p1, p2, capsule_radius = kin.get_link_capsules(q)[capsule_index]
     axis = p2 - p1
     axis_norm = np.linalg.norm(axis)
@@ -76,8 +77,11 @@ def _candidate_blockers(kin, q: np.ndarray, capsule_index: int,
         return None
     blockers = [[*center.tolist(), radius]]
     if paired:
+        # The opposite obstacle is active inside the safety margin but does
+        # not geometrically penetrate the capsule.  Two penetrating blockers
+        # made the bounded task infeasible in the first paired pilot.
         opposite = point - direction / norm * (
-            capsule_radius + radius - penetration)
+            capsule_radius + radius + opposite_clearance)
         if not (-0.85 <= opposite[0] <= 0.85 and -0.85 <= opposite[1] <= 0.85
                 and 0.05 <= opposite[2] <= 1.30):
             return None
@@ -103,7 +107,8 @@ def make_detour_scene(scene: dict, kin, seed: int, attempts: int,
                       minimum_ratio: float, maximum_ratio: float,
                       minimum_deviation: float, maximum_deviation: float,
                       clearance: float, paired: bool,
-                      minimum_conflict: float) -> dict | None:
+                      minimum_conflict: float,
+                      opposite_clearance: float) -> dict | None:
     rng = np.random.default_rng(seed)
     q_start = np.asarray(scene["start_q"], dtype=float)
     q_goal = np.asarray(scene["goal_q"], dtype=float)
@@ -126,7 +131,8 @@ def make_detour_scene(scene: dict, kin, seed: int, attempts: int,
         fraction = float(rng.uniform(0.3, 0.7))
         q_mid = (1.0 - fraction) * q_start + fraction * q_goal
         blockers = _candidate_blockers(
-            kin, q_mid, int(rng.choice(moving)), rng, paired)
+            kin, q_mid, int(rng.choice(moving)), rng, paired,
+            opposite_clearance)
         if blockers is None:
             continue
         conflict = 0.0
@@ -203,6 +209,8 @@ def main() -> int:
                         help="place opposing blockers around the same moving link")
     parser.add_argument("--min-conflict", type=float, default=0.5,
                         help="minimum negative cosine between paired distance gradients")
+    parser.add_argument("--opposite-clearance", type=float, default=0.035,
+                        help="surface clearance of the non-penetrating opposing blocker")
     args = parser.parse_args()
     scenes = json.loads(args.input.read_text())
     kin = ManipulatorKinematics(DEFAULT_URDF, 7)
@@ -215,7 +223,7 @@ def main() -> int:
                 args.seed + 1_000_003 * round_index + 10007 * index,
                 args.attempts, args.min_ratio, args.max_ratio,
                 args.min_deviation, args.max_deviation, args.clearance,
-                args.paired, args.min_conflict,
+                args.paired, args.min_conflict, args.opposite_clearance,
             )
             if candidate is not None and candidate["scene_id"] not in seen:
                 seen.add(candidate["scene_id"])
