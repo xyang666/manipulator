@@ -160,6 +160,10 @@ def parse_args():
     p.add_argument("--cbf_multi_self_constraints", action="store_true")
     # 惩罚 CBF 对策略动作的修正幅度，促使策略提前预测并减少安全层介入。
     p.add_argument("--w_cbf_intervention", type=float, default=0.0)
+    # 基于障碍速度外推未来安全裕度，用作预测型训练奖励。
+    p.add_argument("--w_predictive_risk", type=float, default=0.0)
+    # 预测风险的未来步长，使用逗号分隔。
+    p.add_argument("--predictive_risk_horizons", default="10,25,50")
     # 关闭独立安全 critic，退化为只优化奖励的 SAC。
     p.add_argument("--no_safety_critic", action="store_true")
     # 关闭风险门控，使任务空间 RL 修正不再按障碍距离衰减。
@@ -386,6 +390,10 @@ def setup_scene_loading(args):
 
 
 def make_env_kwargs(args, n_obs, obs_waypoint_steps):
+    predictive_risk_horizons = [
+        int(value) for value in args.predictive_risk_horizons.split(",")
+        if value.strip()
+    ]
     return dict(
         urdf_path=args.urdf, xml_path=args.xml, obs_radius=0.03,
         n_obstacles=n_obs,
@@ -414,6 +422,8 @@ def make_env_kwargs(args, n_obs, obs_waypoint_steps):
         cbf_self_d_safe=args.cbf_self_distance,
         cbf_multi_self_constraints=args.cbf_multi_self_constraints,
         w_cbf_intervention=args.w_cbf_intervention,
+        w_predictive_risk=args.w_predictive_risk,
+        predictive_risk_horizons=predictive_risk_horizons,
         gate_enabled=not args.disable_gate,
         gradient_prior_scale=args.gradient_prior_scale,
         gradient_prior_smoothing=args.gradient_prior_smoothing,

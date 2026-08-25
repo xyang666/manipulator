@@ -42,6 +42,31 @@ from trajectory.generator import TrajectoryGenerator
 from experiment_config import ENVIRONMENT
 
 
+def predictive_dynamic_risk(capsules, centers: np.ndarray, radii: np.ndarray,
+                            velocities: np.ndarray, horizons: list[int],
+                            dt: float, d_safe: float) -> float:
+    """Worst future clearance violation from observed moving-obstacle velocity."""
+    if d_safe <= 0.0:
+        raise ValueError("d_safe must be positive")
+    moving = np.linalg.norm(velocities, axis=1) > 1e-9
+    if not np.any(moving) or not horizons:
+        return 0.0
+    worst = 0.0
+    for horizon in horizons:
+        future = centers + velocities * (float(horizon) * dt)
+        for p1, p2, capsule_radius in capsules:
+            segment = p2 - p1
+            denom = max(float(np.dot(segment, segment)), 1e-12)
+            for index in np.flatnonzero(moving):
+                t = float(np.clip(np.dot(future[index] - p1, segment) /
+                                  denom, 0.0, 1.0))
+                closest = p1 + t * segment
+                clearance = (np.linalg.norm(future[index] - closest)
+                             - capsule_radius - radii[index])
+                worst = max(worst, (d_safe - clearance) / d_safe)
+    return float(np.clip(worst, 0.0, 2.0))
+
+
 def dense_safety_cost(constraint_distance: float, d_safe: float) -> float:
     """Normalized safety-margin violation, capped for numerical stability."""
     if d_safe <= 0:
@@ -133,6 +158,8 @@ class ManipulatorEnv:
                  cbf_self_d_safe: float = 0.02,
                  cbf_multi_self_constraints: bool = False,
                  w_cbf_intervention: float = 0.0,
+                 w_predictive_risk: float = 0.0,
+                 predictive_risk_horizons: list[int] | None = None,
                  success_bonus: float = ENVIRONMENT.success_bonus,
                  reward_min: Optional[float] = None,
                  reward_scale: float = ENVIRONMENT.reward_scale,
@@ -185,7 +212,14 @@ class ManipulatorEnv:
         self.gate_enabled = gate_enabled
         if w_cbf_intervention < 0.0:
             raise ValueError("w_cbf_intervention must be non-negative")
+        if w_predictive_risk < 0.0:
+            raise ValueError("w_predictive_risk must be non-negative")
         self.w_cbf_intervention = float(w_cbf_intervention)
+        self.w_predictive_risk = float(w_predictive_risk)
+        self.predictive_risk_horizons = list(
+            predictive_risk_horizons or (10, 25, 50))
+        if any(step <= 0 for step in self.predictive_risk_horizons):
+            raise ValueError("predictive risk horizons must be positive")
         if gradient_prior_scale < 0.0:
             raise ValueError("gradient_prior_scale must be non-negative")
         if not 0.0 <= gradient_prior_smoothing < 1.0:
@@ -676,6 +710,16 @@ class ManipulatorEnv:
         cbf_intervention_penalty = self.w_cbf_intervention * self._cbf_mod
         reward -= cbf_intervention_penalty
         reward_info["r_cbf_intervention"] = -cbf_intervention_penalty
+        predictive_risk = 0.0
+        if self.w_predictive_risk > 0.0 and self.sdf.n_obs:
+            predictive_risk = predictive_dynamic_risk(
+                self.kin.get_link_capsules(self.q), self.sdf.centers,
+                self.sdf.radii, self._obstacle_velocities,
+                self.predictive_risk_horizons, self.dt, self.d_safe)
+        predictive_penalty = self.w_predictive_risk * predictive_risk
+        reward -= predictive_penalty
+        reward_info["predictive_risk"] = predictive_risk
+        reward_info["r_predictive_risk"] = -predictive_penalty
         # Clip per-step reward to prevent Q-value divergence from collision spikes
         if self.reward_min is not None:
             reward = max(reward, self.reward_min)

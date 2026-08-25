@@ -15,7 +15,8 @@ from experiments.runner import (checkpoint_action_scales, checkpoint_cli_value,
                                 self_safety_distance_default)
 from experiments.split_scenes import scene_fingerprint, split_scenes
 from env.manipulator_env import (ManipulatorEnv, combined_safety_cost,
-                                 dense_safety_cost, task_relaxation_gate)
+                                 dense_safety_cost, predictive_dynamic_risk,
+                                 task_relaxation_gate)
 from robot_config import DEFAULT_URDF, DEFAULT_XML
 from train import (is_better_validation, prune_step_checkpoints,
                    scene_sampling_weights)
@@ -128,6 +129,20 @@ def test_negative_cbf_intervention_weight_is_rejected():
     with pytest.raises(ValueError, match="w_cbf_intervention"):
         ManipulatorEnv(urdf_path=None, xml_path=None,
                        w_cbf_intervention=-1.0)
+
+
+def test_predictive_dynamic_risk_uses_velocity_and_future_horizon():
+    capsules = [(np.array([0.0, 0.0, 0.0]),
+                 np.array([0.0, 0.0, 0.1]), 0.01)]
+    centers = np.array([[0.2, 0.0, 0.05]])
+    radii = np.array([0.01])
+    approaching = np.array([[-0.1, 0.0, 0.0]])
+    static = np.zeros((1, 3))
+    risk = predictive_dynamic_risk(
+        capsules, centers, radii, approaching, [100], 0.02, 0.06)
+    assert risk > 0.0
+    assert predictive_dynamic_risk(
+        capsules, centers, radii, static, [100], 0.02, 0.06) == 0.0
 
 
 def test_distance_gradient_prior_is_bounded_and_smoothed():
