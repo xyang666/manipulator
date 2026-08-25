@@ -85,6 +85,15 @@ def predictive_obstacle_features(relative_position: np.ndarray,
     return np.concatenate([*future, [t_closest, clearance, closing_speed]])
 
 
+def learned_reference_rate(timing_action: float, action_scale: float,
+                           risk_gate: float) -> float:
+    """Map a bounded timing action to a safe [0, 2] path-rate multiplier."""
+    if action_scale <= 0.0:
+        raise ValueError("action_scale must be positive")
+    return float(np.clip(1.0 + risk_gate * timing_action / action_scale,
+                         0.0, 2.0))
+
+
 def dense_safety_cost(constraint_distance: float, d_safe: float) -> float:
     """Normalized safety-margin violation, capped for numerical stability."""
     if d_safe <= 0:
@@ -179,6 +188,8 @@ class ManipulatorEnv:
                  w_predictive_risk: float = 0.0,
                  predictive_risk_horizons: list[int] | None = None,
                  predictive_residual_gate: bool = False,
+                 learned_progress_control: bool = False,
+                 timing_action_scale: float = 0.2,
                  success_bonus: float = ENVIRONMENT.success_bonus,
                  reward_min: Optional[float] = None,
                  reward_scale: float = ENVIRONMENT.reward_scale,
@@ -239,6 +250,10 @@ class ManipulatorEnv:
         self.predictive_risk_horizons = list(
             predictive_risk_horizons or (10, 25, 50))
         self.predictive_residual_gate = bool(predictive_residual_gate)
+        self.learned_progress_control = bool(learned_progress_control)
+        if timing_action_scale <= 0.0:
+            raise ValueError("timing_action_scale must be positive")
+        self.timing_action_scale = float(timing_action_scale)
         if any(step <= 0 for step in self.predictive_risk_horizons):
             raise ValueError("predictive risk horizons must be positive")
         if gradient_prior_scale < 0.0:
@@ -474,6 +489,7 @@ class ManipulatorEnv:
         self._trajectory_phase = 0.0
         self._success_hold_count = 0
         self._last_advance = 1.0
+        self._reference_rate_scale = 1.0
 
     def _update_reference(self, x_ee: np.ndarray) -> float:
         """Advance the reference without catching up after tracking stalls."""
@@ -491,6 +507,7 @@ class ManipulatorEnv:
             getattr(self, "_current_scenario", None) == "rl_challenge_detour"
         )
         gate = 1.0 if goal_conditioned else self._tracking_progress_gate(tracking_error)
+        gate *= self._reference_rate_scale
         self._last_advance = gate
         self._trajectory_phase = min(
             1.0, self._trajectory_phase + gate / self.trajectory_steps
@@ -607,7 +624,9 @@ class ManipulatorEnv:
             residual_scale = (0.0 if (confined_prior_only or free_cbf_only or
                                       generalization_cbf_only)
                               else self.learned_residual_scale)
-            delta_x_rl = residual_scale * action[:3]
+            delta_x_rl = residual_scale * action[:3].copy()
+            if self.learned_progress_control:
+                delta_x_rl[0] = 0.0
             z = residual_scale * action[3:]
 
             # Compute nominal task-space velocity (PID tracking)
@@ -640,6 +659,11 @@ class ManipulatorEnv:
                     )
                     sigma = max(sigma, min(predictive_sigma, 1.0))
             delta_x_gated = sigma * delta_x_rl  # diag(σ) · Δẋ_RL
+            self._reference_rate_scale = (
+                learned_reference_rate(
+                    action[0], self.timing_action_scale, sigma)
+                if self.learned_progress_control else 1.0
+            )
 
             # Reconstruct 7D nullspace velocity from 4D coefficients via SVD basis
             B = self.kin.null_space_basis_position(self.q)  # (7, 4), J_pos @ B ≈ 0

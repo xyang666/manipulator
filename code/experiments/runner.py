@@ -90,6 +90,7 @@ def _structured_agent(env, checkpoint: Path, args) -> SACAgent:
         min_alpha=ALGORITHM.minimum_alpha,
         physics_soft_limit_ratio=ALGORITHM.physics_soft_limit_ratio,
         predictive_residual_gate=args.predictive_residual_gate,
+        learned_progress_control=args.learned_progress_control,
         device=args.device,
     )
     metadata = agent.load(str(checkpoint), load_optimizers=False)
@@ -198,6 +199,8 @@ def run(args) -> list[dict]:
             "adaptive_gradient_cbf", "ours_shielded", "ours_hybrid")),
         reward_scale=ENVIRONMENT.reward_scale,
         predictive_residual_gate=args.predictive_residual_gate,
+        learned_progress_control=args.learned_progress_control,
+        timing_action_scale=args.timing_action_scale,
         obs_scene_embed=args.obs_scene_embed,
         obs_prediction_horizons=args.obs_prediction_horizons,
         obs_waypoint_steps=args.obs_waypoint_steps,
@@ -297,6 +300,8 @@ def parse_args():
                         help="Override checkpoint prediction horizons")
     parser.add_argument("--predictive-residual-gate",
                         action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--learned-progress-control",
+                        action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--task-scale", type=float, default=None,
                         help="Override checkpoint task-action scale")
     parser.add_argument("--nullspace-scale", type=float, default=None,
@@ -358,6 +363,12 @@ def parse_args():
     args.predictive_residual_gate = bool(checkpoint_cli_value(
         args.checkpoint, "predictive_residual_gate", False
     ) if args.predictive_residual_gate is None else args.predictive_residual_gate)
+    args.learned_progress_control = bool(checkpoint_cli_value(
+        args.checkpoint, "learned_progress_control", False
+    ) if args.learned_progress_control is None else args.learned_progress_control)
+    args.timing_action_scale = float(checkpoint_cli_value(
+        args.checkpoint, "task_scale", ALGORITHM.task_scale
+    ) if args.task_scale is None else args.task_scale)
     args.gradient_prior_scale = float(checkpoint_cli_value(
         args.checkpoint, "gradient_prior_scale", 0.0
     ) if args.gradient_prior_scale is None else args.gradient_prior_scale)

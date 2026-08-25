@@ -191,6 +191,7 @@ class PhysicsRegularizer:
                  lambda_dyn: float = 0.1, dt: float = 0.02,
                  soft_limit_ratio: float = 0.80,
                  gate_nullspace: bool = False,
+                 timing_action: bool = False,
                  device: str = "cpu"):
         self.dt = dt
         self.lambda_dyn = lambda_dyn
@@ -201,6 +202,7 @@ class PhysicsRegularizer:
             raise ValueError("soft_limit_ratio must be in (0, 1)")
         self.soft_limit_ratio = float(soft_limit_ratio)
         self.gate_nullspace = bool(gate_nullspace)
+        self.timing_action = bool(timing_action)
 
         if tau_max is None:
             from robot_config import DEFAULT_TAU_MAX, model_limits
@@ -290,6 +292,9 @@ class PhysicsRegularizer:
 
         # Split action: [task relaxation (3), nullspace coefficients (n-3)]
         delta_x = action_batch[:, :3]          # (B, 3)  *has grad*
+        if self.timing_action:
+            delta_x = torch.cat([torch.zeros_like(delta_x[:, :1]),
+                                 delta_x[:, 1:]], dim=1)
         z       = action_batch[:, 3:]          # (B, n-3)  *has grad*
 
         # ---- Reconstruct dq_cmd from action (differentiable) ----

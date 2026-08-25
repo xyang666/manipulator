@@ -1,6 +1,7 @@
 import numpy as np
 
-from env.manipulator_env import predictive_obstacle_features
+from env.manipulator_env import (learned_reference_rate,
+                                 predictive_obstacle_features)
 
 
 def test_predictive_obstacle_features_encode_approach():
@@ -19,3 +20,9 @@ def test_predictive_obstacle_features_static_obstacle():
         radius=0.1, horizons=[10], dt=0.02,
     )
     np.testing.assert_allclose(features, [0.3, 0.0, 0.0, 0.0, 0.2, 0.0])
+
+
+def test_learned_reference_rate_is_risk_gated_and_bounded():
+    assert learned_reference_rate(-0.2, 0.2, 1.0) == 0.0
+    assert learned_reference_rate(0.2, 0.2, 1.0) == 2.0
+    assert learned_reference_rate(-0.2, 0.2, 0.0) == 1.0
