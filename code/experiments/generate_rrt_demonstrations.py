@@ -53,10 +53,17 @@ def _structured_action(env, q, desired_dq, task_scale, nullspace_scale):
     basis = env.kin.null_space_basis_position(q)
     desired_dx = jacobian @ desired_dq
     dx_nom = env._compute_task_velocity()
-    task = (desired_dx - dx_nom) / task_scale
+    # PhysicsInformedActor.sample() returns actions in physical units after
+    # applying task_scale/nullspace_scale.  Demonstrations must use those same
+    # units; dividing by the scales here would train against normalized actions
+    # that the actor can never emit when a scale is smaller than one.
+    task = desired_dx - dx_nom
     task_motion = j_pinv @ desired_dx
-    null = basis.T @ (desired_dq - task_motion) / nullspace_scale
-    return np.clip(np.concatenate([task, null]), -1.0, 1.0)
+    null = basis.T @ (desired_dq - task_motion)
+    lower = np.r_[-np.full(3, task_scale),
+                  -np.full(env.n - 3, nullspace_scale)]
+    upper = -lower
+    return np.clip(np.concatenate([task, null]), lower, upper)
 
 
 def main() -> int:

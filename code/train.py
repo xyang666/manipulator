@@ -283,7 +283,7 @@ def parse_args():
     # --- 经验回放 ---
     # 启用优先经验回放（PER），优先采样 TD error 较大的 transition。
     p.add_argument("--per",         action="store_true")
-    # 仅训练期的规划器示范（NPZ 中包含 states/actions）；推理不调用规划器。
+    # 仅训练期的教师示范（NPZ 中包含 states/actions）；推理不调用教师。
     p.add_argument("--bc_demo", type=str, default=None)
     # 在线 SAC 前执行的行为克隆梯度步数；0 表示关闭 warm start。
     p.add_argument("--bc_steps", type=int, default=0)
@@ -1128,7 +1128,7 @@ def main():
 
     if args.bc_demo is not None and args.bc_steps > 0 and total_steps == 0:
         if args.agent_type != "structured":
-            raise ValueError("planner behavior cloning currently requires structured agent")
+            raise ValueError("behavior cloning currently requires structured agent")
         demonstrations = np.load(args.bc_demo)
         bc_loss = agent.behavior_clone(
             demonstrations["states"], demonstrations["actions"],
@@ -1136,12 +1136,12 @@ def main():
         )
         agent.save(os.path.join(run_dir, "ckpt_bc.pt"), metadata={
             "training_protocol_version": TRAINING_PROTOCOL_VERSION,
-            "stage": "planner_behavior_cloning",
+            "stage": "teacher_behavior_cloning",
             "bc_samples": int(len(demonstrations["states"])),
             "bc_steps": int(args.bc_steps),
             "bc_final_loss": float(bc_loss),
         })
-        print(f"[train] Planner BC warm start: samples={len(demonstrations['states'])}, "
+        print(f"[train] Teacher BC warm start: samples={len(demonstrations['states'])}, "
               f"steps={args.bc_steps}, final_loss={bc_loss:.6f}")
 
     # ---- Launch training ----
