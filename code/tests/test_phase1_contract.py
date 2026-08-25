@@ -175,6 +175,22 @@ def test_discounted_safety_value_is_normalized_to_per_step_scale():
     assert np.isclose(normalized_discounted_cost(5.0, 0.99), 0.05)
 
 
+def test_goal_conditioned_reward_values_progress_over_blocked_reference():
+    from agent.reward import RewardFunction
+
+    reward = RewardFunction(w_track=5.0, w_obs=0.0, w_manip=0.0,
+                            w_energy=0.0, w_collision=0.0, w_action=0.0)
+    goal = np.array([1.0, 0.0, 0.0])
+    common = dict(q=np.zeros(7), dq=np.zeros(7), x_d=np.zeros(3),
+                  dx_d=np.zeros(3), d_obs=1.0, w=1.0, goal=goal,
+                  goal_progress_scale=100.0)
+    reward.compute(x_ee=np.array([0.0, 0.0, 0.0]), **common)
+    _, toward = reward.compute(x_ee=np.array([0.1, 0.0, 0.0]), **common)
+    _, away = reward.compute(x_ee=np.array([0.05, 0.0, 0.0]), **common)
+    assert toward["r_goal_progress"] > 0.0
+    assert away["r_goal_progress"] < 0.0
+
+
 def test_cbf_filters_motion_toward_self_collision_without_obstacles():
     class EmptySDF:
         def min_distance(self, *args, **kwargs):

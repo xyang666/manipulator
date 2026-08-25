@@ -419,7 +419,12 @@ class ManipulatorEnv:
             self.dx_d[:3] = self._parametric_vel_func(t)
             return tracking_error
 
-        gate = self._tracking_progress_gate(tracking_error)
+        # In planner-certified detour tasks the straight line is only a timing
+        # cue, not a safe reference path that the policy should imitate.
+        goal_conditioned = (
+            getattr(self, "_current_scenario", None) == "rl_challenge_detour"
+        )
+        gate = 1.0 if goal_conditioned else self._tracking_progress_gate(tracking_error)
         self._last_advance = gate
         self._trajectory_phase = min(
             1.0, self._trajectory_phase + gate / self.trajectory_steps
@@ -435,7 +440,11 @@ class ManipulatorEnv:
             success = self.step_count >= self.episode_len and not self._ever_collided
         else:
             final_error = float(np.linalg.norm(x_ee - self.x_goal))
-            candidate = (self.path_param >= 0.99 and
+            goal_conditioned = (
+                getattr(self, "_current_scenario", None) == "rl_challenge_detour"
+            )
+            reference_complete = goal_conditioned or self.path_param >= 0.99
+            candidate = (reference_complete and
                          final_error < self.success_tolerance and
                          not self._ever_collided)
             self._success_hold_count = self._success_hold_count + 1 if candidate else 0
@@ -637,12 +646,17 @@ class ManipulatorEnv:
         self._cached_capsule_dists = capsule_dists
         self._cached_capsule_directions = capsule_directions
 
+        goal_conditioned = (
+            getattr(self, "_current_scenario", None) == "rl_challenge_detour"
+        )
         reward, reward_info = self.reward_fn.compute(
             q=self.q, dq=self.dq, x_ee=x_ee,
             x_d=self.x_d, dx_d=self.dx_d,
             d_obs=d_obs, w=w,
             action=action, prev_dq=prev_dq,
             capsule_dists=capsule_dists,
+            goal=self.x_goal if goal_conditioned else None,
+            goal_progress_scale=100.0 if goal_conditioned else 0.0,
         )
         # Structured policies can otherwise exploit large null-space motions
         # that preserve end-effector tracking while increasing full-arm risk.

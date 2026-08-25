@@ -39,9 +39,10 @@ class RewardFunction:
         self.d_safe        = d_safe
         self.dt            = dt
         self.collision_detector = collision_detector
+        self._prev_dist_to_goal = None
 
     def compute(self, q, dq, x_ee, x_d, dx_d, d_obs, w, action=None, prev_dq=None,
-                capsule_dists=None):
+                capsule_dists=None, goal=None, goal_progress_scale=0.0):
         """
         Parameters
         ----------
@@ -63,8 +64,20 @@ class RewardFunction:
         """
         # Tracking reward: exponential of position error.
         # Fixed w_track (no dynamic relaxation — Lagrangian λ handles gating).
-        pos_err = np.linalg.norm(x_ee - x_d)
+        reward_target = x_d if goal is None else goal
+        pos_err = np.linalg.norm(x_ee - reward_target)
         r_track = self.w_track * np.exp(-self.w_track * pos_err)
+
+        # Potential-difference shaping supplies a dense signal for
+        # goal-conditioned detours without exposing a planner path.
+        r_goal_progress = 0.0
+        if goal is not None and goal_progress_scale != 0.0:
+            distance = float(np.linalg.norm(x_ee - goal))
+            if self._prev_dist_to_goal is not None:
+                r_goal_progress = goal_progress_scale * (
+                    self._prev_dist_to_goal - distance
+                )
+            self._prev_dist_to_goal = distance
 
         # Obstacle reward: per-capsule dense penalty.
         if capsule_dists is not None:
@@ -104,10 +117,12 @@ class RewardFunction:
         if prev_dq is not None and self.w_action > 0.0:
             r_action = -self.w_action * np.sum((dq - prev_dq) ** 2)
 
-        total = r_track + r_obs + r_manip + r_energy + r_collision + r_action
+        total = (r_track + r_goal_progress + r_obs + r_manip + r_energy
+                 + r_collision + r_action)
 
         info = {
             "r_track":     r_track,
+            "r_goal_progress": r_goal_progress,
             "r_obs":       r_obs,
             "r_manip":     r_manip,
             "r_energy":    r_energy,
