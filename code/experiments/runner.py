@@ -210,7 +210,8 @@ def run(args) -> list[dict]:
             "cbf_qp", "gradient_cbf", "ours_shielded", "ours_hybrid") or
                  (args.method == "adaptive_gradient_cbf" and
                   args.scenario != "confined_space")),
-        gate_enabled=args.method in ("ours_full", "sac_residual"),
+        gate_enabled=(args.method == "sac_residual" or
+                      (args.method == "ours_full" and not args.disable_gate)),
     )
     # Uniform sensor-noise semantics: --sensor-noise corrupts the classical
     # methods' distance queries (GP gradient + CBF barrier), while
@@ -295,6 +296,9 @@ def parse_args():
     parser.add_argument("--gradient-prior-scale", type=float, default=None)
     parser.add_argument("--gradient-prior-smoothing", type=float, default=None)
     parser.add_argument("--learned-residual-scale", type=float, default=None)
+    parser.add_argument("--disable-gate", action=argparse.BooleanOptionalAction,
+                        default=None,
+                        help="Override the checkpoint's task-correction gate setting")
     parser.add_argument("--confined-deterministic-prior", action="store_true",
                         default=None)
     parser.add_argument("--free-deterministic-cbf", action="store_true",
@@ -339,6 +343,9 @@ def parse_args():
     args.learned_residual_scale = float(checkpoint_cli_value(
         args.checkpoint, "learned_residual_scale", 1.0
     ) if args.learned_residual_scale is None else args.learned_residual_scale)
+    args.disable_gate = bool(checkpoint_cli_value(
+        args.checkpoint, "disable_gate", False
+    ) if args.disable_gate is None else args.disable_gate)
     args.confined_deterministic_prior = bool(checkpoint_cli_value(
         args.checkpoint, "confined_deterministic_prior", False
     ) if args.confined_deterministic_prior is None

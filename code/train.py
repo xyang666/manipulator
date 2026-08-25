@@ -1122,6 +1122,7 @@ def main():
             steps=args.bc_steps, batch_size=args.bc_batch_size,
         )
         agent.save(os.path.join(run_dir, "ckpt_bc.pt"), metadata={
+            "training_protocol_version": TRAINING_PROTOCOL_VERSION,
             "stage": "planner_behavior_cloning",
             "bc_samples": int(len(demonstrations["states"])),
             "bc_steps": int(args.bc_steps),
