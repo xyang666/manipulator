@@ -190,6 +190,7 @@ class PhysicsRegularizer:
                  tau_max: float | list[float] | np.ndarray | None = None,
                  lambda_dyn: float = 0.1, dt: float = 0.02,
                  soft_limit_ratio: float = 0.80,
+                 gate_nullspace: bool = False,
                  device: str = "cpu"):
         self.dt = dt
         self.lambda_dyn = lambda_dyn
@@ -199,6 +200,7 @@ class PhysicsRegularizer:
         if not 0.0 < soft_limit_ratio < 1.0:
             raise ValueError("soft_limit_ratio must be in (0, 1)")
         self.soft_limit_ratio = float(soft_limit_ratio)
+        self.gate_nullspace = bool(gate_nullspace)
 
         if tau_max is None:
             from robot_config import DEFAULT_TAU_MAX, model_limits
@@ -310,7 +312,8 @@ class PhysicsRegularizer:
         delta_x_r = delta_x.view(B_batch, task_dim, 1)      # (B, 3, 1)
         z_r = z.view(B_batch, null_dim, 1)                  # (B, n-3, 1)
 
-        dq_cmd = J_pinv @ (dx_nom_r + sigma_flat * delta_x_r) + B @ z_r
+        z_effective = sigma_flat * z_r if self.gate_nullspace else z_r
+        dq_cmd = J_pinv @ (dx_nom_r + sigma_flat * delta_x_r) + B @ z_effective
         dq_cmd = dq_cmd.squeeze(-1)  # (B, n)
 
         # ---- Torque computation (differentiable) ----

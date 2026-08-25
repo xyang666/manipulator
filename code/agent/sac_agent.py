@@ -79,6 +79,7 @@ class SACAgent:
                  lag_max:      float = 10.0,
                  min_alpha:    float = 0.05,
                  physics_soft_limit_ratio: float = 0.80,
+                 predictive_residual_gate: bool = False,
                  use_safety_critic: bool = True):
         self.gamma       = gamma
         self.use_safety_critic = use_safety_critic
@@ -154,6 +155,7 @@ class SACAgent:
         self.physics = PhysicsRegularizer(dynamics, lambda_dyn=lambda_dyn,
                                           dt=self._get_dt_default(),
                                           soft_limit_ratio=physics_soft_limit_ratio,
+                                          gate_nullspace=predictive_residual_gate,
                                           device=self.device)
 
         # Automatic entropy tuning

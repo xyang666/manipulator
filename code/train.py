@@ -164,6 +164,8 @@ def parse_args():
     p.add_argument("--w_predictive_risk", type=float, default=0.0)
     # 预测风险的未来步长，使用逗号分隔。
     p.add_argument("--predictive_risk_horizons", default="10,25,50")
+    # 用预测风险门控任务空间和零空间残差；无风险时退化为 PD+CBF。
+    p.add_argument("--predictive_residual_gate", action="store_true")
     # 关闭独立安全 critic，退化为只优化奖励的 SAC。
     p.add_argument("--no_safety_critic", action="store_true")
     # 关闭风险门控，使任务空间 RL 修正不再按障碍距离衰减。
@@ -431,6 +433,7 @@ def make_env_kwargs(args, n_obs, obs_waypoint_steps):
         w_cbf_intervention=args.w_cbf_intervention,
         w_predictive_risk=args.w_predictive_risk,
         predictive_risk_horizons=predictive_risk_horizons,
+        predictive_residual_gate=args.predictive_residual_gate,
         gate_enabled=not args.disable_gate,
         gradient_prior_scale=args.gradient_prior_scale,
         gradient_prior_smoothing=args.gradient_prior_smoothing,
@@ -483,6 +486,7 @@ def setup_agent_and_buffer(args, state_dim, action_dim, dyn, ref_env, device):
         lr_lag=args.lr_lag,
         lag_init=args.lag_init,
         lag_max=args.lag_max,
+        predictive_residual_gate=args.predictive_residual_gate,
         use_safety_critic=not args.no_safety_critic,
     )
     if args.per:

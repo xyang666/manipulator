@@ -178,6 +178,7 @@ class ManipulatorEnv:
                  w_cbf_intervention: float = 0.0,
                  w_predictive_risk: float = 0.0,
                  predictive_risk_horizons: list[int] | None = None,
+                 predictive_residual_gate: bool = False,
                  success_bonus: float = ENVIRONMENT.success_bonus,
                  reward_min: Optional[float] = None,
                  reward_scale: float = ENVIRONMENT.reward_scale,
@@ -237,6 +238,7 @@ class ManipulatorEnv:
         self.w_predictive_risk = float(w_predictive_risk)
         self.predictive_risk_horizons = list(
             predictive_risk_horizons or (10, 25, 50))
+        self.predictive_residual_gate = bool(predictive_residual_gate)
         if any(step <= 0 for step in self.predictive_risk_horizons):
             raise ValueError("predictive risk horizons must be positive")
         if gradient_prior_scale < 0.0:
@@ -627,8 +629,16 @@ class ManipulatorEnv:
                 # d_obs ≤ 0       → sigma=1  (full RL emergency)
                 # In between → smoothstep blend
                 sigma = task_relaxation_gate(
-                    d_obs_cur, self.d_safe, enabled=self.gate_enabled
+                    d_obs_cur, self.d_safe,
+                    enabled=(self.gate_enabled or self.predictive_residual_gate),
                 )
+                if self.predictive_residual_gate:
+                    predictive_sigma = predictive_dynamic_risk(
+                        self.kin.get_link_capsules(self.q), self.sdf.centers,
+                        self.sdf.radii, self._obstacle_velocities,
+                        self.predictive_risk_horizons, self.dt, self.d_safe,
+                    )
+                    sigma = max(sigma, min(predictive_sigma, 1.0))
             delta_x_gated = sigma * delta_x_rl  # diag(σ) · Δẋ_RL
 
             # Reconstruct 7D nullspace velocity from 4D coefficients via SVD basis
@@ -640,7 +650,8 @@ class ManipulatorEnv:
             prior_z = self._distance_gradient_prior(
                 B, obstacle_constraint[0] if obstacle_constraint else None
             )
-            dq0 = B @ (z + prior_z)  # learned residual around deterministic prior
+            z_gated = sigma * z if self.predictive_residual_gate else z
+            dq0 = B @ (z_gated + prior_z)
 
             # Combine: q̇ = J_pos⁺(dx_nom + delta_x_gated) + B·z
             dq_cmd = self.kin.combine_velocities_with_relaxation_position(
