@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 import torch
 
 from agent.physics_policy import PhysicsInformedActor
@@ -121,6 +122,12 @@ def test_disabling_gate_keeps_task_relaxation_always_on():
     assert task_relaxation_gate(0.12, 0.06, enabled=True) == 0.0
     assert task_relaxation_gate(0.0, 0.06, enabled=True) == 1.0
     assert 0.0 < task_relaxation_gate(0.06, 0.06, enabled=True) < 1.0
+
+
+def test_negative_cbf_intervention_weight_is_rejected():
+    with pytest.raises(ValueError, match="w_cbf_intervention"):
+        ManipulatorEnv(urdf_path=None, xml_path=None,
+                       w_cbf_intervention=-1.0)
 
 
 def test_distance_gradient_prior_is_bounded_and_smoothed():

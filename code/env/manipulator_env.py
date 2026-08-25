@@ -132,6 +132,7 @@ class ManipulatorEnv:
                  cbf_alpha: float = 1.0,
                  cbf_self_d_safe: float = 0.02,
                  cbf_multi_self_constraints: bool = False,
+                 w_cbf_intervention: float = 0.0,
                  success_bonus: float = ENVIRONMENT.success_bonus,
                  reward_min: Optional[float] = None,
                  reward_scale: float = ENVIRONMENT.reward_scale,
@@ -182,6 +183,9 @@ class ManipulatorEnv:
         self.path_deadzone = path_deadzone
         self.frame_stack = frame_stack
         self.gate_enabled = gate_enabled
+        if w_cbf_intervention < 0.0:
+            raise ValueError("w_cbf_intervention must be non-negative")
+        self.w_cbf_intervention = float(w_cbf_intervention)
         if gradient_prior_scale < 0.0:
             raise ValueError("gradient_prior_scale must be non-negative")
         if not 0.0 <= gradient_prior_smoothing < 1.0:
@@ -665,6 +669,13 @@ class ManipulatorEnv:
         reward_info["r_action"] = (
             float(reward_info.get("r_action", 0.0)) - null_penalty
         )
+        # If the shield silently repairs every unsafe action, the policy has
+        # little incentive to anticipate moving obstacles.  This optional
+        # penalty trains it to reduce CBF intervention while retaining the CBF
+        # as a final safety layer.
+        cbf_intervention_penalty = self.w_cbf_intervention * self._cbf_mod
+        reward -= cbf_intervention_penalty
+        reward_info["r_cbf_intervention"] = -cbf_intervention_penalty
         # Clip per-step reward to prevent Q-value divergence from collision spikes
         if self.reward_min is not None:
             reward = max(reward, self.reward_min)

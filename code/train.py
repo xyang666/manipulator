@@ -158,6 +158,8 @@ def parse_args():
     p.add_argument("--cbf_self_distance", type=float, default=0.02)
     # 同时投影全部非相邻胶囊对，而不是只约束当前最小距离对。
     p.add_argument("--cbf_multi_self_constraints", action="store_true")
+    # 惩罚 CBF 对策略动作的修正幅度，促使策略提前预测并减少安全层介入。
+    p.add_argument("--w_cbf_intervention", type=float, default=0.0)
     # 关闭独立安全 critic，退化为只优化奖励的 SAC。
     p.add_argument("--no_safety_critic", action="store_true")
     # 关闭风险门控，使任务空间 RL 修正不再按障碍距离衰减。
@@ -411,6 +413,7 @@ def make_env_kwargs(args, n_obs, obs_waypoint_steps):
         use_cbf=args.use_cbf, cbf_alpha=args.cbf_alpha,
         cbf_self_d_safe=args.cbf_self_distance,
         cbf_multi_self_constraints=args.cbf_multi_self_constraints,
+        w_cbf_intervention=args.w_cbf_intervention,
         gate_enabled=not args.disable_gate,
         gradient_prior_scale=args.gradient_prior_scale,
         gradient_prior_smoothing=args.gradient_prior_smoothing,
