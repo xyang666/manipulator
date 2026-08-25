@@ -1121,6 +1121,12 @@ def main():
             demonstrations["states"], demonstrations["actions"],
             steps=args.bc_steps, batch_size=args.bc_batch_size,
         )
+        agent.save(os.path.join(run_dir, "ckpt_bc.pt"), metadata={
+            "stage": "planner_behavior_cloning",
+            "bc_samples": int(len(demonstrations["states"])),
+            "bc_steps": int(args.bc_steps),
+            "bc_final_loss": float(bc_loss),
+        })
         print(f"[train] Planner BC warm start: samples={len(demonstrations['states'])}, "
               f"steps={args.bc_steps}, final_loss={bc_loss:.6f}")
 
