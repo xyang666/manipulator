@@ -155,6 +155,8 @@ def main() -> int:
                         default=Path("results/ewalker_scenes/rl_detour_pilot.json"))
     parser.add_argument("--count", type=int, default=10)
     parser.add_argument("--attempts", type=int, default=80)
+    parser.add_argument("--rounds", type=int, default=5,
+                        help="independent blocker variants attempted per source scene")
     parser.add_argument("--seed", type=int, default=20260825)
     parser.add_argument("--min-ratio", type=float, default=1.20)
     parser.add_argument("--max-ratio", type=float, default=3.0)
@@ -165,17 +167,24 @@ def main() -> int:
     scenes = json.loads(args.input.read_text())
     kin = ManipulatorKinematics(DEFAULT_URDF, 7)
     output = []
-    for index, scene in enumerate(scenes):
-        candidate = make_detour_scene(
-            scene, kin, args.seed + 10007 * index, args.attempts,
-            args.min_ratio, args.max_ratio, args.min_deviation,
-            args.max_deviation, args.clearance,
-        )
-        if candidate is not None:
-            output.append(candidate)
-            print(f"accepted {len(output)}/{args.count}: {candidate['scene_id']} "
-                  f"ratio={candidate['rrt_detour_ratio']:.2f} "
-                  f"deviation={candidate['rrt_max_task_deviation_m']:.3f}", flush=True)
+    seen = set()
+    for round_index in range(args.rounds):
+        for index, scene in enumerate(scenes):
+            candidate = make_detour_scene(
+                scene, kin,
+                args.seed + 1_000_003 * round_index + 10007 * index,
+                args.attempts, args.min_ratio, args.max_ratio,
+                args.min_deviation, args.max_deviation, args.clearance,
+            )
+            if candidate is not None and candidate["scene_id"] not in seen:
+                seen.add(candidate["scene_id"])
+                output.append(candidate)
+                print(f"accepted {len(output)}/{args.count}: {candidate['scene_id']} "
+                      f"ratio={candidate['rrt_detour_ratio']:.2f} "
+                      f"deviation={candidate['rrt_max_task_deviation_m']:.3f}",
+                      flush=True)
+            if len(output) >= args.count:
+                break
         if len(output) >= args.count:
             break
     args.output.parent.mkdir(parents=True, exist_ok=True)
