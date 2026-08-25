@@ -42,7 +42,12 @@ def make_dynamic_detour(scene: dict, kin, rng: np.random.Generator,
     """Create one transient blocker motion without changing its RRT oracle."""
     if not scene.get("rrt_connect_feasible"):
         return None
-    added = int(scene.get("added_blocker_count", 0))
+    # Early detour files predate the explicit count field; those scenes always
+    # appended one blocker after the source obstacles.
+    added = int(scene.get(
+        "added_blocker_count",
+        1 if scene.get("challenge_type") == "rrt_detour" else 0,
+    ))
     if added <= 0:
         return None
     obstacles = [list(obstacle[:4]) for obstacle in scene["obstacles"]]
