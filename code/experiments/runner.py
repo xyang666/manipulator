@@ -23,6 +23,7 @@ from robot_config import (DEFAULT_TAU_MAX, DEFAULT_URDF, DEFAULT_XML,
 from utils.validation import ValidationSet
 
 RUNNER_METHODS = PHASE1_METHODS + ("gradient_cbf",)
+RUNNER_SCENARIOS = PHASE1_SCENARIOS + ("rl_challenge",)
 
 
 def gradient_control_defaults(method: str, scenario: str,
@@ -267,7 +268,7 @@ def parse_args():
     root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser()
     parser.add_argument("--method", required=True, choices=RUNNER_METHODS)
-    parser.add_argument("--scenario", required=True, choices=PHASE1_SCENARIOS)
+    parser.add_argument("--scenario", required=True, choices=RUNNER_SCENARIOS)
     parser.add_argument("--seed", required=True, type=int)
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--steps", type=int, default=ENVIRONMENT.episode_len)
@@ -304,6 +305,8 @@ def parse_args():
                         help="CBF minimum non-adjacent-link clearance (m)")
     parser.set_defaults(lambda_dyn=ALGORITHM.lambda_dyn, safety_critic=True)
     args = parser.parse_args()
+    if args.scenario == "rl_challenge" and args.scene_json is None:
+        parser.error("--scenario rl_challenge requires --scene-json")
     args.gradient_scale, args.gradient_smoothing = gradient_control_defaults(
         args.method, args.scenario, args.gradient_scale,
         args.gradient_smoothing,

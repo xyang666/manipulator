@@ -21,7 +21,7 @@ PYTHONPATH=. .venv/bin/python -u code/train.py \
   > /root/autodl-tmp/manipulator/logs/ewalker_structured_curriculum_s11.log 2>&1
 
 # ── 正式训练：5 方法 × 2 协议 × 5 seed ──────────────────────────────
-# 所有超参由 code/experiments/experiment_config.py 统一管理
+# 所有超参由 code/experiment_config.py 统一管理
 # 生成完整命令清单：
 .venv/bin/python -m experiments.manifest \
   --checkpoint-root /root/autodl-tmp/manipulator/checkpoints/phase1 \

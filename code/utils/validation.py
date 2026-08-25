@@ -83,8 +83,10 @@ class ValidationSet:
         bounds = None
         if "obstacle_bounds" in scene:
             bounds = np.array(scene["obstacle_bounds"], dtype=float)
-        if np.any(velocities):
-            env.set_dynamic_obstacles(velocities, bounds)
+        # Always reset motion state.  Otherwise a static scene evaluated after
+        # a dynamic one inherits stale obstacle velocities from the prior
+        # episode and silently becomes dynamic.
+        env.set_dynamic_obstacles(velocities, bounds)
 
         trajectory = scene.get("trajectory", {"type": "linear"})
         if trajectory.get("type") == "figure_eight":

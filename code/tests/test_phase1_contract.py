@@ -20,6 +20,7 @@ from train import (is_better_validation, prune_step_checkpoints,
                    scene_sampling_weights)
 from utils.cbf import CBFController
 from utils.replay_buffer import ReplayBuffer
+from utils.validation import ValidationSet
 
 
 def test_actor_has_three_plus_four_action_contract():
@@ -311,6 +312,28 @@ def test_v5_observation_contains_direction_scene_mask_and_waypoints():
     assert distances.shape == (env._capsule_dists_dim,)
     assert directions.shape == (env._capsule_dists_dim, 3)
     assert np.all(np.isfinite(obs))
+
+
+def test_dynamic_scene_motion_is_reset_by_static_scene(tmp_path):
+    dynamic = {
+        "scene_id": "dynamic", "start": [0.4, -0.1, 0.4],
+        "goal": [0.4, 0.1, 0.4],
+        "obstacles": [[0.3, 0.0, 0.4, 0.03, 0.02, 0.0, 0.0]],
+        "obstacle_bounds": [[[0.25, 0.0, 0.4], [0.35, 0.0, 0.4]]],
+    }
+    static = dict(dynamic, scene_id="static",
+                  obstacles=[[0.3, 0.0, 0.4, 0.03]])
+    static.pop("obstacle_bounds")
+    path = tmp_path / "scenes.json"
+    path.write_text(json.dumps([dynamic, static]))
+    env = ManipulatorEnv(
+        urdf_path=DEFAULT_URDF, xml_path=DEFAULT_XML, n_obstacles=1
+    )
+    validation = ValidationSet(str(path))
+    validation.apply_scene_to_env(env, dynamic)
+    assert np.any(env._obstacle_velocities)
+    validation.apply_scene_to_env(env, static)
+    assert not np.any(env._obstacle_velocities)
 
 
 def test_scene_split_is_disjoint_and_deterministic():

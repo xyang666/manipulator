@@ -22,6 +22,45 @@ results/ewalker_scenes/
 └── generalization/{train,validation,test}.json
 ```
 
+### RL挑战集（独立报告）
+
+`results/ewalker_scenes/rl_challenge_v1/` 是针对有限前瞻决策的附加挑战分布，
+不能替代上述标准集，也不能与标准集混合后只报告一个总体成功率。它从相同的
+规划器认证split派生，不依据任何被测控制器的成败筛选：
+
+- `timed_crossing`：一个障碍在机械臂名义到达时刻横穿关键阻挡位置；
+- `closing_gate`：狭窄通道的一对障碍在名义中点时刻收紧，随后反弹重开。
+
+规模为训练120、验证40、测试200；训练/验证/测试保持原始场景split隔离。
+重新生成：
+
+```bash
+cd /root/manipulator
+PYTHONPATH=code code/.venv/bin/python -m experiments.generate_rl_challenge_scenes \
+  --input-dir results/ewalker_scenes \
+  --output-dir results/ewalker_scenes/rl_challenge_v1 \
+  --seed 20260825 --swing 0.05
+```
+
+RL训练时使用正式v6观测（包含障碍相对位置、尺寸、速度和有限未来waypoint）：
+
+```bash
+code/.venv/bin/python -u code/train.py \
+  --scene_json results/ewalker_scenes/rl_challenge_v1/train.json \
+  --val_json results/ewalker_scenes/rl_challenge_v1/validation.json \
+  --run_name ours_full/rl_challenge_v1/seed_11
+```
+
+确定性基线或冻结checkpoint使用同一测试集评测：
+
+```bash
+cd /root/manipulator/code
+.venv/bin/python -m experiments.runner \
+  --method cbf_qp --scenario rl_challenge --seed 11 --episodes 200 \
+  --scene-json ../results/ewalker_scenes/rl_challenge_v1/test.json \
+  --output ../results/rl_challenge_v1/cbf_qp.jsonl
+```
+
 旧的 `results/phase1_splits/` 和 `results/solvable_scenes/` 已删除，禁止在
 训练命令、评测命令或论文结果中引用。
 

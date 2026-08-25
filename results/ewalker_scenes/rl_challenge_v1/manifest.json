@@ -1,0 +1,18 @@
+{
+  "protocol": "rl_challenge_v1",
+  "purpose": "predictive-RL challenge; report separately from standard benchmark",
+  "seed": 20260825,
+  "swing_m": 0.05,
+  "trajectory_steps": 350,
+  "dt_s": 0.02,
+  "counts": {
+    "train": 120,
+    "validation": 40,
+    "test": 200
+  },
+  "families": [
+    "timed_crossing",
+    "closing_gate"
+  ],
+  "source": "results/ewalker_scenes"
+}
