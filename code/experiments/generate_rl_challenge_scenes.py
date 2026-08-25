@@ -24,6 +24,10 @@ from pathlib import Path
 
 import numpy as np
 
+from env.kinematics import ManipulatorKinematics
+from planner.rrt_star import capsule_sphere_distance
+from robot_config import DEFAULT_URDF
+
 
 SPLITS = ("train", "validation", "test")
 
@@ -58,6 +62,19 @@ def _segment_clearance(obstacle: list[float], start: np.ndarray,
 def _static_bounds(obstacle: list[float]) -> list[list[float]]:
     center = np.asarray(obstacle[:3], dtype=float)
     return [center.tolist(), (center + 1e-6).tolist()]
+
+
+def endpoint_clearance(scene: dict, kin) -> float:
+    """Minimum whole-arm clearance at both task endpoints after conversion."""
+    obstacles = [obstacle[:4] for obstacle in scene["obstacles"]]
+    minimum = float("inf")
+    for key in ("start_q", "goal_q"):
+        for p1, p2, radius in kin.get_link_capsules(
+                np.asarray(scene[key], dtype=float)):
+            for obstacle in obstacles:
+                minimum = min(minimum, capsule_sphere_distance(
+                    p1, p2, radius, np.asarray(obstacle[:3]), obstacle[3]))
+    return float(minimum)
 
 
 def make_timed_crossing(scene: dict, rng: np.random.Generator,
@@ -150,11 +167,16 @@ def make_closing_gate(scene: dict, swing: float, duration: float) -> dict:
 
 
 def generate(input_dir: Path, output_dir: Path, seed: int, swing: float,
-             trajectory_steps: int, dt: float) -> dict[str, int]:
+             trajectory_steps: int, dt: float,
+             min_endpoint_clearance: float = 0.0,
+             urdf: str = DEFAULT_URDF) -> dict[str, int]:
     rng = np.random.default_rng(seed)
     output_dir.mkdir(parents=True, exist_ok=True)
     duration = trajectory_steps * dt
     counts: dict[str, int] = {}
+    rejected: dict[str, int] = {}
+    kin = (ManipulatorKinematics(urdf, 7)
+           if min_endpoint_clearance > 0.0 else None)
     for split in SPLITS:
         with (input_dir / "whole_body" / f"{split}.json").open() as stream:
             whole_body = json.load(stream)
@@ -164,6 +186,12 @@ def generate(input_dir: Path, output_dir: Path, seed: int, swing: float,
                   for scene in whole_body]
         scenes.extend(make_closing_gate(scene, swing, duration)
                       for scene in confined)
+        before = len(scenes)
+        if kin is not None:
+            scenes = [scene for scene in scenes
+                      if endpoint_clearance(scene, kin)
+                      >= min_endpoint_clearance]
+        rejected[split] = before - len(scenes)
         destination = output_dir / f"{split}.json"
         destination.write_text(json.dumps(scenes, indent=2) + "\n")
         counts[split] = len(scenes)
@@ -175,6 +203,8 @@ def generate(input_dir: Path, output_dir: Path, seed: int, swing: float,
         "trajectory_steps": trajectory_steps,
         "dt_s": dt,
         "counts": counts,
+        "rejected_endpoint_infeasible": rejected,
+        "min_endpoint_clearance_m": min_endpoint_clearance,
         "families": ["timed_crossing", "closing_gate"],
         "source": str(input_dir),
     }
@@ -193,11 +223,17 @@ def main() -> int:
     parser.add_argument("--swing", type=float, default=0.05)
     parser.add_argument("--trajectory-steps", type=int, default=350)
     parser.add_argument("--dt", type=float, default=0.02)
+    parser.add_argument("--min-endpoint-clearance", type=float, default=0.0,
+                        help="reject transformed scenes whose whole arm is too close at start/goal")
+    parser.add_argument("--urdf", default=DEFAULT_URDF)
     args = parser.parse_args()
     if args.swing <= 0.0 or args.trajectory_steps <= 0 or args.dt <= 0.0:
         parser.error("swing, trajectory-steps and dt must be positive")
+    if args.min_endpoint_clearance < 0.0:
+        parser.error("--min-endpoint-clearance must be non-negative")
     counts = generate(args.input_dir, args.output_dir, args.seed, args.swing,
-                      args.trajectory_steps, args.dt)
+                      args.trajectory_steps, args.dt,
+                      args.min_endpoint_clearance, args.urdf)
     print("generated", counts)
     return 0
 

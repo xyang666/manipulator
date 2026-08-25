@@ -1,6 +1,9 @@
 import json
 
+import numpy as np
+
 from experiments.augment_rl_challenge_training import build_training_set
+from experiments.generate_rl_challenge_scenes import endpoint_clearance
 
 
 def _scene(scene_id, scenario, obstacles):
@@ -41,3 +44,18 @@ def test_build_training_set_only_uses_training_sources(tmp_path):
     }
     assert len({scene["scene_id"] for scene in scenes}) == 3
     assert all("augmentation_duration_s" in scene for scene in scenes)
+
+
+def test_endpoint_clearance_checks_both_endpoint_capsules():
+    class FakeKinematics:
+        def get_link_capsules(self, q):
+            x = float(q[0])
+            return [(np.array([x, 0.0, 0.0]),
+                     np.array([x, 0.0, 0.1]), 0.01)]
+
+    scene = {
+        "start_q": [0.0], "goal_q": [1.0],
+        "obstacles": [[0.0, 0.03, 0.05, 0.01, 1.0, 0.0, 0.0]],
+    }
+    # Surface distance is 3 cm centre distance minus both 1 cm radii.
+    assert np.isclose(endpoint_clearance(scene, FakeKinematics()), 0.01)
