@@ -212,6 +212,39 @@ class SACAgent:
             return mean.detach().cpu().numpy()
         return action.detach().cpu().numpy()
 
+    def behavior_clone(self, states: np.ndarray, actions: np.ndarray,
+                       steps: int = 2000, batch_size: int = 512) -> float:
+        """Warm-start the actor from planner demonstrations.
+
+        Only the actor and observation normalizer are updated.  Critics remain
+        fresh for subsequent online SAC, and the planner is not needed at
+        inference time.
+        """
+        states = np.asarray(states, dtype=np.float32)
+        actions = np.asarray(actions, dtype=np.float32)
+        if states.ndim != 2 or states.shape[1] != self.obs_normalizer.mean.size:
+            raise ValueError("behavior-cloning state shape does not match actor input")
+        expected_action_dim = 3 + self.actor.nullspace_dim
+        if actions.shape != (len(states), expected_action_dim):
+            raise ValueError("behavior-cloning action shape does not match actor output")
+        if not len(states) or steps <= 0:
+            return 0.0
+        self.obs_normalizer.update(states)
+        normalized = self.obs_normalizer.normalize(states)
+        final_loss = 0.0
+        for _ in range(int(steps)):
+            indices = np.random.randint(0, len(states), size=min(batch_size, len(states)))
+            state = torch.as_tensor(normalized[indices], device=self.device)
+            target = torch.as_tensor(actions[indices], device=self.device)
+            _, _, mean = self.actor.sample(state)
+            loss = F.mse_loss(mean, target)
+            self.actor_opt.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
+            self.actor_opt.step()
+            final_loss = float(loss.item())
+        return final_loss
+
     # ------------------------------------------------------------------
     # Training step
     # ------------------------------------------------------------------

@@ -277,6 +277,12 @@ def parse_args():
     # --- 经验回放 ---
     # 启用优先经验回放（PER），优先采样 TD error 较大的 transition。
     p.add_argument("--per",         action="store_true")
+    # 仅训练期的规划器示范（NPZ 中包含 states/actions）；推理不调用规划器。
+    p.add_argument("--bc_demo", type=str, default=None)
+    # 在线 SAC 前执行的行为克隆梯度步数；0 表示关闭 warm start。
+    p.add_argument("--bc_steps", type=int, default=0)
+    # 行为克隆 mini-batch 大小。
+    p.add_argument("--bc_batch_size", type=int, default=512)
 
     # --- 机器人模型与输出路径 ---
     _here = os.path.dirname(os.path.abspath(__file__))
@@ -1106,6 +1112,17 @@ def main():
     total_steps, episode, best_reward, best_validation = handle_resume(
         args, agent, buffer, scene_ema, scene_counts, scene_weights, logger
     )
+
+    if args.bc_demo is not None and args.bc_steps > 0 and total_steps == 0:
+        if args.agent_type != "structured":
+            raise ValueError("planner behavior cloning currently requires structured agent")
+        demonstrations = np.load(args.bc_demo)
+        bc_loss = agent.behavior_clone(
+            demonstrations["states"], demonstrations["actions"],
+            steps=args.bc_steps, batch_size=args.bc_batch_size,
+        )
+        print(f"[train] Planner BC warm start: samples={len(demonstrations['states'])}, "
+              f"steps={args.bc_steps}, final_loss={bc_loss:.6f}")
 
     # ---- Launch training ----
     if args.render or args.n_envs <= 1:
