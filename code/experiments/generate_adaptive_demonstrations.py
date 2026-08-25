@@ -10,6 +10,8 @@ By default, samples from unsuccessful episodes are discarded.
 from __future__ import annotations
 
 import argparse
+import multiprocessing as mp
+import os
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +20,10 @@ from env.manipulator_env import ManipulatorEnv
 from experiments.runner import _gradient_projection_action
 from robot_config import DEFAULT_URDF, DEFAULT_XML
 from utils.validation import ValidationSet
+
+_WORKER_ENV = None
+_WORKER_VALIDATION = None
+_WORKER_CONFIG = None
 
 
 def collect_episode(env, validation, scene, scale, smoothing, steps):
@@ -40,6 +46,23 @@ def collect_episode(env, validation, scene, scale, smoothing, steps):
     return states, actions, success
 
 
+def _init_worker(input_path, env_kwargs, scale, smoothing, steps):
+    global _WORKER_ENV, _WORKER_VALIDATION, _WORKER_CONFIG
+    # Avoid BLAS/OpenMP oversubscription when several simulator workers run.
+    os.environ["OMP_NUM_THREADS"] = "1"
+    _WORKER_VALIDATION = ValidationSet(input_path)
+    _WORKER_ENV = ManipulatorEnv(**env_kwargs)
+    _WORKER_CONFIG = (scale, smoothing, steps)
+
+
+def _collect_worker(scene):
+    scale, smoothing, steps = _WORKER_CONFIG
+    states, actions, success = collect_episode(
+        _WORKER_ENV, _WORKER_VALIDATION, scene, scale, smoothing, steps
+    )
+    return scene["scene_id"], states, actions, success
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, required=True,
@@ -49,12 +72,14 @@ def main() -> int:
     parser.add_argument("--gradient-scale", type=float, default=0.3)
     parser.add_argument("--smoothing", type=float, default=0.8)
     parser.add_argument("--max-samples", type=int, default=200000)
+    parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--keep-failures", action="store_true")
     parser.add_argument("--obs-scene-embed", type=int, default=10)
     parser.add_argument("--urdf", default=DEFAULT_URDF)
     parser.add_argument("--xml", default=DEFAULT_XML)
     args = parser.parse_args()
-    if args.steps <= 0 or args.max_samples <= 0 or args.gradient_scale <= 0:
+    if (args.steps <= 0 or args.max_samples <= 0 or args.gradient_scale <= 0
+            or args.workers <= 0):
         raise ValueError("steps, max-samples and gradient-scale must be positive")
     if not 0.0 <= args.smoothing < 1.0:
         raise ValueError("smoothing must be in [0, 1)")
@@ -63,7 +88,7 @@ def main() -> int:
     scenes = validation.scenes
     if not scenes:
         raise ValueError("training scene set is empty")
-    env = ManipulatorEnv(
+    env_kwargs = dict(
         urdf_path=args.urdf, xml_path=args.xml, episode_len=args.steps,
         trajectory_steps=args.steps,
         n_obstacles=max(len(scene["obstacles"]) for scene in scenes),
@@ -74,19 +99,34 @@ def main() -> int:
     )
     all_states, all_actions, all_scene_ids = [], [], []
     successes = 0
-    for scene in scenes:
-        states, actions, success = collect_episode(
-            env, validation, scene, args.gradient_scale, args.smoothing,
-            args.steps,
+    if args.workers == 1:
+        env = ManipulatorEnv(**env_kwargs)
+        results = (
+            (scene["scene_id"], *collect_episode(
+                env, validation, scene, args.gradient_scale, args.smoothing,
+                args.steps))
+            for scene in scenes
         )
+        pool = None
+    else:
+        pool = mp.get_context("spawn").Pool(
+            args.workers, initializer=_init_worker,
+            initargs=(str(args.input), env_kwargs, args.gradient_scale,
+                      args.smoothing, args.steps),
+        )
+        results = pool.imap(_collect_worker, scenes)
+    for scene_id, states, actions, success in results:
         successes += int(success)
         if success or args.keep_failures:
             remaining = args.max_samples - len(all_states)
             all_states.extend(states[:remaining])
             all_actions.extend(actions[:remaining])
-            all_scene_ids.extend([scene["scene_id"]] * min(len(states), remaining))
+            all_scene_ids.extend([scene_id] * min(len(states), remaining))
         if len(all_states) >= args.max_samples:
             break
+    if pool is not None:
+        pool.close()
+        pool.join()
     if not all_states:
         raise RuntimeError("teacher produced no retained demonstrations")
     args.output.parent.mkdir(parents=True, exist_ok=True)
