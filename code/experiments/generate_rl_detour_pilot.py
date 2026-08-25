@@ -77,7 +77,8 @@ def _candidate_blocker(kin, q: np.ndarray, capsule_index: int,
 
 
 def make_detour_scene(scene: dict, kin, seed: int, attempts: int,
-                      minimum_ratio: float, minimum_deviation: float,
+                      minimum_ratio: float, maximum_ratio: float,
+                      minimum_deviation: float, maximum_deviation: float,
                       clearance: float) -> dict | None:
     rng = np.random.default_rng(seed)
     q_start = np.asarray(scene["start_q"], dtype=float)
@@ -119,7 +120,8 @@ def make_detour_scene(scene: dict, kin, seed: int, attempts: int,
             continue
         ratio = _normalized_length(path, joint_range) / max(direct_length, 1e-9)
         deviation = _task_deviation(kin, path, start, goal)
-        if ratio < minimum_ratio or deviation < minimum_deviation:
+        if not (minimum_ratio <= ratio <= maximum_ratio
+                and minimum_deviation <= deviation <= maximum_deviation):
             continue
         result = dict(scene)
         digest = hashlib.sha256(json.dumps({
@@ -155,7 +157,9 @@ def main() -> int:
     parser.add_argument("--attempts", type=int, default=80)
     parser.add_argument("--seed", type=int, default=20260825)
     parser.add_argument("--min-ratio", type=float, default=1.20)
+    parser.add_argument("--max-ratio", type=float, default=3.0)
     parser.add_argument("--min-deviation", type=float, default=0.06)
+    parser.add_argument("--max-deviation", type=float, default=0.20)
     parser.add_argument("--clearance", type=float, default=0.02)
     args = parser.parse_args()
     scenes = json.loads(args.input.read_text())
@@ -164,7 +168,8 @@ def main() -> int:
     for index, scene in enumerate(scenes):
         candidate = make_detour_scene(
             scene, kin, args.seed + 10007 * index, args.attempts,
-            args.min_ratio, args.min_deviation, args.clearance,
+            args.min_ratio, args.max_ratio, args.min_deviation,
+            args.max_deviation, args.clearance,
         )
         if candidate is not None:
             output.append(candidate)
