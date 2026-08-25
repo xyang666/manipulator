@@ -330,6 +330,8 @@ def main():
     parser.add_argument("--test", type=int, default=100)
     parser.add_argument("--seed", type=int, default=20260726)
     parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--whole-body-only", action="store_true",
+                        help="generate and write only whole-body splits")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     output = Path(args.output_dir)
@@ -360,6 +362,18 @@ def main():
         whole_test = generate_parallel(
             pool, "obstacle", args.test, 3, "whole_body-test",
             args.seed + 3_000_000)
+        if args.whole_body_only:
+            all_whole = whole_train + whole_validation + whole_test
+            for scene in all_whole:
+                if scene["scene_fingerprint"] in used:
+                    raise RuntimeError(
+                        f"duplicate generated scene: {scene['scene_fingerprint']}")
+                used.add(scene["scene_fingerprint"])
+            write(output / "whole_body/train.json", whole_train)
+            write(output / "whole_body/validation.json", whole_validation)
+            write(output / "whole_body/test.json", whole_test)
+            print(f"wrote {len(all_whole)} whole-body scenes to {output}")
+            return 0
         confined_train = generate_parallel(
             pool, "corridor", args.train, 10, "confined_space-train",
             args.seed + 4_000_000)
