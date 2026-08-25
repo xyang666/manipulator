@@ -192,7 +192,8 @@ def run(args) -> list[dict]:
         collision_event_penalty=ENVIRONMENT.collision_event_penalty,
         d_safe=ENVIRONMENT.d_safe, success_bonus=ENVIRONMENT.success_bonus,
         cbf_self_d_safe=args.cbf_self_distance,
-        cbf_multi_self_constraints=(args.method in (
+        cbf_multi_self_constraints=(args.cbf_multi_self_constraints or
+                                    args.method in (
             "adaptive_gradient_cbf", "ours_shielded", "ours_hybrid")),
         reward_scale=ENVIRONMENT.reward_scale,
         obs_scene_embed=args.obs_scene_embed,
@@ -206,7 +207,7 @@ def run(args) -> list[dict]:
         free_deterministic_cbf=args.free_deterministic_cbf,
         generalization_deterministic_cbf=(
             args.generalization_deterministic_cbf),
-        use_cbf=(args.method in (
+        use_cbf=(args.use_cbf or args.method in (
             "cbf_qp", "gradient_cbf", "ours_shielded", "ours_hybrid") or
                  (args.method == "adaptive_gradient_cbf" and
                   args.scenario != "confined_space")),
@@ -299,6 +300,11 @@ def parse_args():
     parser.add_argument("--disable-gate", action=argparse.BooleanOptionalAction,
                         default=None,
                         help="Override the checkpoint's task-correction gate setting")
+    parser.add_argument("--use-cbf", action=argparse.BooleanOptionalAction,
+                        default=None,
+                        help="Override the checkpoint's CBF safety layer setting")
+    parser.add_argument("--cbf-multi-self-constraints",
+                        action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--confined-deterministic-prior", action="store_true",
                         default=None)
     parser.add_argument("--free-deterministic-cbf", action="store_true",
@@ -346,6 +352,13 @@ def parse_args():
     args.disable_gate = bool(checkpoint_cli_value(
         args.checkpoint, "disable_gate", False
     ) if args.disable_gate is None else args.disable_gate)
+    args.use_cbf = bool(checkpoint_cli_value(
+        args.checkpoint, "use_cbf", False
+    ) if args.use_cbf is None else args.use_cbf)
+    args.cbf_multi_self_constraints = bool(checkpoint_cli_value(
+        args.checkpoint, "cbf_multi_self_constraints", False
+    ) if args.cbf_multi_self_constraints is None
+        else args.cbf_multi_self_constraints)
     args.confined_deterministic_prior = bool(checkpoint_cli_value(
         args.checkpoint, "confined_deterministic_prior", False
     ) if args.confined_deterministic_prior is None
