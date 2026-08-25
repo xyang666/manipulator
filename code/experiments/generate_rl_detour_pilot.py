@@ -50,8 +50,9 @@ def _configuration_clearance(kin, q: np.ndarray, obstacles: list[list[float]]) -
     )
 
 
-def _candidate_blocker(kin, q: np.ndarray, capsule_index: int,
-                       rng: np.random.Generator) -> list[float] | None:
+def _candidate_blockers(kin, q: np.ndarray, capsule_index: int,
+                        rng: np.random.Generator,
+                        paired: bool) -> list[list[float]] | None:
     p1, p2, capsule_radius = kin.get_link_capsules(q)[capsule_index]
     axis = p2 - p1
     axis_norm = np.linalg.norm(axis)
@@ -73,13 +74,36 @@ def _candidate_blocker(kin, q: np.ndarray, capsule_index: int,
     if not (-0.85 <= center[0] <= 0.85 and -0.85 <= center[1] <= 0.85
             and 0.05 <= center[2] <= 1.30):
         return None
-    return [*center.tolist(), radius]
+    blockers = [[*center.tolist(), radius]]
+    if paired:
+        opposite = point - direction / norm * (
+            capsule_radius + radius - penetration)
+        if not (-0.85 <= opposite[0] <= 0.85 and -0.85 <= opposite[1] <= 0.85
+                and 0.05 <= opposite[2] <= 1.30):
+            return None
+        blockers.append([*opposite.tolist(), radius])
+    return blockers
+
+
+def _clearance_gradient(kin, q: np.ndarray, obstacle: list[float]) -> np.ndarray:
+    gradient = np.zeros_like(q)
+    epsilon = 1e-4
+    for joint in range(len(q)):
+        plus, minus = q.copy(), q.copy()
+        plus[joint] += epsilon
+        minus[joint] -= epsilon
+        gradient[joint] = (
+            _configuration_clearance(kin, plus, [obstacle])
+            - _configuration_clearance(kin, minus, [obstacle])
+        ) / (2.0 * epsilon)
+    return gradient
 
 
 def make_detour_scene(scene: dict, kin, seed: int, attempts: int,
                       minimum_ratio: float, maximum_ratio: float,
                       minimum_deviation: float, maximum_deviation: float,
-                      clearance: float) -> dict | None:
+                      clearance: float, paired: bool,
+                      minimum_conflict: float) -> dict | None:
     rng = np.random.default_rng(seed)
     q_start = np.asarray(scene["start_q"], dtype=float)
     q_goal = np.asarray(scene["goal_q"], dtype=float)
@@ -101,10 +125,19 @@ def make_detour_scene(scene: dict, kin, seed: int, attempts: int,
     for attempt in range(attempts):
         fraction = float(rng.uniform(0.3, 0.7))
         q_mid = (1.0 - fraction) * q_start + fraction * q_goal
-        blocker = _candidate_blocker(kin, q_mid, int(rng.choice(moving)), rng)
-        if blocker is None:
+        blockers = _candidate_blockers(
+            kin, q_mid, int(rng.choice(moving)), rng, paired)
+        if blockers is None:
             continue
-        obstacles = [list(item[:4]) for item in scene["obstacles"]] + [blocker]
+        conflict = 0.0
+        if paired:
+            first = _clearance_gradient(kin, q_mid, blockers[0])
+            second = _clearance_gradient(kin, q_mid, blockers[1])
+            conflict = float(-np.dot(first, second) /
+                             max(np.linalg.norm(first) * np.linalg.norm(second), 1e-12))
+            if conflict < minimum_conflict:
+                continue
+        obstacles = [list(item[:4]) for item in scene["obstacles"]] + blockers
         if min(_configuration_clearance(kin, q_start, obstacles),
                _configuration_clearance(kin, q_goal, obstacles)) < clearance:
             continue
@@ -125,12 +158,13 @@ def make_detour_scene(scene: dict, kin, seed: int, attempts: int,
             continue
         result = dict(scene)
         digest = hashlib.sha256(json.dumps({
-            "source": scene["scene_id"], "blocker": blocker, "seed": seed,
+            "source": scene["scene_id"], "blockers": blockers, "seed": seed,
         }, sort_keys=True).encode()).hexdigest()[:12]
         result.update({
             "scene_id": f"rl-detour-{digest}",
             "scenario": "rl_challenge_detour",
-            "challenge_type": "rrt_detour",
+            "challenge_type": ("paired_conflict_detour" if paired
+                               else "rrt_detour"),
             "challenge_distribution": True,
             "source_scene_id": scene["scene_id"],
             "obstacles": obstacles,
@@ -140,6 +174,8 @@ def make_detour_scene(scene: dict, kin, seed: int, attempts: int,
             "rrt_max_task_deviation_m": deviation,
             "rrt_planning_time_s": elapsed,
             "rrt_nodes": nodes,
+            "constraint_gradient_conflict": conflict,
+            "added_blocker_count": len(blockers),
             "feasible_q_path": [q.tolist() for q in path],
             "oracle": "seeded_joint_space_rrt_connect",
         })
@@ -163,6 +199,10 @@ def main() -> int:
     parser.add_argument("--min-deviation", type=float, default=0.06)
     parser.add_argument("--max-deviation", type=float, default=0.20)
     parser.add_argument("--clearance", type=float, default=0.02)
+    parser.add_argument("--paired", action="store_true",
+                        help="place opposing blockers around the same moving link")
+    parser.add_argument("--min-conflict", type=float, default=0.5,
+                        help="minimum negative cosine between paired distance gradients")
     args = parser.parse_args()
     scenes = json.loads(args.input.read_text())
     kin = ManipulatorKinematics(DEFAULT_URDF, 7)
@@ -175,6 +215,7 @@ def main() -> int:
                 args.seed + 1_000_003 * round_index + 10007 * index,
                 args.attempts, args.min_ratio, args.max_ratio,
                 args.min_deviation, args.max_deviation, args.clearance,
+                args.paired, args.min_conflict,
             )
             if candidate is not None and candidate["scene_id"] not in seen:
                 seen.add(candidate["scene_id"])
