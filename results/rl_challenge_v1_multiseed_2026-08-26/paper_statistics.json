@@ -1,0 +1,211 @@
+{
+  "scene_json": "../results/ewalker_scenes/rl_challenge_v1/test.json",
+  "scene_count": 200,
+  "baseline": {
+    "seed": 20260825,
+    "n": 200,
+    "success": 0.95,
+    "collision": 0.045,
+    "completion_time_s": 6.6337,
+    "tracking_rms_m": 0.021065375637431244,
+    "joint_velocity_smoothness": 2.405499903309307,
+    "torque_rate_nm_s": 172.08473174976072,
+    "energy": 0.30166629298206565
+  },
+  "rl_seeds": [
+    {
+      "seed": 11,
+      "n": 200,
+      "success": 0.945,
+      "collision": 0.04,
+      "completion_time_s": 7.0275,
+      "tracking_rms_m": 0.029907387074635534,
+      "joint_velocity_smoothness": 1.3386848496063144,
+      "torque_rate_nm_s": 104.12742502602437,
+      "energy": 0.2685205367504988
+    },
+    {
+      "seed": 22,
+      "n": 200,
+      "success": 0.92,
+      "collision": 0.04,
+      "completion_time_s": 7.1579,
+      "tracking_rms_m": 0.03311212229902074,
+      "joint_velocity_smoothness": 2.0830449679421585,
+      "torque_rate_nm_s": 116.74550418590577,
+      "energy": 0.3576303021954325
+    },
+    {
+      "seed": 33,
+      "n": 200,
+      "success": 0.915,
+      "collision": 0.06,
+      "completion_time_s": 6.9627,
+      "tracking_rms_m": 0.029506167986524296,
+      "joint_velocity_smoothness": 1.3467390169684057,
+      "torque_rate_nm_s": 90.30440588972077,
+      "energy": 0.2732102561192845
+    }
+  ],
+  "rl_across_seeds": {
+    "success": {
+      "mean": 0.9266666666666666,
+      "sample_std": 0.016072751268321542
+    },
+    "collision": {
+      "mean": 0.04666666666666667,
+      "sample_std": 0.011547005383792514
+    },
+    "completion_time_s": {
+      "mean": 7.049366666666667,
+      "sample_std": 0.09942018574380815
+    },
+    "tracking_rms_m": {
+      "mean": 0.030841892453393523,
+      "sample_std": 0.0019762848613367034
+    },
+    "joint_velocity_smoothness": {
+      "mean": 1.5894896115056263,
+      "sample_std": 0.4274504471905118
+    },
+    "torque_rate_nm_s": {
+      "mean": 103.72577836721698,
+      "sample_std": 13.225124188680715
+    },
+    "energy": {
+      "mean": 0.29978703168840526,
+      "sample_std": 0.05014859244436813
+    }
+  },
+  "paired_vs_baseline": [
+    {
+      "seed": 11,
+      "success_difference": -0.005,
+      "success_bootstrap_95_ci": [
+        -0.03,
+        0.02
+      ],
+      "rl_only_successes": 3,
+      "baseline_only_successes": 4,
+      "mcnemar_exact_p": 1.0,
+      "continuous_metrics": {
+        "completion_time_s": {
+          "rl_mean": 7.0275,
+          "baseline_mean": 6.6337,
+          "relative_difference": 0.059363552768439964,
+          "wilcoxon_p": 5.118567788978828e-21
+        },
+        "tracking_rms_m": {
+          "rl_mean": 0.029907387074635534,
+          "baseline_mean": 0.021065375637431244,
+          "relative_difference": 0.4197414558083097,
+          "wilcoxon_p": 1.0358784464305386e-30
+        },
+        "joint_velocity_smoothness": {
+          "rl_mean": 1.3386848496063144,
+          "baseline_mean": 2.405499903309307,
+          "relative_difference": -0.4434899590872352,
+          "wilcoxon_p": 2.241376920922804e-16
+        },
+        "torque_rate_nm_s": {
+          "rl_mean": 104.12742502602437,
+          "baseline_mean": 172.08473174976072,
+          "relative_difference": -0.3949060793060791,
+          "wilcoxon_p": 1.6627383766068605e-12
+        },
+        "energy": {
+          "rl_mean": 0.2685205367504988,
+          "baseline_mean": 0.30166629298206565,
+          "relative_difference": -0.10987557112831758,
+          "wilcoxon_p": 3.3281808873460494e-19
+        }
+      }
+    },
+    {
+      "seed": 22,
+      "success_difference": -0.03,
+      "success_bootstrap_95_ci": [
+        -0.06,
+        0.0
+      ],
+      "rl_only_successes": 2,
+      "baseline_only_successes": 8,
+      "mcnemar_exact_p": 0.109375,
+      "continuous_metrics": {
+        "completion_time_s": {
+          "rl_mean": 7.1579,
+          "baseline_mean": 6.6337,
+          "relative_difference": 0.07902075764656225,
+          "wilcoxon_p": 2.1640378138269383e-25
+        },
+        "tracking_rms_m": {
+          "rl_mean": 0.03311212229902074,
+          "baseline_mean": 0.021065375637431244,
+          "relative_difference": 0.57187428645628,
+          "wilcoxon_p": 6.273412923203328e-32
+        },
+        "joint_velocity_smoothness": {
+          "rl_mean": 2.0830449679421585,
+          "baseline_mean": 2.405499903309307,
+          "relative_difference": -0.13404903277008628,
+          "wilcoxon_p": 0.001213598147659755
+        },
+        "torque_rate_nm_s": {
+          "rl_mean": 116.74550418590577,
+          "baseline_mean": 172.08473174976072,
+          "relative_difference": -0.32158127569578465,
+          "wilcoxon_p": 8.728296212433828e-08
+        },
+        "energy": {
+          "rl_mean": 0.3576303021954325,
+          "baseline_mean": 0.30166629298206565,
+          "relative_difference": 0.18551628244622598,
+          "wilcoxon_p": 1.876366916884466e-18
+        }
+      }
+    },
+    {
+      "seed": 33,
+      "success_difference": -0.035,
+      "success_bootstrap_95_ci": [
+        -0.06,
+        -0.01
+      ],
+      "rl_only_successes": 0,
+      "baseline_only_successes": 7,
+      "mcnemar_exact_p": 0.015625,
+      "continuous_metrics": {
+        "completion_time_s": {
+          "rl_mean": 6.9627,
+          "baseline_mean": 6.6337,
+          "relative_difference": 0.04959524850385155,
+          "wilcoxon_p": 2.969118173853216e-19
+        },
+        "tracking_rms_m": {
+          "rl_mean": 0.029506167986524296,
+          "baseline_mean": 0.021065375637431244,
+          "relative_difference": 0.4006950787098491,
+          "wilcoxon_p": 1.3175661740854107e-30
+        },
+        "joint_velocity_smoothness": {
+          "rl_mean": 1.3467390169684057,
+          "baseline_mean": 2.405499903309307,
+          "relative_difference": -0.44014172891228853,
+          "wilcoxon_p": 2.5456555102472276e-14
+        },
+        "torque_rate_nm_s": {
+          "rl_mean": 90.30440588972077,
+          "baseline_mean": 172.08473174976072,
+          "relative_difference": -0.4752328985174692,
+          "wilcoxon_p": 4.032831209069746e-12
+        },
+        "energy": {
+          "rl_mean": 0.2732102561192845,
+          "baseline_mean": 0.30166629298206565,
+          "relative_difference": -0.09432952081415635,
+          "wilcoxon_p": 6.837205494718175e-12
+        }
+      }
+    }
+  ]
+}
