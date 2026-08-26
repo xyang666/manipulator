@@ -161,6 +161,7 @@ class ManipulatorEnv:
                  trajectory_steps: int = ENVIRONMENT.trajectory_steps,
                  tracking_full_speed_error: float = ENVIRONMENT.tracking_full_speed_error,
                  tracking_stop_error: float = ENVIRONMENT.tracking_stop_error,
+                 tracking_progress_gate_enabled: bool = True,
                  success_tolerance: float = ENVIRONMENT.success_tolerance,
                  success_hold_steps: int = ENVIRONMENT.success_hold_steps,
                  n_obstacles: int = 3,
@@ -236,6 +237,7 @@ class ManipulatorEnv:
         self.trajectory_steps = trajectory_steps
         self.tracking_full_speed_error = tracking_full_speed_error
         self.tracking_stop_error = tracking_stop_error
+        self.tracking_progress_gate_enabled = bool(tracking_progress_gate_enabled)
         self.success_tolerance = success_tolerance
         self.success_hold_steps = success_hold_steps
         self.use_trajectory_generator = use_trajectory_generator
@@ -512,7 +514,9 @@ class ManipulatorEnv:
         goal_conditioned = (
             getattr(self, "_current_scenario", None) == "rl_challenge_detour"
         )
-        gate = 1.0 if goal_conditioned else self._tracking_progress_gate(tracking_error)
+        gate = (1.0 if (goal_conditioned or
+                        not self.tracking_progress_gate_enabled)
+                else self._tracking_progress_gate(tracking_error))
         gate *= self._reference_rate_scale
         self._last_advance = gate
         self._trajectory_phase = min(

@@ -186,6 +186,7 @@ def run(args) -> list[dict]:
     env = env_class(
         urdf_path=args.urdf, xml_path=args.xml, dt=ENVIRONMENT.dt,
         episode_len=args.steps, trajectory_steps=args.trajectory_steps,
+        tracking_progress_gate_enabled=args.tracking_progress_gate_enabled,
         n_obstacles=14,
         w_track=ENVIRONMENT.w_track, w_obs=ENVIRONMENT.w_obs,
         w_manip=ENVIRONMENT.w_manip, w_energy=ENVIRONMENT.w_energy,
@@ -282,6 +283,8 @@ def parse_args():
     parser.add_argument("--steps", type=int, default=ENVIRONMENT.episode_len)
     parser.add_argument("--trajectory-steps", type=int,
                         default=ENVIRONMENT.trajectory_steps)
+    parser.add_argument("--tracking-progress-gate-enabled",
+                        action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--scene-json", type=Path,
                         help="Fixed certified scenes; cycled in file order")
@@ -369,6 +372,10 @@ def parse_args():
     args.timing_action_scale = float(checkpoint_cli_value(
         args.checkpoint, "task_scale", ALGORITHM.task_scale
     ) if args.task_scale is None else args.task_scale)
+    args.tracking_progress_gate_enabled = bool(checkpoint_cli_value(
+        args.checkpoint, "tracking_progress_gate_enabled", True
+    ) if args.tracking_progress_gate_enabled is None
+        else args.tracking_progress_gate_enabled)
     args.gradient_prior_scale = float(checkpoint_cli_value(
         args.checkpoint, "gradient_prior_scale", 0.0
     ) if args.gradient_prior_scale is None else args.gradient_prior_scale)

@@ -116,6 +116,9 @@ def parse_args():
     # 跟踪误差高于该值（m）时暂停参考轨迹；两阈值之间平滑降速。
     p.add_argument("--tracking_stop_error", type=float,
                    default=ENVIRONMENT.tracking_stop_error)
+    # 关闭后参考按固定时钟推进；用于检验 RL 是否学会主动时序调度。
+    p.add_argument("--tracking_progress_gate_enabled",
+                   action=argparse.BooleanOptionalAction, default=True)
     # 末端到目标距离小于该值（m）才计入连续成功保持。
     p.add_argument("--success_tolerance", type=float,
                    default=ENVIRONMENT.success_tolerance)
@@ -429,6 +432,7 @@ def make_env_kwargs(args, n_obs, obs_waypoint_steps):
         trajectory_steps=args.trajectory_steps,
         tracking_full_speed_error=args.tracking_full_speed_error,
         tracking_stop_error=args.tracking_stop_error,
+        tracking_progress_gate_enabled=args.tracking_progress_gate_enabled,
         success_tolerance=args.success_tolerance,
         success_hold_steps=args.success_hold_steps,
         reward_min=args.reward_min,
