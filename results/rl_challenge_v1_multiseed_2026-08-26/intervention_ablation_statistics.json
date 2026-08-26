@@ -1,0 +1,260 @@
+{
+  "scene_json": "../results/ewalker_scenes/rl_challenge_v1/test.json",
+  "scene_count": 200,
+  "seed_results": [
+    {
+      "seed": 11,
+      "metrics": {
+        "success": {
+          "control_mean": 0.945,
+          "treatment_mean": 0.945,
+          "mean_delta": 0.0,
+          "treatment_only": 1,
+          "control_only": 1,
+          "mcnemar_exact_p": 1.0
+        },
+        "collision": {
+          "control_mean": 0.045,
+          "treatment_mean": 0.04,
+          "mean_delta": -0.005,
+          "treatment_only": 0,
+          "control_only": 1,
+          "mcnemar_exact_p": 1.0
+        },
+        "completion_time_s": {
+          "control_mean": 7.067,
+          "treatment_mean": 7.0275,
+          "mean_delta": -0.03949999999999995,
+          "relative_difference": -0.005589358992500348,
+          "wilcoxon_p": 5.3105053961610806e-11
+        },
+        "tracking_rms_m": {
+          "control_mean": 0.030270602472993343,
+          "treatment_mean": 0.029907387074635534,
+          "mean_delta": -0.00036321539835780796,
+          "relative_difference": -0.011998948441209967,
+          "wilcoxon_p": 1.266763482890386e-05
+        },
+        "joint_velocity_smoothness": {
+          "control_mean": 1.8399144475049958,
+          "treatment_mean": 1.3386848496063144,
+          "mean_delta": -0.5012295978986817,
+          "relative_difference": -0.2724200565838105,
+          "wilcoxon_p": 1.4265070853321064e-17
+        },
+        "torque_rate_nm_s": {
+          "control_mean": 139.76778256221075,
+          "treatment_mean": 104.12742502602437,
+          "mean_delta": -35.640357536186386,
+          "relative_difference": -0.2549969448096727,
+          "wilcoxon_p": 7.577780538139385e-15
+        },
+        "energy": {
+          "control_mean": 0.28777450402874094,
+          "treatment_mean": 0.2685205367504988,
+          "mean_delta": -0.019253967278242124,
+          "relative_difference": -0.06690643892594172,
+          "wilcoxon_p": 1.1937070158006466e-16
+        }
+      }
+    },
+    {
+      "seed": 22,
+      "metrics": {
+        "success": {
+          "control_mean": 0.94,
+          "treatment_mean": 0.92,
+          "mean_delta": -0.02,
+          "treatment_only": 3,
+          "control_only": 7,
+          "mcnemar_exact_p": 0.34375
+        },
+        "collision": {
+          "control_mean": 0.035,
+          "treatment_mean": 0.04,
+          "mean_delta": 0.005,
+          "treatment_only": 3,
+          "control_only": 2,
+          "mcnemar_exact_p": 1.0
+        },
+        "completion_time_s": {
+          "control_mean": 7.0626,
+          "treatment_mean": 7.1579,
+          "mean_delta": 0.09530000000000002,
+          "relative_difference": 0.01349361424970974,
+          "wilcoxon_p": 0.0025398057226626975
+        },
+        "tracking_rms_m": {
+          "control_mean": 0.031713689304419784,
+          "treatment_mean": 0.03311212229902074,
+          "mean_delta": 0.0013984329946009526,
+          "relative_difference": 0.044095563312656294,
+          "wilcoxon_p": 7.612927796361648e-08
+        },
+        "joint_velocity_smoothness": {
+          "control_mean": 2.8576496835653105,
+          "treatment_mean": 2.0830449679421585,
+          "mean_delta": -0.7746047156231514,
+          "relative_difference": -0.2710635667058833,
+          "wilcoxon_p": 9.229643044638621e-10
+        },
+        "torque_rate_nm_s": {
+          "control_mean": 168.6267683132284,
+          "treatment_mean": 116.74550418590577,
+          "mean_delta": -51.881264127322645,
+          "relative_difference": -0.30766920724562485,
+          "wilcoxon_p": 4.797618892613343e-12
+        },
+        "energy": {
+          "control_mean": 0.3740248068204648,
+          "treatment_mean": 0.3576303021954325,
+          "mean_delta": -0.016394504625032287,
+          "relative_difference": -0.043832666513218155,
+          "wilcoxon_p": 0.0002577743677902039
+        }
+      }
+    },
+    {
+      "seed": 33,
+      "metrics": {
+        "success": {
+          "control_mean": 0.925,
+          "treatment_mean": 0.915,
+          "mean_delta": -0.01,
+          "treatment_only": 1,
+          "control_only": 3,
+          "mcnemar_exact_p": 0.625
+        },
+        "collision": {
+          "control_mean": 0.055,
+          "treatment_mean": 0.06,
+          "mean_delta": 0.005,
+          "treatment_only": 2,
+          "control_only": 1,
+          "mcnemar_exact_p": 1.0
+        },
+        "completion_time_s": {
+          "control_mean": 7.0459,
+          "treatment_mean": 6.9627,
+          "mean_delta": -0.0832,
+          "relative_difference": -0.011808285669680174,
+          "wilcoxon_p": 1.0355988269156625e-09
+        },
+        "tracking_rms_m": {
+          "control_mean": 0.02917221619952626,
+          "treatment_mean": 0.029506167986524296,
+          "mean_delta": 0.000333951786998033,
+          "relative_difference": 0.01144759742331325,
+          "wilcoxon_p": 0.7977688142844341
+        },
+        "joint_velocity_smoothness": {
+          "control_mean": 1.621714927586818,
+          "treatment_mean": 1.3467390169684057,
+          "mean_delta": -0.2749759106184122,
+          "relative_difference": -0.16955872202988742,
+          "wilcoxon_p": 6.298127149885658e-11
+        },
+        "torque_rate_nm_s": {
+          "control_mean": 117.51438908744173,
+          "treatment_mean": 90.30440588972077,
+          "mean_delta": -27.209983197720977,
+          "relative_difference": -0.23154596989373089,
+          "wilcoxon_p": 5.151690064919071e-13
+        },
+        "energy": {
+          "control_mean": 0.26524540111848244,
+          "treatment_mean": 0.2732102561192845,
+          "mean_delta": 0.007964855000802094,
+          "relative_difference": 0.030028249188170708,
+          "wilcoxon_p": 0.01091917072212478
+        }
+      }
+    }
+  ],
+  "across_seeds": {
+    "success": {
+      "control_mean": 0.9366666666666666,
+      "treatment_mean": 0.9266666666666666,
+      "mean_delta": -0.01,
+      "delta_sample_std": 0.01,
+      "relative_difference_of_means": -0.010676156583629859,
+      "seed_deltas": [
+        0.0,
+        -0.02,
+        -0.01
+      ]
+    },
+    "collision": {
+      "control_mean": 0.045,
+      "treatment_mean": 0.04666666666666667,
+      "mean_delta": 0.0016666666666666668,
+      "delta_sample_std": 0.005773502691896258,
+      "relative_difference_of_means": 0.0370370370370372,
+      "seed_deltas": [
+        -0.005,
+        0.005,
+        0.005
+      ]
+    },
+    "completion_time_s": {
+      "control_mean": 7.0584999999999996,
+      "treatment_mean": 7.049366666666667,
+      "mean_delta": -0.009133333333333308,
+      "delta_sample_std": 0.09304387853767347,
+      "relative_difference_of_means": -0.0012939481948477383,
+      "seed_deltas": [
+        -0.03949999999999995,
+        0.09530000000000002,
+        -0.0832
+      ]
+    },
+    "tracking_rms_m": {
+      "control_mean": 0.030385502658979796,
+      "treatment_mean": 0.030841892453393523,
+      "mean_delta": 0.0004563897944137259,
+      "delta_sample_std": 0.0008871835009446973,
+      "relative_difference_of_means": 0.015019985008503767,
+      "seed_deltas": [
+        -0.00036321539835780796,
+        0.0013984329946009526,
+        0.000333951786998033
+      ]
+    },
+    "joint_velocity_smoothness": {
+      "control_mean": 2.106426352885708,
+      "treatment_mean": 1.5894896115056263,
+      "mean_delta": -0.5169367413800817,
+      "delta_sample_std": 0.25018447486779605,
+      "relative_difference_of_means": -0.24540935916031537,
+      "seed_deltas": [
+        -0.5012295978986817,
+        -0.7746047156231514,
+        -0.2749759106184122
+      ]
+    },
+    "torque_rate_nm_s": {
+      "control_mean": 141.96964665429363,
+      "treatment_mean": 103.72577836721698,
+      "mean_delta": -38.243868287076666,
+      "delta_sample_std": 12.540005057787365,
+      "relative_difference_of_means": -0.2693805978133005,
+      "seed_deltas": [
+        -35.640357536186386,
+        -51.881264127322645,
+        -27.209983197720977
+      ]
+    },
+    "energy": {
+      "control_mean": 0.3090149039892294,
+      "treatment_mean": 0.29978703168840526,
+      "mean_delta": -0.009227872300824105,
+      "delta_sample_std": 0.014957825233547077,
+      "relative_difference_of_means": -0.02986222406005945,
+      "seed_deltas": [
+        -0.019253967278242124,
+        -0.016394504625032287,
+        0.007964855000802094
+      ]
+    }
+  }
+}
