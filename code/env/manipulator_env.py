@@ -190,6 +190,8 @@ class ManipulatorEnv:
                  predictive_residual_gate: bool = False,
                  learned_progress_control: bool = False,
                  timing_action_scale: float = 0.2,
+                 living_penalty: float = 0.0,
+                 timeout_penalty: float = 0.0,
                  success_bonus: float = ENVIRONMENT.success_bonus,
                  reward_min: Optional[float] = None,
                  reward_scale: float = ENVIRONMENT.reward_scale,
@@ -254,6 +256,10 @@ class ManipulatorEnv:
         if timing_action_scale <= 0.0:
             raise ValueError("timing_action_scale must be positive")
         self.timing_action_scale = float(timing_action_scale)
+        if living_penalty < 0.0 or timeout_penalty < 0.0:
+            raise ValueError("time penalties must be non-negative")
+        self.living_penalty = float(living_penalty)
+        self.timeout_penalty = float(timeout_penalty)
         if any(step <= 0 for step in self.predictive_risk_horizons):
             raise ValueError("predictive risk horizons must be positive")
         if gradient_prior_scale < 0.0:
@@ -757,6 +763,8 @@ class ManipulatorEnv:
             goal=self.x_goal if goal_conditioned else None,
             goal_progress_scale=100.0 if goal_conditioned else 0.0,
         )
+        reward -= self.living_penalty
+        reward_info["r_time"] = -self.living_penalty
         # Structured policies can otherwise exploit large null-space motions
         # that preserve end-effector tracking while increasing full-arm risk.
         null_penalty = self.w_null * float(np.square(action[3:]).sum())
@@ -802,6 +810,12 @@ class ManipulatorEnv:
         self._ever_collided = self._ever_collided or collision
 
         success, done, termination_reason = self._termination_status(x_ee, collision)
+
+        if termination_reason == "timeout":
+            reward -= self.timeout_penalty
+            reward_info["r_timeout"] = -self.timeout_penalty
+        else:
+            reward_info["r_timeout"] = 0.0
 
         # Sparse success bonus only after the goal has been held continuously.
         if success:

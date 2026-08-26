@@ -243,6 +243,10 @@ def parse_args():
     p.add_argument("--d_safe",       type=float, default=ENVIRONMENT.d_safe)
     # 成功到达并保持目标后一次性加入的奖励。
     p.add_argument("--success_bonus",type=float, default=ENVIRONMENT.success_bonus)
+    # 每步时间代价；用于目标到达/可学习时序任务，避免靠拖延累计正奖励。
+    p.add_argument("--living_penalty", type=float, default=0.0)
+    # episode 超时的一次性惩罚。
+    p.add_argument("--timeout_penalty", type=float, default=0.0)
     # 单步原始奖励的下限；None 表示不截断负奖励。
     p.add_argument("--reward_min",   type=float, default=None)
     # 最终奖励除以该值，用于控制 Q 值的数值范围。
@@ -438,6 +442,8 @@ def make_env_kwargs(args, n_obs, obs_waypoint_steps):
         predictive_residual_gate=args.predictive_residual_gate,
         learned_progress_control=args.learned_progress_control,
         timing_action_scale=args.task_scale,
+        living_penalty=args.living_penalty,
+        timeout_penalty=args.timeout_penalty,
         gate_enabled=not args.disable_gate,
         gradient_prior_scale=args.gradient_prior_scale,
         gradient_prior_smoothing=args.gradient_prior_smoothing,
