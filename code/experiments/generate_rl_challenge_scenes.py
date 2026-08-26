@@ -65,8 +65,19 @@ def _static_bounds(obstacle: list[float]) -> list[list[float]]:
 
 
 def endpoint_clearance(scene: dict, kin) -> float:
-    """Minimum whole-arm clearance at both task endpoints after conversion."""
-    obstacles = [obstacle[:4] for obstacle in scene["obstacles"]]
+    """Whole-arm endpoint clearance over every obstacle's complete sweep.
+
+    Dynamic scenes must remain feasible while the arm waits at either task
+    endpoint. Checking only the initial obstacle centers can retain a closing
+    gate whose later sweep physically intersects the stationary start pose.
+    """
+    bounds = scene.get("obstacle_bounds", [])
+    obstacles = []
+    for index, obstacle in enumerate(scene["obstacles"]):
+        centers = [obstacle[:3]]
+        if index < len(bounds) and len(bounds[index]) == 2:
+            centers.extend(bounds[index])
+        obstacles.extend([list(center) + [obstacle[3]] for center in centers])
     minimum = float("inf")
     for key in ("start_q", "goal_q"):
         for p1, p2, radius in kin.get_link_capsules(

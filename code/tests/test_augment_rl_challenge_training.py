@@ -59,3 +59,17 @@ def test_endpoint_clearance_checks_both_endpoint_capsules():
     }
     # Surface distance is 3 cm centre distance minus both 1 cm radii.
     assert np.isclose(endpoint_clearance(scene, FakeKinematics()), 0.01)
+
+
+def test_endpoint_clearance_checks_dynamic_sweep_extremes():
+    class FakeKinematics:
+        def get_link_capsules(self, q):
+            return [(np.array([0.0, 0.0, 0.0]),
+                     np.array([0.0, 0.0, 0.1]), 0.01)]
+
+    scene = {
+        "start_q": [0.0], "goal_q": [1.0],
+        "obstacles": [[0.0, 0.10, 0.05, 0.01, 0.0, -0.1, 0.0]],
+        "obstacle_bounds": [[[0.0, 0.0, 0.05], [0.0, 0.10, 0.05]]],
+    }
+    assert endpoint_clearance(scene, FakeKinematics()) < 0.0
