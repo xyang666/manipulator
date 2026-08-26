@@ -22,7 +22,7 @@ def test_predictive_obstacle_features_static_obstacle():
     np.testing.assert_allclose(features, [0.3, 0.0, 0.0, 0.0, 0.2, 0.0])
 
 
-def test_learned_reference_rate_is_risk_gated_and_bounded():
+def test_learned_reference_rate_is_gated_and_bounded():
     assert learned_reference_rate(-0.2, 0.2, 1.0) == 0.0
     assert learned_reference_rate(0.2, 0.2, 1.0) == 2.0
     assert learned_reference_rate(-0.2, 0.2, 0.0) == 1.0

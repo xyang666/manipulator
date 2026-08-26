@@ -671,7 +671,7 @@ class ManipulatorEnv:
             delta_x_gated = sigma * delta_x_rl  # diag(σ) · Δẋ_RL
             self._reference_rate_scale = (
                 learned_reference_rate(
-                    action[0], self.timing_action_scale, sigma)
+                    action[0], self.timing_action_scale, 1.0)
                 if self.learned_progress_control else 1.0
             )
 
