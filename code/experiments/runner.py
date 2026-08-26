@@ -11,7 +11,7 @@ import numpy as np
 from agent.sac_agent import SACAgent
 from agent.vanilla_sac_agent import VanillaSACAgent
 from env.dynamics import ManipulatorDynamics
-from env.manipulator_env import ManipulatorEnv
+from env.manipulator_env import ManipulatorEnv, task_relaxation_gate
 from env.vanilla_env import VanillaEnv
 from env.residual_env import ResidualEnv
 from experiment_config import (ALGORITHM, ENVIRONMENT, PHASE1_METHODS,
@@ -260,6 +260,25 @@ def run(args) -> list[dict]:
                 beta = args.gradient_smoothing
                 previous_action = beta * previous_action + (1.0 - beta) * raw
                 return previous_action.copy()
+        elif args.method == "ours_hybrid":
+            previous_gradient = np.zeros(env.act_dim)
+
+            def action_fn(obs):
+                nonlocal previous_gradient
+                learned = agent.select_action(obs, deterministic=True)
+                raw = _gradient_projection_action(env, args.gradient_scale)
+                previous_gradient = (args.gradient_smoothing * previous_gradient
+                                     + (1.0 - args.gradient_smoothing) * raw)
+                # Preserve the learned task-space correction. Blend only the
+                # two alternative null-space decisions, and only when current
+                # clearance makes avoidance relevant.
+                current_gate = task_relaxation_gate(
+                    env._mujoco_min_distance(), env.d_safe, enabled=True)
+                weight = args.hybrid_gradient_weight * current_gate
+                action = learned.copy()
+                action[3:] = ((1.0 - weight) * learned[3:]
+                              + weight * previous_gradient[3:])
+                return action
         elif args.method == "sac_joint":
             action_fn = lambda obs: agent.select_action(obs, deterministic=True)
         elif args.method == "sac_residual":
@@ -294,6 +313,7 @@ def parse_args():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--gradient-scale", type=float, default=None)
     parser.add_argument("--gradient-smoothing", type=float, default=None)
+    parser.add_argument("--hybrid-gradient-weight", type=float, default=0.5)
     parser.add_argument("--sensor-noise", type=float, default=0.0,
                         help="Gaussian std on classical SDF queries")
     parser.add_argument("--obs-noise", type=float, default=0.0,
@@ -412,6 +432,8 @@ def parse_args():
         parser.error("--gradient-scale must be positive")
     if not 0.0 <= args.gradient_smoothing < 1.0:
         parser.error("--gradient-smoothing must be in [0, 1)")
+    if not 0.0 <= args.hybrid_gradient_weight <= 1.0:
+        parser.error("--hybrid-gradient-weight must be in [0, 1]")
     if args.method in ("ours_no_physics", "ours_physics", "ours_full",
                        "sac_joint", "sac_residual") and args.checkpoint is None:
         parser.error(f"--checkpoint is required for {args.method}")
