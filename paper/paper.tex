@@ -41,7 +41,7 @@
 
 \begin{abstract}
 \noindent
-空间在轨服务任务中，冗余机械臂需在执行预设任务轨迹的同时，利用冗余自由度实现在线避障。传统零空间方法依赖手工设计的势函数梯度，在多约束耦合场景下面临权值整定困难和局部极小值问题；纯强化学习样本效率低且频繁输出物理不可行的关节力矩。本文提出面向空间机械臂的反应式冗余分辨控制方法，工作在控制器层级：将策略输出显式分解为任务空间参考修正项与零空间自运动项，由可微力矩约束正则化将执行器极限嵌入策略优化，并由风险感知门控在碰撞风险下动态权衡跟踪精度与安全性。方法无需全局轨迹重规划，实验协议覆盖自由空间跟踪、整臂避障、狭小空间操作及障碍布局泛化四类位置控制场景。定量结论仅由统一评测程序生成。
+空间在轨服务任务中，冗余机械臂需在执行预设任务轨迹的同时，利用冗余自由度实现在线避障。传统零空间方法依赖手工设计的势函数梯度，在多约束耦合场景下面临权值整定困难和局部极小值问题；纯强化学习样本效率低且频繁输出物理不可行的关节力矩。本文提出面向空间机械臂的反应式冗余分辨控制方法，工作在控制器层级：将策略输出显式分解为任务空间参考修正项与零空间自运动项，由可微力矩约束正则化将执行器极限嵌入策略优化，并由风险感知门控在碰撞风险下动态权衡跟踪精度与安全性。在200个冻结动态障碍场景上，三个训练随机种子的成功率为$92.67\pm1.61\%$，碰撞率为$4.67\pm1.15\%$；相较最强确定性基线 Adaptive Gradient-CBF，成功率低2.33个百分点，但关节速度平滑度和力矩变化率分别改善33.92\%和39.72\%。结果表明该方法的主要收益是相近碰撞水平下的控制质量，而非更高成功率。
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -173,7 +173,7 @@ M(q)\ddot{q} + C(q,\dot{q})\dot{q} + G(q) = \tau
 a_t \sim \pi(\cdot|s_t) = \left[ \Delta \dot{x}_{\text{RL}}^T,\ z^T \right]^T \in \mathbb{R}^{7}
 \label{eq:action}
 \end{equation}
-其中 $z$ 通过可微 SVD 零空间基 $B(q) \in \mathbb{R}^{7 \times 4}$ 提升为自运动速度 $\dot{q}_0 = B(q)z$。策略网络（PhysicsInformedActor）以状态 $s_t$ 为输入，经两个全连接 Tanh 隐藏层输出均值 $\mu(s_t)$ 和对数标准差 $\log\sigma(s_t)$；采样通过重参数化技巧完成，经 $\tanh$ 压缩至 $[-1,1]$ 后按各子空间缩放：前 3 维乘以 $\texttt{task\_scale}=1.0$，后 4 维乘以 $\texttt{nullspace\_scale}=0.5$。
+其中 $z$ 通过可微 SVD 零空间基 $B(q) \in \mathbb{R}^{7 \times 4}$ 提升为自运动速度 $\dot{q}_0 = B(q)z$。策略网络（PhysicsInformedActor）以状态 $s_t$ 为输入，经两个全连接 Tanh 隐藏层输出均值 $\mu(s_t)$ 和对数标准差 $\log\sigma(s_t)$；采样通过重参数化技巧完成，经 $\tanh$ 压缩至 $[-1,1]$ 后按各子空间缩放：前 3 维乘以 $\texttt{task\_scale}=0.2$，后 4 维乘以 $\texttt{nullspace\_scale}=0.25$。
 
 \textbf{动作维度分析。}零空间的本质维数为 4（$\dim(\mathcal{N}(J_{\text{pos}})) = 7 - 3 = 4$）。策略输出 4 维零空间系数 $z$，经 $B(q)$ 提升为 7 维自运动速度 $\dot{q}_0$，再经 $N_{\text{pos}}(q)$ 投影后实际有效自由度仍为 4。$B(q)$ 构成 $J_{\text{pos}}(q)$ 零空间的一组标准正交基，$z$ 的各分量为在该基下的坐标。相比直接输出 $\dot{q}_0 \in \mathbb{R}^7$，SVD 系数表示有三点优势：（1）策略输出维度最小化（7 维降至 4 维），降低探索复杂度；（2）$B(q)$ 的正交性保证 $z$ 各通道解耦，有利于特征学习；（3）SVD 基在 Pinocchio 框架下通过可微操作实现，支持完整梯度回传。
 
@@ -241,7 +241,7 @@ LayerNorm 有效缓解了不同场景间观测分布漂移导致的训练不稳�
 \end{aligned}
 \label{eq:actor_loss}
 \end{equation}
-其中第一项为熵正则化，第二项为集成任务评判器的最小 Q 值（抑制过估计），第三项为安全约束惩罚。熵系数初始值 $\alpha=0.1$，通过自动熵调节学习，目标熵 $\bar{\mathcal{H}} = -7$，下限 $\alpha_{\min}=0.02$。
+其中第一项为熵正则化，第二项为集成任务评判器的最小 Q 值（抑制过估计），第三项为安全约束惩罚。熵系数初始值 $\alpha=0.1$，通过自动熵调节学习，目标熵 $\bar{\mathcal{H}} = -7$，下限 $\alpha_{\min}=0.05$。
 
 \textbf{Lagrange 乘子对偶优化。}为实现安全约束 $\mathbb{E}[Q_c(s,a)] \leq c_{\text{limit}}$，引入可学习 Lagrange 乘子 $\lambda \geq 0$（初始化 $\lambda=0.1$），通过对偶梯度下降更新：
 \begin{equation}
@@ -273,7 +273,7 @@ r_t &= r_{\text{track}} + r_{\text{obs}} + r_{\text{manip}} \\
 r_{\text{track}} = w_{\text{track}} \cdot \exp\left(-w_{\text{track}} \cdot \|x_t - x_d\|\right)
 \label{eq:track_reward}
 \end{equation}
-其中 $w_{\text{track}}=12.0$。指数形式相较于二次型的优势在于：误差大时梯度为 $w_{\text{track}}^2$ 量级，驱动快速收敛；误差趋近于零时梯度自然衰减，避免过调。跟踪权重保持固定，任务优先级由控制层的风险感知门控独立调节（第\ref{sec:relaxation}节）。
+其中 $w_{\text{track}}=5.0$。指数形式相较于二次型的优势在于：误差大时提供较强的恢复信号，误差趋近于零时梯度自然衰减，避免过调。跟踪权重保持固定，任务优先级由控制层的风险感知门控独立调节（第\ref{sec:relaxation}节）。
 
 \subsubsection{基于距离场的避障奖励}
 采用有符号距离场计算机械臂各连杆到障碍物的逐胶囊体距离：
@@ -319,7 +319,7 @@ r_{\text{collision}} = -w_{\text{collision}} \cdot \sum_{c \in \mathcal{C}} \max
 r_{\text{action}} = -w_{\text{action}} \sum_{j=1}^{7} (\dot{q}_j^t - \dot{q}_j^{t-1})^2
 \label{eq:action_reward}
 \end{equation}
-其中 $w_{\text{action}}=0.5$。该惩罚等价于对加速度施加软约束，使生成轨迹在时序上更加平滑。
+其中 $w_{\text{action}}=0.05$。该惩罚等价于对加速度施加软约束，使生成轨迹在时序上更加平滑。
 
 \subsection{任务参考自适应修正机制}
 \label{sec:relaxation}
@@ -436,7 +436,7 @@ J_{\text{pos}}\dot{q} = \dot{x}_d + K_p e + \sigma \cdot \Delta\dot{x}_{\text{RL
 
             \State \textbf{// 5. 熵系数更新}
             \State $\alpha \gets \alpha - \eta_\alpha \nabla_\alpha (\alpha \cdot (\log \pi_\theta + \bar{\mathcal{H}}))$
-            \State $\alpha \gets \max(\alpha, 0.02)$
+            \State $\alpha \gets \max(\alpha, 0.05)$
 
             \State \textbf{// 6. Lagrange 乘子对偶更新}
             \State $\mathcal{L}_{\lambda} \gets -\lambda_{\text{Lag}} \cdot \big( \max_k Q_{c,\psi_k}(s_i,\tilde{a}_i) - c_{\text{limit}} \big)$
@@ -473,6 +473,7 @@ J_{\text{pos}}\dot{q} = \dot{x}_d + K_p e + \sigma \cdot \Delta\dot{x}_{\text{RL
 \textbf{安全控制方法：}
 \begin{itemize}
 \item \textbf{CBF-QP}\cite{ames2017control}：基于控制障碍函数的二次规划方法，将安全约束编码为CBF条件，通过QP求解最小干预控制输入。使用与本文相同的PD跟踪控制器作为名义控制律。
+\item \textbf{Adaptive Gradient-CBF}：根据在线安全裕度调节势场梯度，并通过与本文相同的多胶囊CBF安全层修正名义动作。该方法是主实验中最强的确定性传统基线。
 \end{itemize}
 
 \textbf{纯RL方法：}
@@ -487,54 +488,22 @@ J_{\text{pos}}\dot{q} = \dot{x}_d + K_p e + \sigma \cdot \Delta\dot{x}_{\text{RL
 
 \textbf{消融实验：}
 \begin{itemize}
-\item \textbf{Ours-Physics}：完整结构化动作空间 + 力矩约束正则化（$\lambda_{\text{dyn}}=1.0$），关闭风险门控。
-\item \textbf{Ours-Full}：完整方法（含结构化动作空间 + 力矩约束正则化 + 风险门控参考修正）。
+\item \textbf{No Physics/No Safety/No CBF}：移除物理正则、安全评判器和CBF层。
+\item \textbf{Physics Only}：仅加入力矩约束物理正则。
+\item \textbf{CBF Only}：不使用物理正则和安全评判器，仅保留CBF层。
+\item \textbf{Ours-Full}：结构化残差策略、力矩约束正则、安全评判器、CBF层和风险仲裁器均启用。
 \end{itemize}
 
 \subsubsection{实验场景设计}
-一期设计4类位置控制场景，难度递进。整臂避障和狭小空间场景分别生成60个训练、20个验证和100个测试场景，二者训练集合并为主实验课程；泛化实验另行生成60个单障碍训练场景、20个单障碍验证场景及100个三障碍测试场景。自由空间实验使用100个经完整8字轨迹IK连续性验证的初始构型。所有场景按固定随机种子生成，集合间参数指纹不重叠；每种方法采用5个独立训练随机种子。所有方法共享场景、初始状态、控制频率、速度限制、碰撞模型和终止条件。模型选择每$10^4$个全局环境交互步在验证集上执行一次，测试集仅用于最终报告。
+主实验采用冻结的动态障碍协议 \texttt{rl\_challenge\_v1}。场景按固定随机种子生成，训练、验证和测试规模分别为120、40和200；训练时仅对训练场景作控制器无关的数据增强，得到380个训练实例。所有集合的参数指纹互不重叠，测试集在算法和超参数冻结后才运行。学习方法采用三个独立训练随机种子（11、22、33），确定性传统方法在每个测试场景上运行一次。所有方法共享初始状态、控制周期、关节限制、碰撞模型、最大500步回合和成功判据。
 
-\paragraph{实验1：自由空间跟踪（Free-space Inspection）。}验证控制器基本跟踪性能。末端执行器沿卫星表面扫描路径运动：
+场景包含各100个以下两类任务：
 \begin{itemize}
-\item \textbf{轨迹}：8字形Lemniscate曲线，$y = 0.15\sin(t)$，$z = 0.4 + 0.1\sin(2t)$，$t \in [0, 2\pi]$，周期4~s。
-\item \textbf{障碍}：无障碍物。
-\item \textbf{指标}：跟踪误差RMS、关节速度平滑度、力矩变化率。
+\item \textbf{Timed crossing：}动态障碍在机械臂沿名义路径运动期间横穿关键扫掠区域，考察有限前瞻下的动态避碰；
+\item \textbf{Closing gate：}成对障碍在名义运动中段收紧形成动态通道，随后重新开放，考察跟踪、安全和动作平滑性的权衡。
 \end{itemize}
 
-\paragraph{实验2：整臂避障（Whole-body Obstacle Avoidance）。}核心实验——验证零空间策略的有效性。扫描轨迹上增加卫星部件障碍：
-\begin{itemize}
-\item \textbf{轨迹}：直线扫描轨迹，起终点在机械臂前方工作空间内采样，轨迹长度为0.3--0.6~m。
-\item \textbf{障碍}：3个不同半径的球形障碍，布置于任务路径和整臂扫掠空间附近。
-\item \textbf{指标}：成功率、碰撞率、最小间距 $d_{\text{obs}}^{\min}$、跟踪误差峰值、零空间利用度 $\|N(q)\dot{q}\|$。
-\end{itemize}
-
-\paragraph{实验3：狭小空间操作（Confined-space Inspection）。}论文亮点——模拟太阳翼间或卫星桁架间的受限空间操作：
-\begin{itemize}
-\item \textbf{轨迹}：直线运动 $x_{\text{start}} = [0.4, -0.15, 0.4]$~m $\to$ $x_{\text{goal}} = [0.4, 0.15, 0.4]$~m，速度0.08~m/s。
-\item \textbf{障碍}：两列各5个球形障碍组成球面间净宽0.24~m的窄通道；该宽度由整臂胶囊碰撞模型下的任务路径IK可行性筛选确定。
-\item \textbf{指标}：通过率、碰撞率、最小间距、跟踪误差、参考修正幅度 $\|\Delta\dot{x}_{\text{RL}}\|$。
-\end{itemize}
-
-\paragraph{三期扩展：狭小空间对接（Docking in Confined Space）。}该实验需要6维位姿任务，并会将一般位形下的零空间维数由4降至1，不纳入一期位置控制实验：
-\begin{itemize}
-\item \textbf{轨迹}：直线运动 $x_{\text{start}} = [0.5, 0.0, 0.4]$~m $\to$ $x_{\text{goal}} = [0.3, 0.0, 0.4]$~m，末端保持向下俯仰姿态，速度0.06~m/s。
-\item \textbf{障碍}：卫星主体结构（$0.15\times0.10\times0.20$~m），对接端口周围有传感器阵列（4个小型圆柱体）。
-\item \textbf{指标}：对接成功率、位置误差、姿态误差、碰撞率、力矩变化率。
-\end{itemize}
-
-\paragraph{二期扩展：动态目标（Dynamic Target）。}该实验需要动态场景接口与恢复时间定义，不纳入一期定量结论：
-\begin{itemize}
-\item \textbf{轨迹}：直线运动至动态对接端口，端口在$y$方向做幅值0.05~m、周期6~s的正弦运动。
-\item \textbf{障碍}：太阳翼结构在5~s内从初始位置旋转15$^\circ$，模拟展开过程。
-\item \textbf{指标}：跟踪误差、恢复时间、成功率、碰撞率。
-\end{itemize}
-
-\paragraph{实验6：泛化能力（Generalization）。}验证策略不是记忆特定障碍布局：
-\begin{itemize}
-\item \textbf{训练}：单个障碍物场景（实验2的简化版）。
-\item \textbf{测试}：3个不同位置和半径的球形障碍布局。
-\item \textbf{指标}：零样本迁移成功率、跟踪误差。
-\end{itemize}
+场景生成不读取任何被测控制器的成功或失败标签。基础起终点和静态几何由独立规划器认证，动态障碍完整运动范围再作端点安全复核。该流程允许为强化学习设计需要时序决策的任务，但禁止按测试结果反向筛选场景。
 
 \subsubsection{评价指标}
 \begin{itemize}
@@ -546,27 +515,55 @@ J_{\text{pos}}\dot{q} = \dot{x}_d + K_p e + \sigma \cdot \Delta\dot{x}_{\text{RL
 \end{itemize}
 
 \subsubsection{超参数设置}
-所有RL方法共享：学习率 $3\times10^{-4}$（余弦退火至$3\times10^{-5}$），$\gamma=0.99$，批量大小512，回放缓冲区$5\times10^5$，$\tau=0.005$。16个并行环境每轮执行4次梯度更新，对应更新数据比0.25。策略/价值网络均为2层MLP（256维），集成评判器$N=5$。熵系数$\alpha=0.1$，目标熵$\bar{\mathcal{H}}=-7$，$\alpha_{\min}=0.02$。Lagrange乘子初值$\lambda_{\text{Lag}}=0.1$、学习率$10^{-3}$，归一化折扣安全代价上限$c_{\text{limit}}=0.10$。评判器预热严格按全局环境交互步计数，$N_{\text{warmup}}=5000$。奖励权重：$w_{\text{track}}=12.0$，$w_{\text{obs}}=5.0$，$w_{\text{manip}}=0.05$，$w_{\text{energy}}=0.001$，$w_{\text{collision}}=100.0$，$w_{\text{action}}=0.5$。$d_{\text{safe}}=0.06$~m，$\lambda_{\text{dyn}}=1.0$。点到点参考轨迹采用350步五次最小加加速度时间标定，每回合最多500步；末端误差小于0.05~m并连续保持10步才判定成功。随机探索步数为$10^4$。
+所有RL方法共享：学习率 $3\times10^{-4}$，$\gamma=0.99$，批量大小512，回放缓冲区$5\times10^5$，$\tau=0.005$。32个并行环境每轮执行8次梯度更新，对应更新数据比0.25。策略/价值网络均为2层MLP（256维），集成评判器$N=5$。熵系数初值$\alpha=0.1$，$\alpha_{\min}=0.05$。Lagrange乘子初值$\lambda_{\text{Lag}}=0.1$、学习率$10^{-4}$、上限10，安全代价上限$c_{\text{limit}}=0.10$。评判器预热按全局环境交互步计数，$N_{\text{warmup}}=5000$。奖励权重：$w_{\text{track}}=5.0$，$w_{\text{obs}}=5.0$，$w_{\text{manip}}=0.05$，$w_{\text{energy}}=0.001$，$w_{\text{collision}}=100.0$，碰撞事件额外惩罚500，$w_{\text{action}}=0.05$。$d_{\text{safe}}=0.06$~m，$\lambda_{\text{dyn}}=1.0$。每个 seed 训练55,000个全局环境步，仅在25,000和50,000步附近的冻结验证集上选择最佳模型。每回合最多500步；末端误差小于0.05~m并连续保持10步才判定成功。随机探索步数为$10^4$。
 
 \subsection{实验结果与分析}
 
-定量结果由统一评测程序从逐回合 JSONL 数据计算，报告五个训练随机种子、每个种子100个固定测试回合的均值、标准差与95\%置信区间。为避免将预测性数字写入论文，结果文件不存在时不生成结果表。
+定量结果由统一评测程序从逐回合 JSONL 计算。学习方法报告三个 seed 的场景均值及 seed 间样本标准差；传统方法为确定性单次结果，不人为赋予 seed 方差。
 
-\IfFileExists{generated/phase1_results.tex}{%
-  \begin{table*}[htbp]
-  \centering
-  \caption{一期统一评测结果}
-  \label{tab:phase1-generated}
-  \input{generated/phase1_results.tex}
-  \end{table*}
-}{%
-  \noindent\textit{一期定量结果尚未生成；执行统一评测与汇总命令后自动插入。}
-}
+\begin{table*}[htbp]
+\centering
+\caption{冻结的200场景动态障碍测试结果。RL结果为三个训练seed的均值$\pm$样本标准差。箭头表示指标偏好。}
+\label{tab:dynamic-main}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrrrrr}
+\toprule
+方法 & 成功率$\uparrow$ & 碰撞率$\downarrow$ & 完成时间$\downarrow$ & 跟踪RMS$\downarrow$ & 平滑度$\downarrow$ & 力矩变化率$\downarrow$ & 能耗$\downarrow$ \\
+\midrule
+PD & 1.0\% & 99.0\% & -- & -- & -- & -- & -- \\
+Gradient Projection & 90.0\% & 10.0\% & -- & -- & -- & -- & -- \\
+CBF-QP & 93.5\% & 5.0\% & -- & -- & -- & -- & -- \\
+Adaptive Gradient-CBF & \textbf{95.0\%} & 4.5\% & \textbf{6.6337} & \textbf{0.02107} & 2.4055 & 172.0847 & 0.30167 \\
+Ours-Full & $92.67\!\pm\!1.61\%$ & $4.67\!\pm\!1.15\%$ & $7.049\!\pm\!0.099$ & $0.03084\!\pm\!0.00198$ & $\mathbf{1.589\!\pm\!0.427}$ & $\mathbf{103.726\!\pm\!13.225}$ & $0.29979\!\pm\!0.05015$ \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+相对 Adaptive Gradient-CBF，Ours-Full 的成功率低2.33个百分点，碰撞率高0.17个百分点，完成时间和跟踪RMS分别增加6.27\%和46.41\%。因此本实验不支持成功率优效、跟踪优效或严格非劣结论。另一方面，三个RL seed的平滑度和力矩变化率改善方向一致，跨seed均值分别降低33.92\%和39.72\%；逐场景Wilcoxon检验在每个seed上分别满足$p\leq0.00122$和$p\leq8.73\times10^{-8}$。能耗均值仅降低0.62\%，且seed 22反向，故不作为稳定优势。
+
+\begin{table}[htbp]
+\centering
+\caption{40场景冻结验证集上的组件消融（约25k最佳点）。}
+\label{tab:ablation}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lrrrrr}
+\toprule
+配置 & 成功率 & 碰撞率 & 平滑度 & 力矩变化率 & 能耗 \\
+\midrule
+No Physics/No Safety/No CBF & 47.5\% & 52.5\% & 0.869 & 40.925 & 0.2740 \\
+Physics Only & 60.0\% & 40.0\% & 0.736 & 26.074 & 0.2113 \\
+CBF Only & 95.0\% & 2.5\% & 1.569 & 114.344 & 0.2789 \\
+Ours-Full & 95.0\% & 2.5\% & 1.611 & 104.489 & 0.2915 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+消融表明CBF是成功率和安全性的主要来源；物理正则在不含安全层时将成功率由47.5\%提高到60.0\%，并降低平滑度、力矩变化率和能耗指标。完整方法相对CBF Only没有成功率优势，仅力矩变化率更低。因此不能宣称每个组件独立改善所有指标。
 
 
 \section{结论}
 
-本文提出面向空间在轨服务的反应式冗余分辨控制方法，在强化学习框架中嵌入运动学结构先验和动力学约束。方法通过三个核心机制协同工作：结构化动作空间将策略输出解耦为任务空间参考修正项与零空间自运动项；力矩约束正则化将执行器物理极限直接嵌入策略优化目标；风险感知门控在控制层实现任务参考自适应修正。当前一期实验限定为3维位置任务，覆盖自由空间、整臂避障、狭小空间及障碍布局泛化，所有定量结论均由统一评测流程产生。
+本文提出面向空间在轨服务的反应式冗余分辨控制方法，在强化学习框架中嵌入运动学结构先验、动力学约束和CBF安全层。冻结动态障碍实验表明，方法的可靠收益是相近碰撞率下更平滑且力矩变化更小的控制，而不是更高成功率或更低跟踪误差。该边界避免将安全层贡献错误归因于策略学习。
 
 \begin{itemize}
 \item \textbf{零空间策略学习框架：}将经典零空间控制与深度强化学习结合，策略在零空间内输出自运动速度，由零空间投影保证次任务优化不干扰末端跟踪，压缩了无效探索维度。
@@ -576,7 +573,7 @@ J_{\text{pos}}\dot{q} = \dot{x}_d + K_p e + \sigma \cdot \Delta\dot{x}_{\text{RL
 \item \textbf{任务参考自适应修正：}基于安全距离的连续风险门控在控制层实现危险情况下的优先级在线调节；约束 SAC 的 Lagrange 乘子独立限制累积安全代价。输入-状态稳定性分析给出了跟踪误差的有界性保证。
 \end{itemize}
 
-动态障碍将在二期加入；六维位姿控制会改变零空间维数与动作定义，因此姿态对接作为三期独立扩展，不用于当前位置控制框架的实验结论。
+当前结论限定于3维位置任务和固定基座仿真；六维位姿控制会改变零空间维数与动作定义，因此姿态对接不用于本文定量结论。
 
 未来工作包括：（1）在硬件在环仿真平台验证算法的实时性，重点考察空间环境中的通信延迟对反应式控制的影响；（2）将方法扩展至多机械臂协同在轨操作场景；（3）引入视觉感知模块，构建卫星表面在线检测与避障闭环；（4）探索更紧凑的零空间动作表示（如流形参数替代$\mathbb{R}^{n-3}$线性系数）以提升学习效率。
 
